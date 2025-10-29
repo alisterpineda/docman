@@ -3,8 +3,8 @@
 from pathlib import Path
 
 from click.testing import CliRunner
-
 from conftest import assert_docman_initialized
+
 from docman.cli import main
 
 

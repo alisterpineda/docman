@@ -45,8 +45,44 @@ docman --version
 # See available commands
 docman --help
 
+# Initialize a docman repository in a directory
+docman init [directory]
+
 # Organize documents (coming soon)
 docman organize
+```
+
+## Configuration
+
+`docman` uses two types of configuration files:
+
+### App Configuration
+
+An application-level configuration file is automatically created the first time you run any `docman` command. This config is stored in an OS-specific location:
+
+- **macOS**: `~/Library/Application Support/docman/config.yaml`
+- **Linux**: `~/.config/docman/config.yaml`
+- **Windows**: `%APPDATA%\docman\config.yaml`
+
+The app config is used for global settings that apply to all projects.
+
+### Repository Configuration
+
+When you initialize a docman repository in a directory using `docman init`, a repository-specific configuration is created at:
+
+```
+<project-directory>/.docman/config.yaml
+```
+
+Repository configuration is used for settings specific to that repository/directory.
+
+### Testing Override
+
+For testing purposes, you can override the app config directory location using the `DOCMAN_APP_CONFIG_DIR` environment variable:
+
+```bash
+export DOCMAN_APP_CONFIG_DIR=/path/to/custom/config
+docman --version
 ```
 
 ## Development
@@ -74,8 +110,14 @@ docman/
 ├── src/
 │   └── docman/
 │       ├── __init__.py
-│       └── cli.py
+│       ├── cli.py
+│       └── config.py
 ├── tests/
+│   ├── unit/
+│   │   └── test_config.py
+│   └── integration/
+│       ├── test_init_integration.py
+│       └── test_app_config_integration.py
 ├── pyproject.toml
 └── README.md
 ```

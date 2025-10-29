@@ -9,12 +9,19 @@ from pathlib import Path
 
 import click
 
+from docman.config import ensure_app_config
+
 
 @click.group()
 @click.version_option(version="0.1.0", prog_name="docman")
 def main() -> None:
     """docman - Organize documents using AI-powered tools."""
-    pass
+    try:
+        ensure_app_config()
+    except OSError as e:
+        click.secho(
+            f"Warning: Failed to initialize app config: {e}", fg="yellow", err=True
+        )
 
 
 @main.command()
