@@ -8,7 +8,7 @@ from click.testing import CliRunner
 
 from docman.cli import main
 from docman.database import ensure_database, get_session
-from docman.models import Document
+from docman.models import Document, DocumentCopy
 
 
 class TestDocmanPlan:
@@ -31,8 +31,14 @@ class TestDocmanPlan:
         return repo_dir
 
     @patch("docman.cli.extract_content")
+    @patch("docman.cli.compute_content_hash")
     def test_plan_success_with_documents(
-        self, mock_extract: Mock, cli_runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+        self,
+        mock_hash: Mock,
+        mock_extract: Mock,
+        cli_runner: CliRunner,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         """Test successful plan execution with documents."""
         repo_dir = self.setup_isolated_env(tmp_path, monkeypatch)
@@ -40,6 +46,9 @@ class TestDocmanPlan:
         # Create test documents
         (repo_dir / "test1.pdf").touch()
         (repo_dir / "test2.docx").touch()
+
+        # Mock content hash to return unique hashes
+        mock_hash.side_effect = ["hash_test1", "hash_test2"]
 
         # Mock content extraction
         mock_extract.return_value = "Extracted content"
@@ -58,17 +67,21 @@ class TestDocmanPlan:
         assert "Found 2 document file(s)" in result.output
         assert "Processing: test1.pdf" in result.output or "Processing: test2.docx" in result.output
         assert "Summary:" in result.output
-        assert "Processed: 2" in result.output
+        assert "New documents processed: 2" in result.output
 
-        # Verify documents were added to database
+        # Verify documents and copies were added to database
         session_gen = get_session()
         session = next(session_gen)
         try:
             docs = session.query(Document).all()
             assert len(docs) == 2
-            assert any(doc.file_path == "test1.pdf" for doc in docs)
-            assert any(doc.file_path == "test2.docx" for doc in docs)
             assert all(doc.content == "Extracted content" for doc in docs)
+
+            copies = session.query(DocumentCopy).all()
+            assert len(copies) == 2
+            assert any(copy.file_path == "test1.pdf" for copy in copies)
+            assert any(copy.file_path == "test2.docx" for copy in copies)
+            assert all(copy.repository_path == str(repo_dir) for copy in copies)
         finally:
             try:
                 next(session_gen)
@@ -76,10 +89,16 @@ class TestDocmanPlan:
                 pass
 
     @patch("docman.cli.extract_content")
+    @patch("docman.cli.compute_content_hash")
     def test_plan_skips_existing_documents(
-        self, mock_extract: Mock, cli_runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+        self,
+        mock_hash: Mock,
+        mock_extract: Mock,
+        cli_runner: CliRunner,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        """Test that plan skips documents already in database."""
+        """Test that plan skips document copies already in the same repository."""
         repo_dir = self.setup_isolated_env(tmp_path, monkeypatch)
 
         # Create test documents
@@ -89,12 +108,20 @@ class TestDocmanPlan:
         # Ensure database is initialized
         ensure_database()
 
-        # Add one document to database
+        # Add existing document and copy to database
         session_gen = get_session()
         session = next(session_gen)
         try:
-            existing_doc = Document(file_path="test1.pdf", content="Existing content")
+            existing_doc = Document(content_hash="hash1", content="Existing content")
             session.add(existing_doc)
+            session.flush()
+
+            existing_copy = DocumentCopy(
+                document_id=existing_doc.id,
+                repository_path=str(repo_dir),
+                file_path="test1.pdf",
+            )
+            session.add(existing_copy)
             session.commit()
         finally:
             try:
@@ -102,7 +129,8 @@ class TestDocmanPlan:
             except StopIteration:
                 pass
 
-        # Mock content extraction
+        # Mock content hash and extraction
+        mock_hash.side_effect = ["hash2"]  # test2.pdf gets new hash
         mock_extract.return_value = "New content"
 
         # Change to the repository directory
@@ -117,19 +145,18 @@ class TestDocmanPlan:
         # Verify output
         assert "Skipping: test1.pdf" in result.output
         assert "Processing: test2.pdf" in result.output
-        assert "Processed: 1" in result.output
-        assert "Skipped (already exists): 1" in result.output
+        assert "New documents processed: 1" in result.output
+        assert "Skipped (copy exists in this repo): 1" in result.output
 
-        # Verify only one new document was added
+        # Verify one new document and copy were added
         session_gen = get_session()
         session = next(session_gen)
         try:
             docs = session.query(Document).all()
             assert len(docs) == 2
 
-            # Verify existing document wasn't modified
-            existing = session.query(Document).filter_by(file_path="test1.pdf").first()
-            assert existing.content == "Existing content"
+            copies = session.query(DocumentCopy).all()
+            assert len(copies) == 2
         finally:
             try:
                 next(session_gen)
@@ -137,8 +164,14 @@ class TestDocmanPlan:
                 pass
 
     @patch("docman.cli.extract_content")
+    @patch("docman.cli.compute_content_hash")
     def test_plan_handles_extraction_failures(
-        self, mock_extract: Mock, cli_runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+        self,
+        mock_hash: Mock,
+        mock_extract: Mock,
+        cli_runner: CliRunner,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         """Test that plan handles extraction failures gracefully."""
         repo_dir = self.setup_isolated_env(tmp_path, monkeypatch)
@@ -146,6 +179,14 @@ class TestDocmanPlan:
         # Create test documents
         (repo_dir / "success.pdf").touch()
         (repo_dir / "failure.pdf").touch()
+
+        # Mock content hash based on filename
+        def hash_side_effect(path: Path) -> str:
+            if "failure" in str(path):
+                return "hash_failure"
+            return "hash_success"
+
+        mock_hash.side_effect = hash_side_effect
 
         # Mock content extraction to return None for failure
         def extract_side_effect(path: Path) -> str | None:
@@ -167,8 +208,8 @@ class TestDocmanPlan:
         # Verify output
         assert "Processing: failure.pdf" in result.output
         assert "Processing: success.pdf" in result.output
-        assert "Processed: 1" in result.output
-        assert "Failed (content extraction): 1" in result.output
+        assert "New documents processed: 1" in result.output
+        assert "Failed (hash or extraction errors): 1" in result.output
 
         # Verify both documents were added (one with null content)
         session_gen = get_session()
@@ -177,10 +218,19 @@ class TestDocmanPlan:
             docs = session.query(Document).all()
             assert len(docs) == 2
 
-            success_doc = session.query(Document).filter_by(file_path="success.pdf").first()
+            copies = session.query(DocumentCopy).all()
+            assert len(copies) == 2
+
+            # Find the success document
+            success_doc = (
+                session.query(Document).filter_by(content_hash="hash_success").first()
+            )
             assert success_doc.content == "Extracted content"
 
-            failure_doc = session.query(Document).filter_by(file_path="failure.pdf").first()
+            # Find the failure document
+            failure_doc = (
+                session.query(Document).filter_by(content_hash="hash_failure").first()
+            )
             assert failure_doc.content is None
         finally:
             try:
@@ -258,8 +308,14 @@ class TestDocmanPlan:
                 pass
 
     @patch("docman.cli.extract_content")
+    @patch("docman.cli.compute_content_hash")
     def test_plan_discovers_nested_documents(
-        self, mock_extract: Mock, cli_runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+        self,
+        mock_hash: Mock,
+        mock_extract: Mock,
+        cli_runner: CliRunner,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         """Test that plan discovers documents in nested directories."""
         repo_dir = self.setup_isolated_env(tmp_path, monkeypatch)
@@ -273,6 +329,9 @@ class TestDocmanPlan:
         (repo_dir / "root.pdf").touch()
         (subdir1 / "report.docx").touch()
         (subdir2 / "data.xlsx").touch()
+
+        # Mock content hash to return unique hashes
+        mock_hash.side_effect = ["hash_data", "hash_report", "hash_root"]
 
         # Mock content extraction
         mock_extract.return_value = "Content"
@@ -288,16 +347,19 @@ class TestDocmanPlan:
 
         # Verify output
         assert "Found 3 document file(s)" in result.output
-        assert "Processed: 3" in result.output
+        assert "New documents processed: 3" in result.output
 
-        # Verify all documents were added with correct paths
+        # Verify all documents and copies were added with correct paths
         session_gen = get_session()
         session = next(session_gen)
         try:
             docs = session.query(Document).all()
             assert len(docs) == 3
 
-            paths = {doc.file_path for doc in docs}
+            copies = session.query(DocumentCopy).all()
+            assert len(copies) == 3
+
+            paths = {copy.file_path for copy in copies}
             assert "root.pdf" in paths
             assert "docs/reports/report.docx" in paths or "docs\\reports\\report.docx" in paths
             assert "data/data.xlsx" in paths or "data\\data.xlsx" in paths
@@ -335,13 +397,16 @@ class TestDocmanPlan:
         assert "include.pdf" in result.output
         assert "exclude.pdf" not in result.output
 
-        # Verify only one document was added
+        # Verify only one document and copy were added
         session_gen = get_session()
         session = next(session_gen)
         try:
             docs = session.query(Document).all()
             assert len(docs) == 1
-            assert docs[0].file_path == "include.pdf"
+
+            copies = session.query(DocumentCopy).all()
+            assert len(copies) == 1
+            assert copies[0].file_path == "include.pdf"
         finally:
             try:
                 next(session_gen)

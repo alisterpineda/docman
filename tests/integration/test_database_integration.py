@@ -137,31 +137,60 @@ def test_database_schema_matches_models(
     inspector = inspect(engine)
 
     # Check documents table
-    columns = inspector.get_columns("documents")
-    column_info = {col["name"]: col for col in columns}
+    doc_columns = inspector.get_columns("documents")
+    doc_column_info = {col["name"]: col for col in doc_columns}
 
-    # Verify column names
-    assert "id" in column_info
-    assert "file_path" in column_info
-    assert "content" in column_info
-    assert "createdAt" in column_info
+    # Verify documents column names
+    assert "id" in doc_column_info
+    assert "content_hash" in doc_column_info
+    assert "content" in doc_column_info
+    assert "createdAt" in doc_column_info
+    assert "updatedAt" in doc_column_info
 
-    # Verify column types
-    assert "INTEGER" in str(column_info["id"]["type"]).upper()
-    assert "VARCHAR" in str(column_info["file_path"]["type"]).upper() or "TEXT" in str(
-        column_info["file_path"]["type"]
+    # Verify documents column types
+    assert "INTEGER" in str(doc_column_info["id"]["type"]).upper()
+    assert "VARCHAR" in str(doc_column_info["content_hash"]["type"]).upper()
+    assert "TEXT" in str(doc_column_info["content"]["type"]).upper()
+    assert "DATETIME" in str(doc_column_info["createdAt"]["type"]).upper() or "TIMESTAMP" in str(
+        doc_column_info["createdAt"]["type"]
     ).upper()
-    assert "TEXT" in str(column_info["content"]["type"]).upper()
-    assert "DATETIME" in str(column_info["createdAt"]["type"]).upper() or "TIMESTAMP" in str(
-        column_info["createdAt"]["type"]
+    assert "DATETIME" in str(doc_column_info["updatedAt"]["type"]).upper() or "TIMESTAMP" in str(
+        doc_column_info["updatedAt"]["type"]
     ).upper()
 
-    # Verify primary key
-    pk_constraint = inspector.get_pk_constraint("documents")
-    assert "id" in pk_constraint["constrained_columns"]
+    # Verify documents primary key
+    doc_pk_constraint = inspector.get_pk_constraint("documents")
+    assert "id" in doc_pk_constraint["constrained_columns"]
 
-    # Verify nullable constraints
-    assert column_info["id"]["nullable"] is False
-    assert column_info["file_path"]["nullable"] is False
-    assert column_info["content"]["nullable"] is True
-    assert column_info["createdAt"]["nullable"] is False
+    # Verify documents nullable constraints
+    assert doc_column_info["id"]["nullable"] is False
+    assert doc_column_info["content_hash"]["nullable"] is False
+    assert doc_column_info["content"]["nullable"] is True
+
+    # Check document_copies table
+    copy_columns = inspector.get_columns("document_copies")
+    copy_column_info = {col["name"]: col for col in copy_columns}
+
+    # Verify document_copies column names
+    assert "id" in copy_column_info
+    assert "document_id" in copy_column_info
+    assert "repository_path" in copy_column_info
+    assert "file_path" in copy_column_info
+    assert "createdAt" in copy_column_info
+    assert "updatedAt" in copy_column_info
+
+    # Verify document_copies column types
+    assert "INTEGER" in str(copy_column_info["id"]["type"]).upper()
+    assert "INTEGER" in str(copy_column_info["document_id"]["type"]).upper()
+    assert "VARCHAR" in str(copy_column_info["repository_path"]["type"]).upper()
+    assert "VARCHAR" in str(copy_column_info["file_path"]["type"]).upper()
+
+    # Verify document_copies primary key
+    copy_pk_constraint = inspector.get_pk_constraint("document_copies")
+    assert "id" in copy_pk_constraint["constrained_columns"]
+
+    # Verify document_copies nullable constraints
+    assert copy_column_info["id"]["nullable"] is False
+    assert copy_column_info["document_id"]["nullable"] is False
+    assert copy_column_info["repository_path"]["nullable"] is False
+    assert copy_column_info["file_path"]["nullable"] is False

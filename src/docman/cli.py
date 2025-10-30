@@ -11,7 +11,7 @@ import click
 
 from docman.config import ensure_app_config
 from docman.database import ensure_database, get_session
-from docman.models import Document
+from docman.models import Document, DocumentCopy, compute_content_hash
 from docman.processor import extract_content
 from docman.repository import RepositoryError, discover_document_files, get_repository_root
 
@@ -92,7 +92,8 @@ def plan() -> None:
     except RepositoryError:
         raise click.Abort()
 
-    click.echo(f"Processing documents in repository: {repo_root}")
+    repository_path = str(repo_root)
+    click.echo(f"Processing documents in repository: {repository_path}")
 
     # Discover all document files
     document_files = discover_document_files(repo_root)
@@ -108,22 +109,27 @@ def plan() -> None:
     session = next(session_gen)
 
     try:
-        # Query existing documents to check what's already in the database
-        existing_docs = session.query(Document).all()
-        existing_paths = {doc.file_path for doc in existing_docs}
+        # Query existing copies in this repository
+        existing_copies = (
+            session.query(DocumentCopy)
+            .filter(DocumentCopy.repository_path == repository_path)
+            .all()
+        )
+        existing_copy_paths = {copy.file_path for copy in existing_copies}
 
         # Counters for summary
         processed_count = 0
         skipped_count = 0
         failed_count = 0
+        duplicate_count = 0  # Same document, different location
 
         # Process each file
         for idx, file_path in enumerate(document_files, start=1):
             file_path_str = str(file_path)
             percentage = int((idx / len(document_files)) * 100)
 
-            # Skip if already exists
-            if file_path_str in existing_paths:
+            # Skip if copy already exists in this repository at this path
+            if file_path_str in existing_copy_paths:
                 click.echo(f"[{idx}/{len(document_files)}] {percentage}% Skipping: {file_path}")
                 skipped_count += 1
                 continue
@@ -131,18 +137,46 @@ def plan() -> None:
             # Show progress
             click.echo(f"[{idx}/{len(document_files)}] {percentage}% Processing: {file_path}")
 
-            # Extract content
+            # Compute content hash
             full_path = repo_root / file_path
-            content = extract_content(full_path)
-
-            # Create document record
-            doc = Document(file_path=file_path_str, content=content)
-            session.add(doc)
-
-            if content is None:
+            try:
+                content_hash = compute_content_hash(full_path)
+            except Exception as e:
+                click.echo(f"  Error computing hash: {e}")
                 failed_count += 1
+                continue
+
+            # Find or create canonical document
+            document = session.query(Document).filter(Document.content_hash == content_hash).first()
+
+            if document:
+                # Document already exists (found in another repo or location)
+                click.echo(f"  Found existing document (hash: {content_hash[:8]}...)")
+                duplicate_count += 1
             else:
-                processed_count += 1
+                # New document - extract content
+                content = extract_content(full_path)
+
+                if content is None:
+                    click.echo(f"  Warning: Content extraction failed")
+                    failed_count += 1
+                    # Still create the document with None content
+                else:
+                    click.echo(f"  Extracted {len(content)} characters")
+                    processed_count += 1
+
+                # Create new canonical document
+                document = Document(content_hash=content_hash, content=content)
+                session.add(document)
+                session.flush()  # Get the document.id for the copy
+
+            # Create document copy for this repository
+            copy = DocumentCopy(
+                document_id=document.id,
+                repository_path=repository_path,
+                file_path=file_path_str,
+            )
+            session.add(copy)
 
         # Commit all changes
         session.commit()
@@ -150,9 +184,10 @@ def plan() -> None:
         # Display summary
         click.echo("\n" + "=" * 50)
         click.echo("Summary:")
-        click.echo(f"  Processed: {processed_count}")
-        click.echo(f"  Skipped (already exists): {skipped_count}")
-        click.echo(f"  Failed (content extraction): {failed_count}")
+        click.echo(f"  New documents processed: {processed_count}")
+        click.echo(f"  Duplicate documents (already known): {duplicate_count}")
+        click.echo(f"  Skipped (copy exists in this repo): {skipped_count}")
+        click.echo(f"  Failed (hash or extraction errors): {failed_count}")
         click.echo(f"  Total files: {len(document_files)}")
         click.echo("=" * 50)
 

@@ -1,6 +1,5 @@
 """Unit tests for the database module."""
 
-import os
 from pathlib import Path
 
 import pytest
@@ -14,7 +13,7 @@ from docman.database import (
     get_session_factory,
     run_migrations,
 )
-from docman.models import Document
+from docman.models import Document, DocumentCopy
 
 
 def test_get_database_path(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -97,21 +96,34 @@ def test_ensure_database_runs_migrations(
 
     ensure_database()
 
-    # Check that the documents table was created
+    # Check that both tables were created
     engine = get_engine()
     inspector = inspect(engine)
     tables = inspector.get_table_names()
 
     assert "documents" in tables
+    assert "document_copies" in tables
 
-    # Check that the table has the expected columns
-    columns = inspector.get_columns("documents")
-    column_names = [col["name"] for col in columns]
+    # Check that the documents table has the expected columns
+    doc_columns = inspector.get_columns("documents")
+    doc_column_names = [col["name"] for col in doc_columns]
 
-    assert "id" in column_names
-    assert "file_path" in column_names
-    assert "content" in column_names
-    assert "createdAt" in column_names
+    assert "id" in doc_column_names
+    assert "content_hash" in doc_column_names
+    assert "content" in doc_column_names
+    assert "createdAt" in doc_column_names
+    assert "updatedAt" in doc_column_names
+
+    # Check that the document_copies table has the expected columns
+    copy_columns = inspector.get_columns("document_copies")
+    copy_column_names = [col["name"] for col in copy_columns]
+
+    assert "id" in copy_column_names
+    assert "document_id" in copy_column_names
+    assert "repository_path" in copy_column_names
+    assert "file_path" in copy_column_names
+    assert "createdAt" in copy_column_names
+    assert "updatedAt" in copy_column_names
 
 
 def test_ensure_database_is_idempotent(
@@ -138,7 +150,7 @@ def test_ensure_database_is_idempotent(
 def test_database_operations_with_document_model(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Test basic CRUD operations with the Document model."""
+    """Test basic CRUD operations with Document and DocumentCopy models."""
     monkeypatch.setenv("DOCMAN_APP_CONFIG_DIR", str(tmp_path))
 
     ensure_database()
@@ -148,21 +160,37 @@ def test_database_operations_with_document_model(
     session = next(session_gen)
 
     try:
-        # Create
-        doc = Document(file_path="/path/to/test.pdf", content="Test content")
+        # Create Document
+        doc = Document(content_hash="abc123def456", content="Test content")
         session.add(doc)
         session.commit()
 
         assert doc.id is not None
-        assert doc.file_path == "/path/to/test.pdf"
+        assert doc.content_hash == "abc123def456"
         assert doc.content == "Test content"
         assert doc.created_at is not None
+        assert doc.updated_at is not None
+
+        # Create DocumentCopy
+        copy = DocumentCopy(
+            document_id=doc.id,
+            repository_path="/path/to/repo",
+            file_path="docs/test.pdf",
+        )
+        session.add(copy)
+        session.commit()
+
+        assert copy.id is not None
+        assert copy.document_id == doc.id
+        assert copy.repository_path == "/path/to/repo"
+        assert copy.file_path == "docs/test.pdf"
 
         # Read
         retrieved_doc = session.query(Document).filter_by(id=doc.id).first()
         assert retrieved_doc is not None
-        assert retrieved_doc.file_path == "/path/to/test.pdf"
+        assert retrieved_doc.content_hash == "abc123def456"
         assert retrieved_doc.content == "Test content"
+        assert len(retrieved_doc.copies) == 1
 
         # Update
         retrieved_doc.content = "Updated content"
@@ -178,6 +206,10 @@ def test_database_operations_with_document_model(
 
         deleted_doc = session.query(Document).filter_by(id=doc.id).first()
         assert deleted_doc is None
+
+        # Verify cascade delete of copy
+        deleted_copy = session.query(DocumentCopy).filter_by(id=copy.id).first()
+        assert deleted_copy is None
 
     finally:
         # Close the session
