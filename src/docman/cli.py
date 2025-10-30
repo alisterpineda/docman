@@ -10,6 +10,7 @@ from pathlib import Path
 import click
 
 from docman.config import ensure_app_config
+from docman.database import ensure_database
 
 
 @click.group()
@@ -21,6 +22,13 @@ def main() -> None:
     except OSError as e:
         click.secho(
             f"Warning: Failed to initialize app config: {e}", fg="yellow", err=True
+        )
+
+    try:
+        ensure_database()
+    except Exception as e:
+        click.secho(
+            f"Warning: Failed to initialize database: {e}", fg="yellow", err=True
         )
 
 

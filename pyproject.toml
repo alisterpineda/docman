@@ -16,6 +16,8 @@ dependencies = [
     "click>=8.1.7",
     "platformdirs>=4.0.0",
     "pyyaml>=6.0.1",
+    "sqlalchemy>=2.0.0",
+    "alembic>=1.13.0",
 ]
 
 [project.scripts]
@@ -29,6 +31,7 @@ dev = [
     "ruff>=0.6.0",
     "mypy>=1.11.0",
     "types-PyYAML>=6.0.0",
+    "types-sqlalchemy",
 ]
 
 [tool.ruff]
