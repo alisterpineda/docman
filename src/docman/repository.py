@@ -179,3 +179,34 @@ def discover_document_files(repo_root: Path) -> list[Path]:
 
     walk_directory(repo_root)
     return sorted(document_files)
+
+
+def discover_document_files_shallow(repo_root: Path, directory: Path) -> list[Path]:
+    """
+    Discover document files in a single directory (non-recursive).
+
+    Finds all files with docling-supported extensions in the specified
+    directory only, without recursing into subdirectories.
+
+    Args:
+        repo_root: The repository root directory.
+        directory: The directory to search in (must be within repo_root).
+
+    Returns:
+        List of file paths relative to the repository root.
+    """
+    document_files = []
+
+    try:
+        for item in directory.iterdir():
+            # Only process files, skip directories
+            if item.is_file():
+                if item.suffix.lower() in SUPPORTED_EXTENSIONS:
+                    # Store relative path
+                    rel_path = item.relative_to(repo_root)
+                    document_files.append(rel_path)
+    except PermissionError:
+        # Skip directories we don't have permission to read
+        pass
+
+    return sorted(document_files)

@@ -13,7 +13,13 @@ from docman.config import ensure_app_config
 from docman.database import ensure_database, get_session
 from docman.models import Document, DocumentCopy, compute_content_hash
 from docman.processor import extract_content
-from docman.repository import RepositoryError, discover_document_files, get_repository_root
+from docman.repository import (
+    SUPPORTED_EXTENSIONS,
+    RepositoryError,
+    discover_document_files,
+    discover_document_files_shallow,
+    get_repository_root,
+)
 
 
 @click.group()
@@ -79,15 +85,38 @@ def init(directory: str) -> None:
 
 
 @main.command()
-def plan() -> None:
+@click.argument("path", default=None, required=False)
+@click.option(
+    "-r",
+    "--recursive",
+    is_flag=True,
+    default=False,
+    help="Recursively process subdirectories",
+)
+def plan(path: str | None, recursive: bool) -> None:
     """
-    Process all documents in the repository.
+    Process documents in the repository.
 
-    Discovers all document files in the repository and extracts their content
-    using docling, storing them in the database.
+    Discovers document files and extracts their content using docling,
+    storing them in the database.
+
+    Arguments:
+        PATH: Optional path to a file or directory (default: current directory).
+              Relative to current working directory.
+
+    Options:
+        -r, --recursive: Recursively process subdirectories when PATH is a directory.
+
+    Examples:
+        - 'docman plan': Process entire repository recursively (backward compatible)
+        - 'docman plan .': Process current directory only (non-recursive)
+        - 'docman plan docs/': Process docs directory only (non-recursive)
+        - 'docman plan docs/ -r': Process docs directory recursively
+        - 'docman plan file.pdf': Process single file
+        - 'docman plan -r': Process entire repository recursively (same as no args)
     """
+    # Find the repository root from CWD first
     try:
-        # Find the repository root
         repo_root = get_repository_root()
     except RepositoryError:
         raise click.Abort()
@@ -95,8 +124,72 @@ def plan() -> None:
     repository_path = str(repo_root)
     click.echo(f"Processing documents in repository: {repository_path}")
 
-    # Discover all document files
-    document_files = discover_document_files(repo_root)
+    # For backward compatibility: if no path provided, process entire repository recursively
+    # This maintains the original behavior of 'docman plan' with no arguments
+    if path is None and not recursive:
+        # Default behavior - process entire repository recursively
+        document_files = discover_document_files(repo_root)
+        click.echo("Discovering documents recursively in entire repository...")
+    else:
+        # If path is None but recursive flag is set, treat as current directory
+        if path is None:
+            path = "."
+        # Explicit path provided - handle accordingly
+        # Convert path to absolute Path object
+        target_path = Path(path).resolve()
+
+        # Validate path exists
+        if not target_path.exists():
+            click.secho(f"Error: Path '{path}' does not exist", fg="red", err=True)
+            raise click.Abort()
+
+        # Validate path is within repository
+        try:
+            target_path.relative_to(repo_root)
+        except ValueError:
+            click.secho(
+                f"Error: Path '{path}' is outside the repository at {repo_root}",
+                fg="red",
+                err=True,
+            )
+            raise click.Abort()
+
+        # Determine what files to process
+        if target_path.is_file():
+            # Single file mode
+            if target_path.suffix.lower() not in SUPPORTED_EXTENSIONS:
+                click.secho(
+                    f"Error: Unsupported file type '{target_path.suffix}'. "
+                    f"Supported extensions: {', '.join(sorted(SUPPORTED_EXTENSIONS))}",
+                    fg="red",
+                    err=True,
+                )
+                raise click.Abort()
+
+            # Create list with single relative path
+            rel_path = target_path.relative_to(repo_root)
+            document_files = [rel_path]
+            click.echo(f"Processing single file: {rel_path}")
+        else:
+            # Directory mode
+            if recursive:
+                # Recursive discovery from the target directory
+                if target_path == repo_root:
+                    document_files = discover_document_files(repo_root)
+                    click.echo("Discovering documents recursively in entire repository...")
+                else:
+                    # Recursive discovery in subdirectory
+                    all_files = discover_document_files(repo_root)
+                    rel_target = target_path.relative_to(repo_root)
+                    document_files = [
+                        f for f in all_files if f.parts[:len(rel_target.parts)] == rel_target.parts
+                    ]
+                    click.echo(f"Discovering documents recursively in: {rel_target}")
+            else:
+                # Shallow discovery - only immediate files
+                document_files = discover_document_files_shallow(repo_root, target_path)
+                rel_target = target_path.relative_to(repo_root)
+                click.echo(f"Discovering documents in: {rel_target} (non-recursive)")
 
     if not document_files:
         click.echo("No document files found in repository.")
@@ -158,7 +251,7 @@ def plan() -> None:
                 content = extract_content(full_path)
 
                 if content is None:
-                    click.echo(f"  Warning: Content extraction failed")
+                    click.echo("  Warning: Content extraction failed")
                     failed_count += 1
                     # Still create the document with None content
                 else:

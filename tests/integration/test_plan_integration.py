@@ -473,3 +473,342 @@ class TestDocmanPlan:
         assert "Processing documents in repository:" in result.output
         assert str(tmp_path) in result.output
         assert "Found 1 document file(s)" in result.output
+
+    @patch("docman.cli.extract_content")
+    @patch("docman.cli.compute_content_hash")
+    def test_plan_single_file(
+        self,
+        mock_hash: Mock,
+        mock_extract: Mock,
+        cli_runner: CliRunner,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Test plan with a single file path."""
+        repo_dir = self.setup_isolated_env(tmp_path, monkeypatch)
+
+        # Create test documents
+        (repo_dir / "target.pdf").touch()
+        (repo_dir / "other.pdf").touch()
+
+        # Mock content hash
+        mock_hash.return_value = "hash_target"
+
+        # Mock content extraction
+        mock_extract.return_value = "Target content"
+
+        # Change to the repository directory
+        monkeypatch.chdir(repo_dir)
+
+        # Run plan command with single file
+        result = cli_runner.invoke(main, ["plan", "target.pdf"], catch_exceptions=False)
+
+        # Verify exit code
+        assert result.exit_code == 0
+
+        # Verify output
+        assert "Processing single file: target.pdf" in result.output
+        assert "New documents processed: 1" in result.output
+
+        # Verify only the target file was processed
+        session_gen = get_session()
+        session = next(session_gen)
+        try:
+            copies = session.query(DocumentCopy).all()
+            assert len(copies) == 1
+            assert copies[0].file_path == "target.pdf"
+        finally:
+            try:
+                next(session_gen)
+            except StopIteration:
+                pass
+
+    def test_plan_single_file_unsupported_type(
+        self, cli_runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Test plan with an unsupported file type."""
+        repo_dir = self.setup_isolated_env(tmp_path, monkeypatch)
+
+        # Create unsupported file
+        (repo_dir / "test.py").touch()
+
+        # Change to the repository directory
+        monkeypatch.chdir(repo_dir)
+
+        # Run plan command with unsupported file
+        result = cli_runner.invoke(main, ["plan", "test.py"])
+
+        # Verify exit code
+        assert result.exit_code == 1
+
+        # Verify error message
+        assert "Error: Unsupported file type '.py'" in result.output
+        assert "Supported extensions:" in result.output
+
+    @patch("docman.cli.extract_content")
+    @patch("docman.cli.compute_content_hash")
+    def test_plan_shallow_directory(
+        self,
+        mock_hash: Mock,
+        mock_extract: Mock,
+        cli_runner: CliRunner,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Test plan with directory path (non-recursive)."""
+        repo_dir = self.setup_isolated_env(tmp_path, monkeypatch)
+
+        # Create documents in root and subdirectory
+        (repo_dir / "root.pdf").touch()
+        subdir = repo_dir / "docs"
+        subdir.mkdir()
+        (subdir / "doc1.pdf").touch()
+        (subdir / "doc2.docx").touch()
+        nested = subdir / "nested"
+        nested.mkdir()
+        (nested / "nested.pdf").touch()
+
+        # Mock content hash to return unique hashes
+        mock_hash.side_effect = ["hash_doc1", "hash_doc2"]
+
+        # Mock content extraction
+        mock_extract.return_value = "Content"
+
+        # Change to the repository directory
+        monkeypatch.chdir(repo_dir)
+
+        # Run plan command with directory path (non-recursive by default)
+        result = cli_runner.invoke(main, ["plan", "docs"], catch_exceptions=False)
+
+        # Verify exit code
+        assert result.exit_code == 0
+
+        # Verify output
+        assert "Discovering documents in: docs (non-recursive)" in result.output
+        assert "New documents processed: 2" in result.output
+
+        # Verify only files in docs/ were processed (not nested/)
+        session_gen = get_session()
+        session = next(session_gen)
+        try:
+            copies = session.query(DocumentCopy).all()
+            assert len(copies) == 2
+            paths = {copy.file_path for copy in copies}
+            # Should have docs/doc1.pdf and docs/doc2.docx but not docs/nested/nested.pdf
+            assert any("doc1.pdf" in p for p in paths)
+            assert any("doc2.docx" in p for p in paths)
+            assert not any("nested.pdf" in p for p in paths)
+            assert not any("root.pdf" in p for p in paths)
+        finally:
+            try:
+                next(session_gen)
+            except StopIteration:
+                pass
+
+    @patch("docman.cli.extract_content")
+    @patch("docman.cli.compute_content_hash")
+    def test_plan_recursive_subdirectory(
+        self,
+        mock_hash: Mock,
+        mock_extract: Mock,
+        cli_runner: CliRunner,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Test plan with directory path and recursive flag."""
+        repo_dir = self.setup_isolated_env(tmp_path, monkeypatch)
+
+        # Create documents in subdirectory and nested subdirectory
+        (repo_dir / "root.pdf").touch()
+        subdir = repo_dir / "docs"
+        subdir.mkdir()
+        (subdir / "doc1.pdf").touch()
+        nested = subdir / "nested"
+        nested.mkdir()
+        (nested / "nested.pdf").touch()
+
+        # Mock content hash to return unique hashes
+        mock_hash.side_effect = ["hash_doc1", "hash_nested"]
+
+        # Mock content extraction
+        mock_extract.return_value = "Content"
+
+        # Change to the repository directory
+        monkeypatch.chdir(repo_dir)
+
+        # Run plan command with directory path and recursive flag
+        result = cli_runner.invoke(main, ["plan", "docs", "-r"], catch_exceptions=False)
+
+        # Verify exit code
+        assert result.exit_code == 0
+
+        # Verify output
+        assert "Discovering documents recursively in: docs" in result.output
+        assert "New documents processed: 2" in result.output
+
+        # Verify files in docs/ and docs/nested/ were processed
+        session_gen = get_session()
+        session = next(session_gen)
+        try:
+            copies = session.query(DocumentCopy).all()
+            assert len(copies) == 2
+            paths = {copy.file_path for copy in copies}
+            # Should have both docs/doc1.pdf and docs/nested/nested.pdf
+            assert any("doc1.pdf" in p for p in paths)
+            assert any("nested.pdf" in p for p in paths)
+            # But not root.pdf
+            assert not any("root.pdf" in p for p in paths)
+        finally:
+            try:
+                next(session_gen)
+            except StopIteration:
+                pass
+
+    def test_plan_path_outside_repository(
+        self, cli_runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Test that plan fails when path is outside repository."""
+        repo_dir = tmp_path / "repo"
+        repo_dir.mkdir()
+        self.setup_repository(repo_dir)
+
+        outside_dir = tmp_path / "outside"
+        outside_dir.mkdir()
+        (outside_dir / "test.pdf").touch()
+
+        # Change to the repository directory
+        monkeypatch.chdir(repo_dir)
+
+        # Try to plan with path outside repository
+        result = cli_runner.invoke(main, ["plan", str(outside_dir / "test.pdf")])
+
+        # Verify exit code
+        assert result.exit_code == 1
+
+        # Verify error message
+        assert "Error: Path" in result.output
+        assert "is outside the repository" in result.output
+
+    def test_plan_nonexistent_path(
+        self, cli_runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Test that plan fails when path does not exist."""
+        repo_dir = self.setup_isolated_env(tmp_path, monkeypatch)
+
+        # Change to the repository directory
+        monkeypatch.chdir(repo_dir)
+
+        # Try to plan with nonexistent path
+        result = cli_runner.invoke(main, ["plan", "nonexistent.pdf"])
+
+        # Verify exit code
+        assert result.exit_code == 1
+
+        # Verify error message
+        assert "Error: Path 'nonexistent.pdf' does not exist" in result.output
+
+    @patch("docman.cli.extract_content")
+    @patch("docman.cli.compute_content_hash")
+    def test_plan_backward_compatibility(
+        self,
+        mock_hash: Mock,
+        mock_extract: Mock,
+        cli_runner: CliRunner,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Test that 'docman plan' without arguments still processes entire repository recursively."""
+        repo_dir = self.setup_isolated_env(tmp_path, monkeypatch)
+
+        # Create nested documents
+        (repo_dir / "root.pdf").touch()
+        subdir = repo_dir / "docs"
+        subdir.mkdir()
+        (subdir / "doc.pdf").touch()
+        nested = subdir / "nested"
+        nested.mkdir()
+        (nested / "nested.pdf").touch()
+
+        # Mock content hash to return unique hashes
+        mock_hash.side_effect = ["hash_doc", "hash_nested", "hash_root"]
+
+        # Mock content extraction
+        mock_extract.return_value = "Content"
+
+        # Change to the repository directory
+        monkeypatch.chdir(repo_dir)
+
+        # Run plan command without any arguments (backward compatibility)
+        result = cli_runner.invoke(main, ["plan"], catch_exceptions=False)
+
+        # Verify exit code
+        assert result.exit_code == 0
+
+        # Verify output shows recursive discovery
+        assert "Discovering documents recursively in entire repository" in result.output
+        assert "Found 3 document file(s)" in result.output
+        assert "New documents processed: 3" in result.output
+
+        # Verify all documents were processed
+        session_gen = get_session()
+        session = next(session_gen)
+        try:
+            copies = session.query(DocumentCopy).all()
+            assert len(copies) == 3
+        finally:
+            try:
+                next(session_gen)
+            except StopIteration:
+                pass
+
+    @patch("docman.cli.extract_content")
+    @patch("docman.cli.compute_content_hash")
+    def test_plan_explicit_dot_is_non_recursive(
+        self,
+        mock_hash: Mock,
+        mock_extract: Mock,
+        cli_runner: CliRunner,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Test that 'docman plan .' explicitly processes current directory non-recursively."""
+        repo_dir = self.setup_isolated_env(tmp_path, monkeypatch)
+
+        # Create nested documents
+        (repo_dir / "root.pdf").touch()
+        subdir = repo_dir / "docs"
+        subdir.mkdir()
+        (subdir / "doc.pdf").touch()
+
+        # Mock content hash to return unique hashes
+        mock_hash.return_value = "hash_root"
+
+        # Mock content extraction
+        mock_extract.return_value = "Content"
+
+        # Change to the repository directory
+        monkeypatch.chdir(repo_dir)
+
+        # Run plan command with explicit "." argument
+        result = cli_runner.invoke(main, ["plan", "."], catch_exceptions=False)
+
+        # Verify exit code
+        assert result.exit_code == 0
+
+        # Verify output shows non-recursive discovery
+        assert "(non-recursive)" in result.output
+        assert "Found 1 document file(s)" in result.output
+        assert "New documents processed: 1" in result.output
+
+        # Verify only root document was processed (not nested subdirectory)
+        session_gen = get_session()
+        session = next(session_gen)
+        try:
+            copies = session.query(DocumentCopy).all()
+            assert len(copies) == 1
+            assert copies[0].file_path == "root.pdf"
+        finally:
+            try:
+                next(session_gen)
+            except StopIteration:
+                pass
