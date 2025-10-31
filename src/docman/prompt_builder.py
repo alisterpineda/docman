@@ -109,11 +109,9 @@ Guidelines:
 3. reason should be a brief explanation (1-2 sentences) of why this makes sense
 4. confidence should be a float between 0.0 and 1.0 indicating how confident you \
 are in this suggestion
-5. Base your suggestions on the document's content, type, date (if present), \
-category, and any other relevant metadata
-6. Keep directory structures reasonably flat (prefer 2-3 levels over deeply \
-nested structures)
-7. Follow any custom organization instructions provided
+5. Base your suggestions on the document's content, file type (e.g., PDF, DOCX), \
+date (if present), and any other relevant metadata you can extract
+6. Follow any custom organization instructions provided
 
 Return ONLY the JSON object, no additional text or markdown formatting."""
 
