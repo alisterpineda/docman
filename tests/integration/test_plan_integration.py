@@ -8,7 +8,7 @@ from click.testing import CliRunner
 
 from docman.cli import main
 from docman.database import ensure_database, get_session
-from docman.models import Document, DocumentCopy
+from docman.models import Document, DocumentCopy, PendingOperation
 
 
 class TestDocmanPlan:
@@ -143,10 +143,10 @@ class TestDocmanPlan:
         assert result.exit_code == 0
 
         # Verify output
-        assert "Skipping: test1.pdf" in result.output
+        assert "Reusing existing copy: test1.pdf" in result.output
         assert "Processing: test2.pdf" in result.output
         assert "New documents processed: 1" in result.output
-        assert "Skipped (copy exists in this repo): 1" in result.output
+        assert "Reused copies (already in this repo): 1" in result.output
 
         # Verify one new document and copy were added
         session_gen = get_session()
@@ -807,6 +807,261 @@ class TestDocmanPlan:
             copies = session.query(DocumentCopy).all()
             assert len(copies) == 1
             assert copies[0].file_path == "root.pdf"
+        finally:
+            try:
+                next(session_gen)
+            except StopIteration:
+                pass
+
+    @patch("docman.cli.extract_content")
+    @patch("docman.cli.compute_content_hash")
+    def test_plan_creates_pending_operations_for_reused_copies(
+        self,
+        mock_hash: Mock,
+        mock_extract: Mock,
+        cli_runner: CliRunner,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Test that pending operations are created even for reused document copies."""
+        repo_dir = self.setup_isolated_env(tmp_path, monkeypatch)
+
+        # Create test document
+        (repo_dir / "test.pdf").touch()
+
+        # First run: create document and copy
+        mock_hash.return_value = "hash_test"
+        mock_extract.return_value = "Test content"
+        monkeypatch.chdir(repo_dir)
+
+        result1 = cli_runner.invoke(main, ["plan"], catch_exceptions=False)
+        assert result1.exit_code == 0
+
+        # Verify document, copy, and pending operation were created
+        session_gen = get_session()
+        session = next(session_gen)
+        try:
+            docs = session.query(Document).all()
+            assert len(docs) == 1
+
+            copies = session.query(DocumentCopy).all()
+            assert len(copies) == 1
+            copy_id = copies[0].id
+
+            pending_ops = session.query(PendingOperation).all()
+            assert len(pending_ops) == 1
+            assert pending_ops[0].document_copy_id == copy_id
+
+            # Delete the pending operation (simulating reset)
+            session.delete(pending_ops[0])
+            session.commit()
+        finally:
+            try:
+                next(session_gen)
+            except StopIteration:
+                pass
+
+        # Second run: should reuse copy and recreate pending operation
+        result2 = cli_runner.invoke(main, ["plan"], catch_exceptions=False)
+        assert result2.exit_code == 0
+
+        # Verify output shows reused copy
+        assert "Reusing existing copy: test.pdf" in result2.output
+        assert "Created pending operation" in result2.output
+        assert "Pending operations created: 1" in result2.output
+
+        # Verify pending operation was recreated
+        session_gen = get_session()
+        session = next(session_gen)
+        try:
+            # Still only one document and copy
+            docs = session.query(Document).all()
+            assert len(docs) == 1
+
+            copies = session.query(DocumentCopy).all()
+            assert len(copies) == 1
+
+            # But pending operation was recreated
+            pending_ops = session.query(PendingOperation).all()
+            assert len(pending_ops) == 1
+            assert pending_ops[0].document_copy_id == copy_id
+        finally:
+            try:
+                next(session_gen)
+            except StopIteration:
+                pass
+
+    @patch("docman.cli.extract_content")
+    @patch("docman.cli.compute_content_hash")
+    def test_plan_after_reset_workflow(
+        self,
+        mock_hash: Mock,
+        mock_extract: Mock,
+        cli_runner: CliRunner,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Test the complete reset -> plan workflow recreates pending operations."""
+        repo_dir = self.setup_isolated_env(tmp_path, monkeypatch)
+
+        # Create multiple test documents
+        (repo_dir / "file1.pdf").touch()
+        (repo_dir / "file2.docx").touch()
+
+        mock_hash.side_effect = ["hash1", "hash2", "hash1", "hash2"]
+        mock_extract.return_value = "Content"
+        monkeypatch.chdir(repo_dir)
+
+        # Step 1: Initial plan - creates everything
+        result1 = cli_runner.invoke(main, ["plan"], catch_exceptions=False)
+        assert result1.exit_code == 0
+        assert "New documents processed: 2" in result1.output
+        assert "Pending operations created: 2" in result1.output
+
+        # Verify initial state
+        session_gen = get_session()
+        session = next(session_gen)
+        try:
+            assert len(session.query(Document).all()) == 2
+            assert len(session.query(DocumentCopy).all()) == 2
+            assert len(session.query(PendingOperation).all()) == 2
+        finally:
+            try:
+                next(session_gen)
+            except StopIteration:
+                pass
+
+        # Step 2: Reset - clears pending operations
+        result2 = cli_runner.invoke(main, ["reset", "-y"], catch_exceptions=False)
+        assert result2.exit_code == 0
+        assert "Successfully deleted 2 pending operation(s)" in result2.output
+
+        # Verify pending operations were deleted
+        session_gen = get_session()
+        session = next(session_gen)
+        try:
+            assert len(session.query(Document).all()) == 2
+            assert len(session.query(DocumentCopy).all()) == 2
+            assert len(session.query(PendingOperation).all()) == 0
+        finally:
+            try:
+                next(session_gen)
+            except StopIteration:
+                pass
+
+        # Step 3: Plan again - reuses copies and recreates pending operations
+        result3 = cli_runner.invoke(main, ["plan"], catch_exceptions=False)
+        assert result3.exit_code == 0
+        assert "Reusing existing copy: file1.pdf" in result3.output or "Reusing existing copy: file2.docx" in result3.output
+        assert "Reused copies (already in this repo): 2" in result3.output
+        assert "Pending operations created: 2" in result3.output
+
+        # Verify final state: still 2 documents/copies but pending ops recreated
+        session_gen = get_session()
+        session = next(session_gen)
+        try:
+            assert len(session.query(Document).all()) == 2
+            assert len(session.query(DocumentCopy).all()) == 2
+            assert len(session.query(PendingOperation).all()) == 2
+        finally:
+            try:
+                next(session_gen)
+            except StopIteration:
+                pass
+
+    @patch("docman.cli.extract_content")
+    @patch("docman.cli.compute_content_hash")
+    def test_plan_skips_creating_duplicate_pending_operations(
+        self,
+        mock_hash: Mock,
+        mock_extract: Mock,
+        cli_runner: CliRunner,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Test that plan doesn't create duplicate pending operations on repeated runs."""
+        repo_dir = self.setup_isolated_env(tmp_path, monkeypatch)
+
+        # Create test document
+        (repo_dir / "test.pdf").touch()
+
+        mock_hash.return_value = "hash_test"
+        mock_extract.return_value = "Test content"
+        monkeypatch.chdir(repo_dir)
+
+        # First run: creates everything
+        result1 = cli_runner.invoke(main, ["plan"], catch_exceptions=False)
+        assert result1.exit_code == 0
+        assert "Processing: test.pdf" in result1.output
+        assert "Created pending operation" in result1.output
+        assert "Pending operations created: 1" in result1.output
+
+        # Second run: reuses copy but doesn't duplicate pending operation
+        result2 = cli_runner.invoke(main, ["plan"], catch_exceptions=False)
+        assert result2.exit_code == 0
+        assert "Reusing existing copy: test.pdf" in result2.output
+        assert "Pending operation already exists" in result2.output
+        assert "Pending operations created: 0" in result2.output
+
+        # Verify only one of everything exists
+        session_gen = get_session()
+        session = next(session_gen)
+        try:
+            assert len(session.query(Document).all()) == 1
+            assert len(session.query(DocumentCopy).all()) == 1
+            assert len(session.query(PendingOperation).all()) == 1
+        finally:
+            try:
+                next(session_gen)
+            except StopIteration:
+                pass
+
+    @patch("docman.cli.extract_content")
+    @patch("docman.cli.compute_content_hash")
+    def test_plan_mixed_new_and_reused_copies(
+        self,
+        mock_hash: Mock,
+        mock_extract: Mock,
+        cli_runner: CliRunner,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Test plan with mix of new files and existing copies."""
+        repo_dir = self.setup_isolated_env(tmp_path, monkeypatch)
+
+        # Create first document
+        (repo_dir / "existing.pdf").touch()
+
+        mock_hash.side_effect = ["hash_existing", "hash_new"]
+        mock_extract.return_value = "Content"
+        monkeypatch.chdir(repo_dir)
+
+        # First run: create one document
+        result1 = cli_runner.invoke(main, ["plan"], catch_exceptions=False)
+        assert result1.exit_code == 0
+
+        # Add a new document
+        (repo_dir / "new.pdf").touch()
+
+        # Second run: mix of existing and new
+        result2 = cli_runner.invoke(main, ["plan"], catch_exceptions=False)
+        assert result2.exit_code == 0
+
+        # Verify output shows both behaviors
+        assert "Reusing existing copy: existing.pdf" in result2.output
+        assert "Processing: new.pdf" in result2.output
+        assert "New documents processed: 1" in result2.output
+        assert "Reused copies (already in this repo): 1" in result2.output
+        assert "Pending operations created: 1" in result2.output  # Only new file creates pending op
+
+        # Verify database state
+        session_gen = get_session()
+        session = next(session_gen)
+        try:
+            assert len(session.query(Document).all()) == 2
+            assert len(session.query(DocumentCopy).all()) == 2
+            # Both should have pending operations (one from first run, one from second)
+            assert len(session.query(PendingOperation).all()) == 2
         finally:
             try:
                 next(session_gen)

@@ -229,67 +229,77 @@ def plan(path: str | None, recursive: bool) -> None:
 
         # Counters for summary
         processed_count = 0
-        skipped_count = 0
+        reused_count = 0
         failed_count = 0
         duplicate_count = 0  # Same document, different location
+        pending_ops_created = 0
 
         # Process each file
         for idx, file_path in enumerate(document_files, start=1):
             file_path_str = str(file_path)
             percentage = int((idx / len(document_files)) * 100)
 
-            # Skip if copy already exists in this repository at this path
+            # Check if copy already exists in this repository at this path
             if file_path_str in existing_copy_paths:
-                click.echo(f"[{idx}/{len(document_files)}] {percentage}% Skipping: {file_path}")
-                skipped_count += 1
-                continue
-
-            # Show progress
-            click.echo(f"[{idx}/{len(document_files)}] {percentage}% Processing: {file_path}")
-
-            # Compute content hash
-            full_path = repo_root / file_path
-            try:
-                content_hash = compute_content_hash(full_path)
-            except Exception as e:
-                click.echo(f"  Error computing hash: {e}")
-                failed_count += 1
-                continue
-
-            # Find or create canonical document
-            document = session.query(Document).filter(Document.content_hash == content_hash).first()
-
-            if document:
-                # Document already exists (found in another repo or location)
-                click.echo(f"  Found existing document (hash: {content_hash[:8]}...)")
-                duplicate_count += 1
+                # Retrieve existing copy
+                click.echo(f"[{idx}/{len(document_files)}] {percentage}% Reusing existing copy: {file_path}")
+                copy = (
+                    session.query(DocumentCopy)
+                    .filter(
+                        DocumentCopy.repository_path == repository_path,
+                        DocumentCopy.file_path == file_path_str,
+                    )
+                    .first()
+                )
+                reused_count += 1
             else:
-                # New document - extract content
-                content = extract_content(full_path)
+                # Show progress
+                click.echo(f"[{idx}/{len(document_files)}] {percentage}% Processing: {file_path}")
 
-                if content is None:
-                    click.echo("  Warning: Content extraction failed")
+                # Step 1: Create new document and copy
+                # Compute content hash
+                full_path = repo_root / file_path
+                try:
+                    content_hash = compute_content_hash(full_path)
+                except Exception as e:
+                    click.echo(f"  Error computing hash: {e}")
                     failed_count += 1
-                    # Still create the document with None content
+                    continue
+
+                # Find or create canonical document
+                document = session.query(Document).filter(Document.content_hash == content_hash).first()
+
+                if document:
+                    # Document already exists (found in another repo or location)
+                    click.echo(f"  Found existing document (hash: {content_hash[:8]}...)")
+                    duplicate_count += 1
                 else:
-                    click.echo(f"  Extracted {len(content)} characters")
-                    processed_count += 1
+                    # New document - extract content
+                    content = extract_content(full_path)
 
-                # Create new canonical document
-                document = Document(content_hash=content_hash, content=content)
-                session.add(document)
-                session.flush()  # Get the document.id for the copy
+                    if content is None:
+                        click.echo("  Warning: Content extraction failed")
+                        failed_count += 1
+                        # Still create the document with None content
+                    else:
+                        click.echo(f"  Extracted {len(content)} characters")
+                        processed_count += 1
 
-            # Create document copy for this repository
-            copy = DocumentCopy(
-                document_id=document.id,
-                repository_path=repository_path,
-                file_path=file_path_str,
-            )
-            session.add(copy)
-            session.flush()  # Get the copy.id for the pending operation
+                    # Create new canonical document
+                    document = Document(content_hash=content_hash, content=content)
+                    session.add(document)
+                    session.flush()  # Get the document.id for the copy
 
-            # Create pending operation if it doesn't exist (stub implementation)
+                # Create document copy for this repository
+                copy = DocumentCopy(
+                    document_id=document.id,
+                    repository_path=repository_path,
+                    file_path=file_path_str,
+                )
+                session.add(copy)
+                session.flush()  # Get the copy.id for the pending operation
+
+            # Step 2: Create pending operation if it doesn't exist (always runs)
             existing_pending_op = (
                 session.query(PendingOperation)
                 .filter(PendingOperation.document_copy_id == copy.id)
@@ -311,6 +321,10 @@ def plan(path: str | None, recursive: bool) -> None:
                     confidence=0.5,  # Neutral confidence for stub
                 )
                 session.add(pending_op)
+                pending_ops_created += 1
+                click.echo(f"  Created pending operation")
+            else:
+                click.echo(f"  Pending operation already exists")
 
         # Commit all changes
         session.commit()
@@ -320,8 +334,9 @@ def plan(path: str | None, recursive: bool) -> None:
         click.echo("Summary:")
         click.echo(f"  New documents processed: {processed_count}")
         click.echo(f"  Duplicate documents (already known): {duplicate_count}")
-        click.echo(f"  Skipped (copy exists in this repo): {skipped_count}")
+        click.echo(f"  Reused copies (already in this repo): {reused_count}")
         click.echo(f"  Failed (hash or extraction errors): {failed_count}")
+        click.echo(f"  Pending operations created: {pending_ops_created}")
         click.echo(f"  Total files: {len(document_files)}")
         click.echo("=" * 50)
 
