@@ -4,7 +4,7 @@ import hashlib
 from datetime import UTC, datetime
 from pathlib import Path
 
-from sqlalchemy import DateTime, ForeignKey, Integer, String, Text, UniqueConstraint
+from sqlalchemy import CheckConstraint, DateTime, Float, ForeignKey, Integer, String, Text, UniqueConstraint
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship  # type: ignore[attr-defined]
 
 
@@ -120,3 +120,50 @@ class DocumentCopy(Base):
     def __repr__(self) -> str:
         """Return string representation of DocumentCopy."""
         return f"<DocumentCopy(id={self.id}, document_id={self.document_id}, file_path='{self.file_path}')>"
+
+
+class PendingOperation(Base):
+    """
+    Pending operation model storing LLM suggestions for file organization.
+
+    This table stores suggestions from the LLM on where a file should be moved
+    and/or renamed to. Each document copy can have at most one pending operation.
+
+    Attributes:
+        id: Primary key identifier for the pending operation.
+        document_copy_id: Foreign key to the document copy this operation applies to.
+        suggested_directory_path: Suggested directory path for the file.
+        suggested_filename: Suggested filename for the file.
+        reason: Explanation for why this organization is suggested.
+        confidence: Confidence score between 0.0 and 1.0 (inclusive).
+        created_at: Timestamp when the suggestion was created.
+        document_copy: Relationship to the document copy.
+    """
+
+    __tablename__ = "pending_operations"
+    __table_args__ = (
+        UniqueConstraint("document_copy_id", name="uix_pending_op_copy"),
+        CheckConstraint("confidence >= 0.0 AND confidence <= 1.0", name="ck_confidence_range"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    document_copy_id: Mapped[int] = mapped_column(
+        Integer, ForeignKey("document_copies.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    suggested_directory_path: Mapped[str] = mapped_column(String(255), nullable=False)
+    suggested_filename: Mapped[str] = mapped_column(String(255), nullable=False)
+    reason: Mapped[str] = mapped_column(Text, nullable=False)
+    confidence: Mapped[float] = mapped_column(Float, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        "createdAt", DateTime, nullable=False, default=get_utc_now
+    )
+
+    # Relationship to document copy
+    document_copy: Mapped["DocumentCopy"] = relationship("DocumentCopy")
+
+    def __repr__(self) -> str:
+        """Return string representation of PendingOperation."""
+        return (
+            f"<PendingOperation(id={self.id}, document_copy_id={self.document_copy_id}, "
+            f"confidence={self.confidence})>"
+        )

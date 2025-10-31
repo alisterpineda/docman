@@ -11,7 +11,7 @@ import click
 
 from docman.config import ensure_app_config
 from docman.database import ensure_database, get_session
-from docman.models import Document, DocumentCopy, compute_content_hash
+from docman.models import Document, DocumentCopy, PendingOperation, compute_content_hash
 from docman.processor import extract_content
 from docman.repository import (
     SUPPORTED_EXTENSIONS,
@@ -115,11 +115,28 @@ def plan(path: str | None, recursive: bool) -> None:
         - 'docman plan file.pdf': Process single file
         - 'docman plan -r': Process entire repository recursively (same as no args)
     """
-    # Find the repository root from CWD first
-    try:
-        repo_root = get_repository_root()
-    except RepositoryError:
-        raise click.Abort()
+    # Find the repository root
+    # Strategy: Try from the provided path first (if any), then fall back to cwd
+    repo_root = None
+
+    if path:
+        # Try to find repository from the provided path
+        search_start_path = Path(path).resolve()
+        try:
+            repo_root = get_repository_root(start_path=search_start_path)
+        except RepositoryError:
+            # Path doesn't lead to a repository, try from cwd
+            try:
+                repo_root = get_repository_root(start_path=Path.cwd())
+            except RepositoryError:
+                # Neither path nor cwd is in a repository
+                raise click.Abort()
+    else:
+        # No path provided, use current directory
+        try:
+            repo_root = get_repository_root(start_path=Path.cwd())
+        except RepositoryError:
+            raise click.Abort()
 
     repository_path = str(repo_root)
     click.echo(f"Processing documents in repository: {repository_path}")
@@ -270,6 +287,30 @@ def plan(path: str | None, recursive: bool) -> None:
                 file_path=file_path_str,
             )
             session.add(copy)
+            session.flush()  # Get the copy.id for the pending operation
+
+            # Create pending operation if it doesn't exist (stub implementation)
+            existing_pending_op = (
+                session.query(PendingOperation)
+                .filter(PendingOperation.document_copy_id == copy.id)
+                .first()
+            )
+
+            if not existing_pending_op:
+                # Extract current directory and filename from file_path
+                file_path_obj = Path(file_path_str)
+                current_directory = str(file_path_obj.parent) if file_path_obj.parent != Path('.') else ""
+                current_filename = file_path_obj.name
+
+                # Create pending operation with stub suggestion (keep file as-is)
+                pending_op = PendingOperation(
+                    document_copy_id=copy.id,
+                    suggested_directory_path=current_directory,
+                    suggested_filename=current_filename,
+                    reason="Awaiting LLM analysis",
+                    confidence=0.5,  # Neutral confidence for stub
+                )
+                session.add(pending_op)
 
         # Commit all changes
         session.commit()
