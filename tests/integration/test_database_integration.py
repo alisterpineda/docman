@@ -27,7 +27,7 @@ def test_database_initialized_on_cli_startup(
     monkeypatch.setenv("DOCMAN_APP_CONFIG_DIR", str(app_config_dir))
 
     # Run the init command (which triggers main() body)
-    result = cli_runner.invoke(main, ["init", str(project_dir)])
+    result = cli_runner.invoke(main, ["init", str(project_dir)], input="n\n")
 
     assert result.exit_code == 0
 
@@ -53,7 +53,7 @@ def test_database_initialization_with_init_command(
     monkeypatch.setenv("DOCMAN_APP_CONFIG_DIR", str(app_config_dir))
 
     # Run init command
-    result = cli_runner.invoke(main, ["init", str(project_dir)])
+    result = cli_runner.invoke(main, ["init", str(project_dir)], input="n\n")
 
     assert result.exit_code == 0
     assert "Initialized empty docman repository" in result.output
@@ -76,14 +76,14 @@ def test_database_persists_across_multiple_cli_calls(
     monkeypatch.setenv("DOCMAN_APP_CONFIG_DIR", str(app_config_dir))
 
     # First CLI call
-    result1 = cli_runner.invoke(main, ["init", str(project_dir1)])
+    result1 = cli_runner.invoke(main, ["init", str(project_dir1)], input="n\n")
     assert result1.exit_code == 0
 
     db_path = app_config_dir / "docman.db"
     initial_mtime = db_path.stat().st_mtime
 
     # Second CLI call
-    result2 = cli_runner.invoke(main, ["init", str(project_dir2)])
+    result2 = cli_runner.invoke(main, ["init", str(project_dir2)], input="n\n")
     assert result2.exit_code == 0
 
     # Database should still exist and not be recreated
@@ -108,7 +108,7 @@ def test_database_initialization_handles_permissions_gracefully(
 
     try:
         # This should show a warning but not crash
-        result = cli_runner.invoke(main, ["init", str(project_dir)])
+        result = cli_runner.invoke(main, ["init", str(project_dir)], input="n\n")
 
         # The CLI should still work even if DB init fails
         # (it will show a warning but continue with the init command)
@@ -129,7 +129,7 @@ def test_database_schema_matches_models(
     monkeypatch.setenv("DOCMAN_APP_CONFIG_DIR", str(app_config_dir))
 
     # Initialize database via CLI
-    result = cli_runner.invoke(main, ["init", str(project_dir)])
+    result = cli_runner.invoke(main, ["init", str(project_dir)], input="n\n")
     assert result.exit_code == 0
 
     # Inspect the schema

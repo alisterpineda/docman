@@ -54,14 +54,14 @@ def get_directory_structure(repo_root: Path) -> str:
     return "\n".join(f"- {d}" for d in directories)
 
 
-def load_custom_instructions(repo_root: Path) -> str | None:
-    """Load custom organization instructions from repository config.
+def load_organization_instructions(repo_root: Path) -> str | None:
+    """Load document organization instructions from repository config.
 
     Args:
         repo_root: The repository root directory.
 
     Returns:
-        Custom instructions content, or None if not configured.
+        Document organization instructions content, or None if not found.
     """
     instructions_path = repo_root / ".docman" / "instructions.md"
 
@@ -87,7 +87,7 @@ documents and suggest how they should be organized in a file system.
 
 You will be provided with:
 1. A list of existing directories in the repository
-2. Custom organization instructions (if any)
+2. Document organization instructions
 3. The current file path
 4. The document's content
 
@@ -111,7 +111,7 @@ Guidelines:
 are in this suggestion
 5. Base your suggestions on the document's content, file type (e.g., PDF, DOCX), \
 date (if present), and any other relevant metadata you can extract
-6. Follow any custom organization instructions provided
+6. Follow the document organization instructions provided
 
 Return ONLY the JSON object, no additional text or markdown formatting."""
 
@@ -120,7 +120,7 @@ def build_user_prompt(
     file_path: str,
     document_content: str,
     directory_structure: str | None = None,
-    custom_instructions: str | None = None,
+    organization_instructions: str | None = None,
 ) -> str:
     """Build the dynamic user prompt for a specific document.
 
@@ -128,7 +128,7 @@ def build_user_prompt(
         file_path: Current path of the file being analyzed.
         document_content: Extracted text content from the document.
         directory_structure: Optional markdown list of existing directories.
-        custom_instructions: Optional custom organization instructions.
+        organization_instructions: Document organization instructions.
 
     Returns:
         User prompt string with document-specific information.
@@ -146,10 +146,10 @@ def build_user_prompt(
         sections.append("## Existing Directory Structure\n")
         sections.append(directory_structure)
 
-    # Custom instructions (if provided)
-    if custom_instructions:
-        sections.append("\n## Custom Organization Instructions\n")
-        sections.append(custom_instructions)
+    # Document organization instructions (if provided)
+    if organization_instructions:
+        sections.append("\n## Document Organization Instructions\n")
+        sections.append(organization_instructions)
 
     # Current file information
     sections.append("\n## Current File\n")

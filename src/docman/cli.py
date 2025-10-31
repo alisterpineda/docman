@@ -29,9 +29,10 @@ from docman.prompt_builder import (
     build_system_prompt,
     build_user_prompt,
     get_directory_structure,
-    load_custom_instructions,
+    load_organization_instructions,
 )
 from docman.repo_config import (
+    create_instructions_template,
     edit_instructions_interactive,
     load_instructions,
     save_instructions,
@@ -94,7 +95,26 @@ def init(directory: str) -> None:
         config_file = docman_dir / "config.yaml"
         config_file.touch()
 
+        # Create instructions template
+        create_instructions_template(target_path)
+
         click.echo(f"Initialized empty docman repository in {docman_dir}/")
+        click.echo()
+
+        # Prompt to edit instructions
+        if click.confirm("Would you like to edit document organization instructions now?", default=True):
+            if edit_instructions_interactive(target_path):
+                click.secho("✓ Instructions updated!", fg="green")
+            else:
+                click.secho(
+                    "Warning: Could not open editor. Set $EDITOR or edit .docman/instructions.md manually.",
+                    fg="yellow"
+                )
+        else:
+            click.echo()
+            click.echo("Instructions template created at .docman/instructions.md")
+            click.echo("Edit this file before running 'docman plan'.")
+
     except PermissionError:
         click.secho(
             f"Error: Permission denied to create {docman_dir}", fg="red", err=True
@@ -279,10 +299,18 @@ def plan(path: str | None, recursive: bool) -> None:
 
     click.echo(f"Found {len(document_files)} document file(s)\n")
 
+    # Check if document organization instructions exist (required)
+    organization_instructions = load_organization_instructions(repo_root)
+    if not organization_instructions:
+        click.echo()
+        click.secho("Error: Document organization instructions are required.", fg="red")
+        click.echo()
+        click.echo("Run 'docman config set-instructions' to create them.")
+        raise click.Abort()
+
     # Build prompts for LLM (done once for entire repository)
     system_prompt = build_system_prompt()
     directory_structure = get_directory_structure(repo_root)
-    custom_instructions = load_custom_instructions(repo_root)
 
     # Get database session
     session_gen = get_session()
@@ -400,7 +428,7 @@ def plan(path: str | None, recursive: bool) -> None:
                             file_path_str,
                             document.content,
                             directory_structure,
-                            custom_instructions,
+                            organization_instructions,
                         )
                         suggestions = llm_provider_instance.generate_suggestions(
                             system_prompt,
@@ -824,7 +852,7 @@ def config() -> None:
 @click.option("--text", type=str, help="Set instructions directly from command line")
 @click.option("--path", type=str, default=".", help="Repository path (default: current directory)")
 def config_set_instructions(text: str | None, path: str) -> None:
-    """Set custom organization instructions for a repository.
+    """Set document organization instructions for a repository.
 
     Opens the instructions file in your default editor ($EDITOR) if --text is not provided.
     Use this to define how documents should be organized in your repository.
@@ -861,9 +889,9 @@ def config_set_instructions(text: str | None, path: str) -> None:
 @config.command(name="show-instructions")
 @click.option("--path", type=str, default=".", help="Repository path (default: current directory)")
 def config_show_instructions(path: str) -> None:
-    """Show custom organization instructions for a repository.
+    """Show document organization instructions for a repository.
 
-    Displays the current custom instructions configured for the repository.
+    Displays the current document organization instructions for the repository.
 
     Examples:
         docman config show-instructions
@@ -880,14 +908,14 @@ def config_show_instructions(path: str) -> None:
 
     if instructions:
         click.echo()
-        click.secho("Custom Organization Instructions:", bold=True)
+        click.secho("Document Organization Instructions:", bold=True)
         click.echo()
         click.echo(instructions)
         click.echo()
     else:
-        click.echo("No custom instructions configured for this repository.")
+        click.echo("No document organization instructions found for this repository.")
         click.echo()
-        click.echo("Run 'docman config set-instructions' to add instructions.")
+        click.echo("Run 'docman config set-instructions' to create them.")
 
 
 if __name__ == "__main__":

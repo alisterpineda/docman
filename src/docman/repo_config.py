@@ -1,16 +1,27 @@
 """Repository-level configuration management for docman.
 
 This module handles reading and writing repository-specific configuration,
-particularly custom organization instructions stored in .docman/instructions.md.
+particularly document organization instructions stored in .docman/instructions.md.
 """
 
 import os
 import subprocess
 from pathlib import Path
 
+# Template for new instructions file
+INSTRUCTIONS_TEMPLATE = """# Document Organization Instructions
+
+Add your instructions here for how documents should be organized in this repository.
+
+## Examples:
+- Organize invoices by year and month (e.g., finance/invoices/2024/01/)
+- Keep all contracts in legal/contracts/
+- Use lowercase and hyphens for directory names
+"""
+
 
 def get_instructions_path(repo_root: Path) -> Path:
-    """Get the path to the repository's custom instructions file.
+    """Get the path to the repository's document organization instructions file.
 
     Args:
         repo_root: The repository root directory.
@@ -21,14 +32,30 @@ def get_instructions_path(repo_root: Path) -> Path:
     return repo_root / ".docman" / "instructions.md"
 
 
+def create_instructions_template(repo_root: Path) -> None:
+    """Create instructions file with template content.
+
+    Creates .docman directory if it doesn't exist.
+
+    Args:
+        repo_root: The repository root directory.
+
+    Raises:
+        OSError: If file cannot be written.
+    """
+    instructions_path = get_instructions_path(repo_root)
+    instructions_path.parent.mkdir(parents=True, exist_ok=True)
+    instructions_path.write_text(INSTRUCTIONS_TEMPLATE)
+
+
 def load_instructions(repo_root: Path) -> str | None:
-    """Load custom organization instructions from the repository.
+    """Load document organization instructions from the repository.
 
     Args:
         repo_root: The repository root directory.
 
     Returns:
-        Instructions content, or None if not configured or empty.
+        Instructions content, or None if not found or empty.
     """
     instructions_path = get_instructions_path(repo_root)
 
@@ -43,7 +70,7 @@ def load_instructions(repo_root: Path) -> str | None:
 
 
 def save_instructions(repo_root: Path, content: str) -> None:
-    """Save custom organization instructions to the repository.
+    """Save document organization instructions to the repository.
 
     Creates .docman directory if it doesn't exist.
 
@@ -105,17 +132,8 @@ def edit_instructions_interactive(repo_root: Path) -> bool:
 
     # Create file with template if it doesn't exist
     if not instructions_path.exists():
-        template = """# Document Organization Instructions
-
-Add your custom instructions here for how documents should be organized in this repository.
-
-## Examples:
-- Organize invoices by year and month (e.g., finance/invoices/2024/01/)
-- Keep all contracts in legal/contracts/
-- Use lowercase and hyphens for directory names
-"""
         instructions_path.parent.mkdir(parents=True, exist_ok=True)
-        instructions_path.write_text(template)
+        instructions_path.write_text(INSTRUCTIONS_TEMPLATE)
 
     # Open editor
     try:

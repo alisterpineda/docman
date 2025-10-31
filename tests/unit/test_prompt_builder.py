@@ -8,7 +8,7 @@ from docman.prompt_builder import (
     build_system_prompt,
     build_user_prompt,
     get_directory_structure,
-    load_custom_instructions,
+    load_organization_instructions,
 )
 
 
@@ -74,12 +74,12 @@ class TestGetDirectoryStructure:
         assert result == "- /docs"
 
 
-class TestLoadCustomInstructions:
-    """Tests for load_custom_instructions function."""
+class TestLoadOrganizationInstructions:
+    """Tests for load_organization_instructions function."""
 
     def test_no_instructions_file(self, tmp_path: Path) -> None:
         """Test when instructions file doesn't exist."""
-        result = load_custom_instructions(tmp_path)
+        result = load_organization_instructions(tmp_path)
         assert result is None
 
     def test_empty_instructions_file(self, tmp_path: Path) -> None:
@@ -89,7 +89,7 @@ class TestLoadCustomInstructions:
         instructions_file = docman_dir / "instructions.md"
         instructions_file.write_text("")
 
-        result = load_custom_instructions(tmp_path)
+        result = load_organization_instructions(tmp_path)
         assert result is None
 
     def test_whitespace_only_instructions(self, tmp_path: Path) -> None:
@@ -99,7 +99,7 @@ class TestLoadCustomInstructions:
         instructions_file = docman_dir / "instructions.md"
         instructions_file.write_text("   \n\t\n   ")
 
-        result = load_custom_instructions(tmp_path)
+        result = load_organization_instructions(tmp_path)
         assert result is None
 
     def test_valid_instructions(self, tmp_path: Path) -> None:
@@ -110,7 +110,7 @@ class TestLoadCustomInstructions:
         content = "Organize by date and category"
         instructions_file.write_text(content)
 
-        result = load_custom_instructions(tmp_path)
+        result = load_organization_instructions(tmp_path)
         assert result == content
 
     def test_instructions_with_whitespace(self, tmp_path: Path) -> None:
@@ -120,7 +120,7 @@ class TestLoadCustomInstructions:
         instructions_file = docman_dir / "instructions.md"
         instructions_file.write_text("\n  Some instructions  \n")
 
-        result = load_custom_instructions(tmp_path)
+        result = load_organization_instructions(tmp_path)
         assert result == "Some instructions"
 
 
@@ -174,8 +174,8 @@ class TestBuildUserPrompt:
         assert dir_structure in result
         assert "Directory Structure" in result or "directory structure" in result
 
-    def test_with_custom_instructions(self) -> None:
-        """Test user prompt includes custom instructions."""
+    def test_with_organization_instructions(self) -> None:
+        """Test user prompt includes organization instructions."""
         file_path = "test.pdf"
         content = "Content"
         instructions = "Organize by date"
@@ -183,7 +183,7 @@ class TestBuildUserPrompt:
         result = build_user_prompt(file_path, content, None, instructions)
 
         assert instructions in result
-        assert "instructions" in result.lower()
+        assert "Document Organization Instructions" in result
 
     def test_with_all_optional_fields(self) -> None:
         """Test user prompt with all optional fields."""

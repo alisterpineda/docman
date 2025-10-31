@@ -23,7 +23,7 @@ class TestAppConfigIntegration:
         # Run init command
         runner = CliRunner()
         with runner.isolated_filesystem(temp_dir=tmp_path):
-            result = runner.invoke(main, ["init"])
+            result = runner.invoke(main, ["init"], input="n\n")
 
         # Verify command succeeded
         assert result.exit_code == 0
@@ -90,7 +90,7 @@ class TestAppConfigIntegration:
         # Run init command
         runner = CliRunner()
         with runner.isolated_filesystem(temp_dir=tmp_path):
-            result = runner.invoke(main, ["init"])
+            result = runner.invoke(main, ["init"], input="n\n")
 
         # Verify command succeeded
         assert result.exit_code == 0
@@ -113,7 +113,7 @@ class TestAppConfigIntegration:
             # Run init command
             runner = CliRunner()
             with runner.isolated_filesystem(temp_dir=tmp_path):
-                result = runner.invoke(main, ["init"])
+                result = runner.invoke(main, ["init"], input="n\n")
 
             # Command should complete but show warning
             # Exit code might be 0 or 1 depending on whether init succeeds
@@ -134,7 +134,7 @@ class TestAppConfigIntegration:
 
         # Run first command
         with runner.isolated_filesystem(temp_dir=tmp_path):
-            result1 = runner.invoke(main, ["init"])
+            result1 = runner.invoke(main, ["init"], input="n\n")
         assert result1.exit_code == 0
 
         config_path = get_app_config_path()
@@ -165,7 +165,7 @@ class TestAppConfigIntegration:
         # Run command
         runner = CliRunner()
         with runner.isolated_filesystem(temp_dir=tmp_path):
-            result = runner.invoke(main, ["init"])
+            result = runner.invoke(main, ["init"], input="n\n")
 
         assert result.exit_code == 0
 
@@ -187,7 +187,7 @@ class TestAppConfigIntegration:
         project_dir = tmp_path / "project"
         project_dir.mkdir()
 
-        result = runner.invoke(main, ["init", str(project_dir)])
+        result = runner.invoke(main, ["init", str(project_dir)], input="n\n")
         assert result.exit_code == 0
 
         # Verify both configs exist

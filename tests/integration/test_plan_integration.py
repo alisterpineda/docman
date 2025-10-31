@@ -48,6 +48,10 @@ class TestDocmanPlan:
         config_file = docman_dir / "config.yaml"
         config_file.touch()
 
+        # Create instructions file (required)
+        instructions_file = docman_dir / "instructions.md"
+        instructions_file.write_text("Test organization instructions")
+
     def setup_isolated_env(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
         """Set up isolated environment with separate app config and repository."""
         app_config_dir = tmp_path / "app_config"
@@ -1094,3 +1098,30 @@ class TestDocmanPlan:
                 next(session_gen)
             except StopIteration:
                 pass
+
+    def test_plan_fails_without_instructions(
+        self,
+        cli_runner: CliRunner,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Test that plan fails with error when instructions are missing."""
+        repo_dir = self.setup_isolated_env(tmp_path, monkeypatch)
+
+        # Remove the instructions file that setup_repository creates
+        instructions_file = repo_dir / ".docman" / "instructions.md"
+        instructions_file.unlink()
+
+        # Create a test document
+        (repo_dir / "test.pdf").touch()
+
+        # Change to the repository directory
+        monkeypatch.chdir(repo_dir)
+
+        # Run plan command
+        result = cli_runner.invoke(main, ["plan"], catch_exceptions=False)
+
+        # Verify it fails with appropriate error
+        assert result.exit_code == 1
+        assert "Error: Document organization instructions are required" in result.output
+        assert "Run 'docman config set-instructions' to create them" in result.output
