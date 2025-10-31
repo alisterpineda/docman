@@ -4,8 +4,22 @@ import hashlib
 from datetime import UTC, datetime
 from pathlib import Path
 
-from sqlalchemy import CheckConstraint, DateTime, Float, ForeignKey, Integer, String, Text, UniqueConstraint
-from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship  # type: ignore[attr-defined]
+from sqlalchemy import (
+    CheckConstraint,
+    DateTime,
+    Float,
+    ForeignKey,
+    Integer,
+    String,
+    Text,
+    UniqueConstraint,
+)
+from sqlalchemy.orm import (  # type: ignore[attr-defined]
+    DeclarativeBase,
+    Mapped,
+    mapped_column,
+    relationship,
+)
 
 
 def get_utc_now() -> datetime:
@@ -119,7 +133,10 @@ class DocumentCopy(Base):
 
     def __repr__(self) -> str:
         """Return string representation of DocumentCopy."""
-        return f"<DocumentCopy(id={self.id}, document_id={self.document_id}, file_path='{self.file_path}')>"
+        return (
+            f"<DocumentCopy(id={self.id}, document_id={self.document_id}, "
+            f"file_path='{self.file_path}')>"
+        )
 
 
 class PendingOperation(Base):

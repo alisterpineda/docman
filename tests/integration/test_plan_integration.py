@@ -8,11 +8,38 @@ from click.testing import CliRunner
 
 from docman.cli import main
 from docman.database import ensure_database, get_session
+from docman.llm_config import ProviderConfig
 from docman.models import Document, DocumentCopy, PendingOperation
 
 
 class TestDocmanPlan:
     """Integration tests for docman plan command."""
+
+    @pytest.fixture(autouse=True)
+    def _mock_llm_provider(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Automatically mock LLM provider for all tests in this class."""
+        # Create a mock provider config
+        mock_provider_config = ProviderConfig(
+            name="test-provider",
+            provider_type="google",
+            model="gemini-1.5-flash",
+            is_active=True,
+        )
+
+        # Create mock provider instance
+        mock_provider_instance = Mock()
+        mock_provider_instance.test_connection.return_value = True
+        mock_provider_instance.generate_suggestions.return_value = {
+            "suggested_directory_path": "test/directory",
+            "suggested_filename": "test_file.pdf",
+            "reason": "Test reason",
+            "confidence": 0.85,
+        }
+
+        # Patch the LLM-related functions
+        monkeypatch.setattr("docman.cli.get_active_provider", Mock(return_value=mock_provider_config))
+        monkeypatch.setattr("docman.cli.get_api_key", Mock(return_value="test-api-key"))
+        monkeypatch.setattr("docman.cli.get_llm_provider", Mock(return_value=mock_provider_instance))
 
     def setup_repository(self, path: Path) -> None:
         """Set up a docman repository for testing."""
@@ -867,7 +894,7 @@ class TestDocmanPlan:
 
         # Verify output shows reused copy
         assert "Reusing existing copy: test.pdf" in result2.output
-        assert "Created pending operation" in result2.output
+        assert "Generating LLM suggestions..." in result2.output
         assert "Pending operations created: 1" in result2.output
 
         # Verify pending operation was recreated
@@ -993,7 +1020,7 @@ class TestDocmanPlan:
         result1 = cli_runner.invoke(main, ["plan"], catch_exceptions=False)
         assert result1.exit_code == 0
         assert "Processing: test.pdf" in result1.output
-        assert "Created pending operation" in result1.output
+        assert "Generating LLM suggestions..." in result1.output
         assert "Pending operations created: 1" in result1.output
 
         # Second run: reuses copy but doesn't duplicate pending operation

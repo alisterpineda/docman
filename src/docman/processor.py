@@ -30,7 +30,7 @@ def extract_content(file_path: Path) -> str | None:
 
         return None
 
-    except Exception as e:
+    except Exception:
         # Log the error but don't crash - we'll store None as content
         # This could be improved with proper logging in the future
         return None
