@@ -31,12 +31,12 @@ class LLMProvider(ABC):
         self.api_key = api_key
 
     @abstractmethod
-    def generate_suggestions(self, document_content: str, file_path: str) -> dict[str, Any]:
+    def generate_suggestions(self, system_prompt: str, user_prompt: str) -> dict[str, Any]:
         """Generate file organization suggestions for a document.
 
         Args:
-            document_content: The extracted text content of the document.
-            file_path: The current file path of the document (for context).
+            system_prompt: Static system prompt defining the LLM's task.
+            user_prompt: Dynamic user prompt with document-specific information.
 
         Returns:
             Dictionary with keys:
@@ -118,12 +118,12 @@ class GoogleGeminiProvider(LLMProvider):
             else:
                 raise Exception(f"Failed to list models: {str(e)}") from e
 
-    def generate_suggestions(self, document_content: str, file_path: str) -> dict[str, Any]:
+    def generate_suggestions(self, system_prompt: str, user_prompt: str) -> dict[str, Any]:
         """Generate file organization suggestions using Google Gemini.
 
         Args:
-            document_content: The extracted text content of the document.
-            file_path: The current file path of the document.
+            system_prompt: Static system prompt defining the LLM's task.
+            user_prompt: Dynamic user prompt with document-specific information.
 
         Returns:
             Dictionary with organization suggestions.
@@ -131,12 +131,12 @@ class GoogleGeminiProvider(LLMProvider):
         Raises:
             Exception: If API call fails or response cannot be parsed.
         """
-        # Create a prompt that asks for structured output
-        prompt = self._build_prompt(document_content, file_path)
+        # Combine system and user prompts
+        combined_prompt = f"{system_prompt}\n\n{user_prompt}"
 
         try:
             # Generate response
-            response = self.model.generate_content(prompt)
+            response = self.model.generate_content(combined_prompt)
 
             # Parse the response
             return self._parse_response(response.text)
@@ -186,52 +186,6 @@ class GoogleGeminiProvider(LLMProvider):
                 # Generic error with original message
                 raise Exception(f"Connection test failed: {str(e)}") from e
 
-    def _build_prompt(self, document_content: str, file_path: str) -> str:
-        """Build the prompt for the LLM.
-
-        Args:
-            document_content: The document content.
-            file_path: Current file path.
-
-        Returns:
-            Formatted prompt string.
-        """
-        # Truncate content if too long (keep first 4000 chars)
-        truncated_content = document_content[:4000]
-        if len(document_content) > 4000:
-            truncated_content += "\n... (content truncated)"
-
-        prompt = f"""You are a document organization assistant. Analyze the following document \
-and suggest how it should be organized in a file system.
-
-Current file path: {file_path}
-
-Document content:
-{truncated_content}
-
-Provide your suggestion in the following JSON format:
-{{
-    "suggested_directory_path": "path/to/directory",
-    "suggested_filename": "filename.ext",
-    "reason": "Brief explanation for this organization",
-    "confidence": 0.85
-}}
-
-Guidelines:
-1. suggested_directory_path should be a relative path with forward slashes
-   (e.g., "finance/invoices/2024")
-2. suggested_filename should include the file extension from the original file
-3. reason should be a brief explanation (1-2 sentences) of why this makes sense
-4. confidence should be a float between 0.0 and 1.0 indicating how confident
-   you are in this suggestion
-5. Base your suggestions on the document's content, type, date (if present),
-   category, and any other relevant metadata
-6. Keep directory structures reasonably flat (prefer 2-3 levels over deeply
-   nested structures)
-
-Return ONLY the JSON object, no additional text or markdown formatting."""
-
-        return prompt
 
     def _parse_response(self, response_text: str) -> dict[str, Any]:
         """Parse the LLM response into structured data.

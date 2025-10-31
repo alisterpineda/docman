@@ -25,6 +25,17 @@ from docman.llm_providers import get_provider as get_llm_provider
 from docman.llm_wizard import run_llm_wizard
 from docman.models import Document, DocumentCopy, PendingOperation, compute_content_hash
 from docman.processor import extract_content
+from docman.prompt_builder import (
+    build_system_prompt,
+    build_user_prompt,
+    get_directory_structure,
+    load_custom_instructions,
+)
+from docman.repo_config import (
+    edit_instructions_interactive,
+    load_instructions,
+    save_instructions,
+)
 from docman.repository import (
     SUPPORTED_EXTENSIONS,
     RepositoryError,
@@ -268,6 +279,11 @@ def plan(path: str | None, recursive: bool) -> None:
 
     click.echo(f"Found {len(document_files)} document file(s)\n")
 
+    # Build prompts for LLM (done once for entire repository)
+    system_prompt = build_system_prompt()
+    directory_structure = get_directory_structure(repo_root)
+    custom_instructions = load_custom_instructions(repo_root)
+
     # Get database session
     session_gen = get_session()
     session = next(session_gen)
@@ -379,9 +395,16 @@ def plan(path: str | None, recursive: bool) -> None:
                     # Use LLM to generate suggestions
                     try:
                         click.echo("  Generating LLM suggestions...")
-                        suggestions = llm_provider_instance.generate_suggestions(
+                        # Build user prompt with document-specific information
+                        user_prompt = build_user_prompt(
+                            file_path_str,
                             document.content,
-                            file_path_str
+                            directory_structure,
+                            custom_instructions,
+                        )
+                        suggestions = llm_provider_instance.generate_suggestions(
+                            system_prompt,
+                            user_prompt
                         )
 
                         pending_op = PendingOperation(
@@ -789,6 +812,82 @@ def llm_test(name: str | None) -> None:
         click.secho("✗ Connection failed:", fg="red")
         click.secho(f"  {str(e)}", fg="red")
         raise click.Abort()
+
+
+@main.group()
+def config() -> None:
+    """Manage repository configuration."""
+    pass
+
+
+@config.command(name="set-instructions")
+@click.option("--text", type=str, help="Set instructions directly from command line")
+@click.option("--path", type=str, default=".", help="Repository path (default: current directory)")
+def config_set_instructions(text: str | None, path: str) -> None:
+    """Set custom organization instructions for a repository.
+
+    Opens the instructions file in your default editor ($EDITOR) if --text is not provided.
+    Use this to define how documents should be organized in your repository.
+
+    Examples:
+        docman config set-instructions
+        docman config set-instructions --text "Organize by date and category"
+        docman config set-instructions --path /path/to/repo
+    """
+    # Find repository root
+    try:
+        repo_root = get_repository_root(start_path=Path(path).resolve())
+    except RepositoryError:
+        raise click.Abort()
+
+    if text is not None:
+        # Set instructions directly from command line
+        try:
+            save_instructions(repo_root, text)
+            click.secho("✓ Instructions saved successfully!", fg="green")
+        except Exception as e:
+            click.secho(f"Error: Failed to save instructions: {e}", fg="red")
+            raise click.Abort()
+    else:
+        # Open editor
+        click.echo("Opening instructions file in editor...")
+        if edit_instructions_interactive(repo_root):
+            click.secho("✓ Instructions updated!", fg="green")
+        else:
+            click.secho("Error: Could not open editor. Set $EDITOR environment variable or use --text.", fg="red")
+            raise click.Abort()
+
+
+@config.command(name="show-instructions")
+@click.option("--path", type=str, default=".", help="Repository path (default: current directory)")
+def config_show_instructions(path: str) -> None:
+    """Show custom organization instructions for a repository.
+
+    Displays the current custom instructions configured for the repository.
+
+    Examples:
+        docman config show-instructions
+        docman config show-instructions --path /path/to/repo
+    """
+    # Find repository root
+    try:
+        repo_root = get_repository_root(start_path=Path(path).resolve())
+    except RepositoryError:
+        raise click.Abort()
+
+    # Load instructions
+    instructions = load_instructions(repo_root)
+
+    if instructions:
+        click.echo()
+        click.secho("Custom Organization Instructions:", bold=True)
+        click.echo()
+        click.echo(instructions)
+        click.echo()
+    else:
+        click.echo("No custom instructions configured for this repository.")
+        click.echo()
+        click.echo("Run 'docman config set-instructions' to add instructions.")
 
 
 if __name__ == "__main__":
