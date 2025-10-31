@@ -5,73 +5,61 @@ from pathlib import Path
 import pytest
 
 from docman.prompt_builder import (
+    _truncate_content_smart,
     build_system_prompt,
     build_user_prompt,
-    get_directory_structure,
+    clear_prompt_cache,
     load_organization_instructions,
 )
 
 
-class TestGetDirectoryStructure:
-    """Tests for get_directory_structure function."""
+class TestTruncateContentSmart:
+    """Tests for _truncate_content_smart function."""
 
-    def test_empty_repository(self, tmp_path: Path) -> None:
-        """Test with empty repository (no subdirectories)."""
-        result = get_directory_structure(tmp_path)
-        assert result == ""
+    def test_short_content_not_truncated(self) -> None:
+        """Test that short content is not truncated."""
+        content = "Short content"
+        result, was_truncated = _truncate_content_smart(content, max_chars=4000)
 
-    def test_single_directory(self, tmp_path: Path) -> None:
-        """Test with single subdirectory."""
-        (tmp_path / "docs").mkdir()
-        result = get_directory_structure(tmp_path)
-        assert result == "- /docs"
+        assert result == content
+        assert was_truncated is False
 
-    def test_nested_directories(self, tmp_path: Path) -> None:
-        """Test with nested directory structure."""
-        (tmp_path / "docs").mkdir()
-        (tmp_path / "docs" / "reports").mkdir()
-        (tmp_path / "data").mkdir()
+    def test_long_content_truncated(self) -> None:
+        """Test that long content is truncated."""
+        content = "x" * 10000
+        result, was_truncated = _truncate_content_smart(content, max_chars=4000)
 
-        result = get_directory_structure(tmp_path)
+        assert len(result) < len(content)
+        assert was_truncated is True
+        assert "truncated" in result.lower()
 
-        # Should be sorted
-        lines = result.split("\n")
-        assert len(lines) == 3
-        assert "- /data" in lines
-        assert "- /docs" in lines
-        assert "- /docs/reports" in lines
+    def test_truncation_preserves_head_and_tail(self) -> None:
+        """Test that truncation preserves beginning and end."""
+        content = "START" + ("x" * 10000) + "END"
+        result, was_truncated = _truncate_content_smart(content, max_chars=4000)
 
-    def test_excludes_docman_directory(self, tmp_path: Path) -> None:
-        """Test that .docman directory is excluded."""
-        (tmp_path / ".docman").mkdir()
-        (tmp_path / "docs").mkdir()
+        assert "START" in result
+        assert "END" in result
+        assert was_truncated is True
 
-        result = get_directory_structure(tmp_path)
+    def test_truncation_marker_format(self) -> None:
+        """Test that truncation marker is properly formatted."""
+        content = "x" * 10000
+        result, was_truncated = _truncate_content_smart(content, max_chars=4000)
 
-        assert ".docman" not in result
-        assert "- /docs" in result
+        # Should have comma-formatted number
+        assert "characters truncated" in result.lower()
+        assert was_truncated is True
 
-    def test_excludes_git_directory(self, tmp_path: Path) -> None:
-        """Test that .git directory is excluded."""
-        (tmp_path / ".git").mkdir()
-        (tmp_path / "src").mkdir()
+    def test_custom_ratios(self) -> None:
+        """Test that custom head/tail ratios work."""
+        content = "x" * 10000
+        result, was_truncated = _truncate_content_smart(
+            content, max_chars=1000, head_ratio=0.8, tail_ratio=0.1
+        )
 
-        result = get_directory_structure(tmp_path)
-
-        assert ".git" not in result
-        assert "- /src" in result
-
-    def test_files_not_included(self, tmp_path: Path) -> None:
-        """Test that files are not included in directory structure."""
-        (tmp_path / "docs").mkdir()
-        (tmp_path / "file.txt").touch()
-        (tmp_path / "docs" / "report.pdf").touch()
-
-        result = get_directory_structure(tmp_path)
-
-        assert "file.txt" not in result
-        assert "report.pdf" not in result
-        assert result == "- /docs"
+        assert len(result) < len(content)
+        assert was_truncated is True
 
 
 class TestLoadOrganizationInstructions:
@@ -129,12 +117,15 @@ class TestBuildSystemPrompt:
 
     def test_returns_non_empty_string(self) -> None:
         """Test that system prompt is not empty."""
+        # Clear cache to ensure fresh result
+        clear_prompt_cache()
         result = build_system_prompt()
         assert isinstance(result, str)
         assert len(result) > 0
 
     def test_contains_key_elements(self) -> None:
         """Test that system prompt contains expected elements."""
+        clear_prompt_cache()
         result = build_system_prompt()
 
         # Should mention document organization
@@ -148,6 +139,28 @@ class TestBuildSystemPrompt:
         assert "suggested_filename" in result
         assert "reason" in result
         assert "confidence" in result
+
+    def test_caching(self) -> None:
+        """Test that system prompt is cached."""
+        clear_prompt_cache()
+
+        prompt1 = build_system_prompt()
+        prompt2 = build_system_prompt()
+
+        # Should return the same object (cached)
+        assert prompt1 is prompt2
+
+    def test_cache_clearing(self) -> None:
+        """Test that cache can be cleared."""
+        clear_prompt_cache()
+        prompt1 = build_system_prompt()
+
+        clear_prompt_cache()
+        prompt2 = build_system_prompt()
+
+        # Should be equal but not the same object
+        assert prompt1 == prompt2
+        assert prompt1 is not prompt2
 
 
 class TestBuildUserPrompt:
@@ -163,41 +176,28 @@ class TestBuildUserPrompt:
         assert file_path in result
         assert content in result
 
-    def test_with_directory_structure(self) -> None:
-        """Test user prompt includes directory structure."""
-        file_path = "test.pdf"
-        content = "Content"
-        dir_structure = "- /docs\n- /reports"
-
-        result = build_user_prompt(file_path, content, dir_structure)
-
-        assert dir_structure in result
-        assert "Directory Structure" in result or "directory structure" in result
-
     def test_with_organization_instructions(self) -> None:
         """Test user prompt includes organization instructions."""
         file_path = "test.pdf"
         content = "Content"
         instructions = "Organize by date"
 
-        result = build_user_prompt(file_path, content, None, instructions)
+        result = build_user_prompt(file_path, content, instructions)
 
         assert instructions in result
         assert "Document Organization Instructions" in result
 
-    def test_with_all_optional_fields(self) -> None:
-        """Test user prompt with all optional fields."""
+    def test_without_organization_instructions(self) -> None:
+        """Test user prompt works without instructions."""
         file_path = "test.pdf"
         content = "Content"
-        dir_structure = "- /docs"
-        instructions = "Organize by date"
 
-        result = build_user_prompt(file_path, content, dir_structure, instructions)
+        result = build_user_prompt(file_path, content)
 
         assert file_path in result
         assert content in result
-        assert dir_structure in result
-        assert instructions in result
+        # Should not have instructions section
+        assert "Document Organization Instructions" not in result
 
     def test_content_truncation(self) -> None:
         """Test that long content is truncated."""

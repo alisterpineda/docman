@@ -28,7 +28,6 @@ from docman.processor import extract_content
 from docman.prompt_builder import (
     build_system_prompt,
     build_user_prompt,
-    get_directory_structure,
     load_organization_instructions,
 )
 from docman.repo_config import (
@@ -310,7 +309,6 @@ def plan(path: str | None, recursive: bool) -> None:
 
     # Build prompts for LLM (done once for entire repository)
     system_prompt = build_system_prompt()
-    directory_structure = get_directory_structure(repo_root)
 
     # Get database session
     session_gen = get_session()
@@ -427,7 +425,6 @@ def plan(path: str | None, recursive: bool) -> None:
                         user_prompt = build_user_prompt(
                             file_path_str,
                             document.content,
-                            directory_structure,
                             organization_instructions,
                         )
                         suggestions = llm_provider_instance.generate_suggestions(

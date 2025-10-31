@@ -4,54 +4,49 @@ This module handles construction of system and user prompts for document
 organization tasks, keeping prompt logic separate from LLM providers.
 """
 
+import functools
 from pathlib import Path
 
-from docman.repository import EXCLUDED_DIRS
+from jinja2 import Environment, PackageLoader
+
+# Initialize Jinja2 template environment
+_template_env = Environment(loader=PackageLoader("docman", "prompt_templates"))
 
 
-def get_directory_structure(repo_root: Path) -> str:
-    """Get a flat list of all directories in the repository.
+def _truncate_content_smart(
+    content: str,
+    max_chars: int = 4000,
+    head_ratio: float = 0.6,
+    tail_ratio: float = 0.3,
+) -> tuple[str, bool]:
+    """Intelligently truncate content while preserving structure.
+
+    Keeps the beginning and end of the document, which typically contain
+    the most important information (title, headers, conclusion, signatures).
 
     Args:
-        repo_root: The repository root directory.
+        content: The document content to truncate.
+        max_chars: Maximum number of characters to keep.
+        head_ratio: Proportion of max_chars to keep from beginning (default 60%).
+        tail_ratio: Proportion of max_chars to keep from end (default 30%).
 
     Returns:
-        Markdown list of directory paths (e.g., "- /dir1\n- /dir1/dir2").
-        Returns empty string if no directories found.
+        Tuple of (truncated_content, was_truncated).
+        was_truncated is True if content was actually truncated.
     """
-    directories = []
+    if len(content) <= max_chars:
+        return content, False
 
-    def should_exclude_dir(dir_path: Path) -> bool:
-        """Check if a directory should be excluded."""
-        return dir_path.name in EXCLUDED_DIRS
+    head_chars = int(max_chars * head_ratio)
+    tail_chars = int(max_chars * tail_ratio)
 
-    def walk_directory(current_dir: Path, relative_path: str = "") -> None:
-        """Recursively walk through directory tree."""
-        try:
-            for item in current_dir.iterdir():
-                if item.is_dir() and not should_exclude_dir(item):
-                    # Calculate relative path
-                    if relative_path:
-                        item_relative = f"{relative_path}/{item.name}"
-                    else:
-                        item_relative = f"/{item.name}"
-                    directories.append(item_relative)
-                    # Recurse into subdirectory
-                    walk_directory(item, item_relative)
-        except PermissionError:
-            # Skip directories we don't have permission to read
-            pass
+    head = content[:head_chars].rstrip()
+    tail = content[-tail_chars:].lstrip()
 
-    walk_directory(repo_root)
+    chars_removed = len(content) - head_chars - tail_chars
+    marker = f"\n\n[... {chars_removed:,} characters truncated ...]\n\n"
 
-    if not directories:
-        return ""
-
-    # Sort directories for consistent output
-    directories.sort()
-
-    # Format as markdown list
-    return "\n".join(f"- {d}" for d in directories)
+    return f"{head}{marker}{tail}", True
 
 
 def load_organization_instructions(repo_root: Path) -> str | None:
@@ -76,50 +71,22 @@ def load_organization_instructions(repo_root: Path) -> str | None:
         return None
 
 
+@functools.lru_cache(maxsize=1)
 def build_system_prompt() -> str:
     """Build the static system prompt that defines the LLM's task.
+
+    This prompt is cached since it never changes during execution.
 
     Returns:
         System prompt string defining the document organization task.
     """
-    return """You are a document organization assistant. Your task is to analyze \
-documents and suggest how they should be organized in a file system.
-
-You will be provided with:
-1. A list of existing directories in the repository
-2. Document organization instructions
-3. The current file path
-4. The document's content
-
-Based on this information, suggest an appropriate directory path and filename for \
-the document.
-
-Provide your suggestion in the following JSON format:
-{
-    "suggested_directory_path": "path/to/directory",
-    "suggested_filename": "filename.ext",
-    "reason": "Brief explanation for this organization",
-    "confidence": 0.85
-}
-
-Guidelines:
-1. suggested_directory_path should be a relative path with forward slashes \
-(e.g., "finance/invoices/2024")
-2. suggested_filename should include the file extension from the original file
-3. reason should be a brief explanation (1-2 sentences) of why this makes sense
-4. confidence should be a float between 0.0 and 1.0 indicating how confident you \
-are in this suggestion
-5. Base your suggestions on the document's content, file type (e.g., PDF, DOCX), \
-date (if present), and any other relevant metadata you can extract
-6. Follow the document organization instructions provided
-
-Return ONLY the JSON object, no additional text or markdown formatting."""
+    template = _template_env.get_template("system_prompt.j2")
+    return template.render()
 
 
 def build_user_prompt(
     file_path: str,
     document_content: str,
-    directory_structure: str | None = None,
     organization_instructions: str | None = None,
 ) -> str:
     """Build the dynamic user prompt for a specific document.
@@ -127,36 +94,27 @@ def build_user_prompt(
     Args:
         file_path: Current path of the file being analyzed.
         document_content: Extracted text content from the document.
-        directory_structure: Optional markdown list of existing directories.
         organization_instructions: Document organization instructions.
 
     Returns:
         User prompt string with document-specific information.
     """
-    # Truncate content if too long (keep first 4000 chars)
-    truncated_content = document_content[:4000]
-    if len(document_content) > 4000:
-        truncated_content += "\n... (content truncated)"
+    # Apply smart truncation to content
+    content, was_truncated = _truncate_content_smart(document_content)
 
-    # Build prompt sections
-    sections = []
+    # Render template
+    template = _template_env.get_template("user_prompt.j2")
+    return template.render(
+        file_path=file_path,
+        content=content,
+        was_truncated=was_truncated,
+        organization_instructions=organization_instructions,
+    )
 
-    # Directory structure (if provided)
-    if directory_structure:
-        sections.append("## Existing Directory Structure\n")
-        sections.append(directory_structure)
 
-    # Document organization instructions (if provided)
-    if organization_instructions:
-        sections.append("\n## Document Organization Instructions\n")
-        sections.append(organization_instructions)
+def clear_prompt_cache() -> None:
+    """Clear cached prompts.
 
-    # Current file information
-    sections.append("\n## Current File\n")
-    sections.append(f"Path: {file_path}")
-
-    # Document content
-    sections.append("\n## Document Content\n")
-    sections.append(truncated_content)
-
-    return "\n".join(sections)
+    Useful for testing or when templates are modified during development.
+    """
+    build_system_prompt.cache_clear()

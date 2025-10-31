@@ -1,0 +1,17 @@
+{% if organization_instructions %}
+## Document Organization Instructions
+
+{{ organization_instructions }}
+{% endif %}
+
+## Current File
+
+Path: {{ file_path }}
+
+## Document Content
+
+{{ content }}
+{% if was_truncated %}
+
+*Note: Content was truncated to fit context window. Beginning and end of document preserved.*
+{% endif %}
