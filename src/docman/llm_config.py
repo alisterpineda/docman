@@ -115,11 +115,19 @@ def add_provider(provider: ProviderConfig, api_key: str) -> None:
     # Add the new provider
     providers.append(provider)
 
-    # Save to config
-    _save_providers(providers)
+    # Store API key in keychain FIRST to ensure we fail before modifying config
+    # This prevents a broken state where config has provider but no API key
+    try:
+        keyring.set_password(KEYRING_SERVICE_NAME, provider.name, api_key)
+    except Exception as e:
+        # If keyring fails, don't save config - this keeps the system consistent
+        raise RuntimeError(
+            f"Failed to store API key securely. This often happens on headless systems "
+            f"without a keyring backend. Error: {e}"
+        ) from e
 
-    # Store API key in keychain
-    keyring.set_password(KEYRING_SERVICE_NAME, provider.name, api_key)
+    # Save to config (only after API key is successfully stored)
+    _save_providers(providers)
 
 
 def remove_provider(name: str) -> bool:
