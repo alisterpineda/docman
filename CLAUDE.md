@@ -4,11 +4,15 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Overview
 
-`docman` is a CLI tool for organizing documents using AI-powered analysis. It uses:
+`docman` is a CLI tool for organizing documents using AI-powered analysis.
+
+**Workflow**: `plan` → `status` → `apply` or `reject`
+
+**Core Technologies**:
 - **docling** for document content extraction
-- **LLM models** (Google Gemini, with more providers planned) for intelligent organization suggestions
+- **LLM models** (Google Gemini) for intelligent organization suggestions
 - **SQLite database** for tracking documents, copies, and pending operations
-- **OS-native credential managers** (Keychain, Secret Service, Windows Credential Manager) for secure API key storage
+- **OS-native credential managers** for secure API key storage
 
 ## Development Commands
 
@@ -134,20 +138,56 @@ Three main tables model document tracking and operations:
    - Skip LLM call if hash matches (content already analyzed with same instructions)
    - Regenerate suggestions if prompt changed
 
+### Apply/Reject Workflow
+
+**Reviewing Suggestions** (`status` command):
+- Query `PendingOperation` joined with `DocumentCopy`
+- Display current path, suggested path, confidence, and reason
+- Filter by file or directory path
+- Color-coded confidence: green (≥80%), yellow (≥60%), red (<60%)
+
+**Applying Operations** (`apply` command):
+- **Interactive mode** (default): Per-operation prompts with [A]pply/[S]kip/[Q]uit/[H]elp
+- **Bulk mode** (`-y` flag): Auto-apply all without prompts
+- File operations via `file_operations.py` module
+- Updates `DocumentCopy.file_path` after successful move
+- Deletes `PendingOperation` after applying
+- Options: `--force` (overwrite conflicts), `--dry-run` (preview only)
+
+**Rejecting Operations** (`reject` command):
+- Deletes `PendingOperation` records without moving files
+- Preserves `Document` and `DocumentCopy` records
+- Supports recursive (`-r`) and non-recursive directory filtering
+
+**File Operations** (`file_operations.py`):
+- `move_file()`: Uses `shutil.move()` for cross-filesystem support
+- Conflict resolution strategies: SKIP (raise error), OVERWRITE (replace), RENAME (add suffix)
+- Creates target directories automatically (`create_dirs=True`)
+- Custom exceptions: `FileConflictError`, `FileNotFoundError`, `FileOperationError`
+
 ### CLI Structure (`cli.py`)
 
-Main command groups:
+Main commands:
 - `docman init [directory]`: Initialize repository
-- `docman plan [path]`: Analyze documents and generate organization suggestions
-- `docman reset`: Clear pending operations
+- `docman plan [path]`: Analyze documents and generate LLM organization suggestions
+- `docman status [path]`: Review pending operations (shows paths, confidence, reasons)
+- `docman apply [path]`: Apply pending operations (interactive or bulk with `-y`)
+- `docman reject [path]`: Reject/delete pending operations without applying
+- `docman reset`: Clear all pending operations (legacy, use `reject --all` instead)
 - `docman llm`: Manage LLM providers (add, list, show, test, set-active, remove)
+- `docman config`: Manage repository configuration (set-instructions, show-instructions)
 
 ### Testing Structure
 
-- **Unit tests** (`tests/unit/`): Test individual modules in isolation
+- **Unit tests** (`tests/unit/`): Test modules in isolation (config, models, file_operations, etc.)
 - **Integration tests** (`tests/integration/`): Test full command workflows
-- Uses `CliRunner` from Click for testing CLI commands
+  - `test_apply_integration.py`: Apply command (interactive & bulk modes)
+  - `test_status_integration.py`: Status command
+  - `test_reject_integration.py`: Reject command
+  - `test_plan_integration.py`: Plan command
+- Uses `CliRunner` from Click for CLI testing
 - Test fixtures in `conftest.py`
+- Current coverage: 77% (261 tests passing)
 
 ## Key Patterns
 
@@ -183,3 +223,23 @@ When modifying prompts or organization instructions:
 2. Compare with stored `prompt_hash` in `PendingOperation`
 3. Regenerate suggestions if hash differs
 4. This avoids unnecessary LLM API calls
+
+## Typical Development Workflow
+
+**Adding a new command**:
+1. Add command function to `cli.py` with Click decorators
+2. Implement database queries using SQLAlchemy session pattern
+3. Add integration tests in `tests/integration/test_<command>_integration.py`
+4. Update this CLAUDE.md with command description
+
+**Modifying file operations**:
+1. Update `file_operations.py` (uses `shutil.move` for filesystem ops)
+2. Add unit tests in `tests/unit/test_file_operations.py`
+3. Test conflict resolution: SKIP, OVERWRITE, RENAME strategies
+
+**Database schema changes**:
+1. Modify models in `models.py`
+2. Generate migration: `alembic revision --autogenerate -m "description"`
+3. Review generated migration in `alembic/versions/`
+4. Apply: `alembic upgrade head`
+5. Update tests to reflect schema changes
