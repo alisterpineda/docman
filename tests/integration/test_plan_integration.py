@@ -1031,7 +1031,7 @@ class TestDocmanPlan:
         result2 = cli_runner.invoke(main, ["plan"], catch_exceptions=False)
         assert result2.exit_code == 0
         assert "Reusing existing copy: test.pdf" in result2.output
-        assert "Pending operation already exists" in result2.output
+        assert "Reusing existing suggestions (prompt unchanged)" in result2.output
         assert "Pending operations created: 0" in result2.output
 
         # Verify only one of everything exists

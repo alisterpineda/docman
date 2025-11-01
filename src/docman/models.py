@@ -153,6 +153,7 @@ class PendingOperation(Base):
         suggested_filename: Suggested filename for the file.
         reason: Explanation for why this organization is suggested.
         confidence: Confidence score between 0.0 and 1.0 (inclusive).
+        prompt_hash: SHA256 hash of the prompt used to generate this suggestion.
         created_at: Timestamp when the suggestion was created.
         document_copy: Relationship to the document copy.
     """
@@ -171,6 +172,7 @@ class PendingOperation(Base):
     suggested_filename: Mapped[str] = mapped_column(String(255), nullable=False)
     reason: Mapped[str] = mapped_column(Text, nullable=False)
     confidence: Mapped[float] = mapped_column(Float, nullable=False)
+    prompt_hash: Mapped[str] = mapped_column(String(64), nullable=False)
     created_at: Mapped[datetime] = mapped_column(
         "createdAt", DateTime, nullable=False, default=get_utc_now
     )

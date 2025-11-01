@@ -65,6 +65,7 @@ class TestDocmanReset:
                 suggested_filename=f"renamed_{file_path}",
                 reason="Test reason",
                 confidence=0.8,
+                prompt_hash="test_prompt_hash",
             )
             session.add(pending_op)
             session.commit()

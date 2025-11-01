@@ -118,3 +118,34 @@ def clear_prompt_cache() -> None:
     Useful for testing or when templates are modified during development.
     """
     build_system_prompt.cache_clear()
+
+
+def compute_prompt_hash(
+    system_prompt: str,
+    organization_instructions: str | None = None,
+) -> str:
+    """Compute SHA256 hash of the prompt components.
+
+    This creates a stable identifier for the "static" part of prompts
+    (system prompt + organization instructions). When this hash changes,
+    it indicates that LLM suggestions should be regenerated.
+
+    Args:
+        system_prompt: The system prompt template.
+        organization_instructions: Document organization instructions (optional).
+
+    Returns:
+        Hexadecimal string representation of the SHA256 hash.
+    """
+    import hashlib
+
+    # Combine system prompt and organization instructions
+    combined = system_prompt
+    if organization_instructions:
+        combined += "\n" + organization_instructions
+
+    # Compute SHA256 hash
+    sha256_hash = hashlib.sha256()
+    sha256_hash.update(combined.encode("utf-8"))
+
+    return sha256_hash.hexdigest()

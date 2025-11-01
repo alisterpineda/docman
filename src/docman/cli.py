@@ -28,6 +28,7 @@ from docman.processor import extract_content
 from docman.prompt_builder import (
     build_system_prompt,
     build_user_prompt,
+    compute_prompt_hash,
     load_organization_instructions,
 )
 from docman.repo_config import (
@@ -310,6 +311,9 @@ def plan(path: str | None, recursive: bool) -> None:
     # Build prompts for LLM (done once for entire repository)
     system_prompt = build_system_prompt()
 
+    # Compute prompt hash for caching (based on system prompt + organization instructions)
+    current_prompt_hash = compute_prompt_hash(system_prompt, organization_instructions)
+
     # Get database session
     session_gen = get_session()
     session = next(session_gen)
@@ -329,6 +333,7 @@ def plan(path: str | None, recursive: bool) -> None:
         failed_count = 0
         duplicate_count = 0  # Same document, different location
         pending_ops_created = 0
+        pending_ops_updated = 0
 
         # Process each file
         for idx, file_path in enumerate(document_files, start=1):
@@ -406,14 +411,23 @@ def plan(path: str | None, recursive: bool) -> None:
                 session.add(copy)
                 session.flush()  # Get the copy.id for the pending operation
 
-            # Step 2: Create pending operation if it doesn't exist (always runs)
+            # Step 2: Create or update pending operation based on prompt hash
             existing_pending_op = (
                 session.query(PendingOperation)
                 .filter(PendingOperation.document_copy_id == copy.id)
                 .first()
             )
 
+            # Determine if we need to generate new suggestions
+            needs_generation = False
             if not existing_pending_op:
+                needs_generation = True
+            elif existing_pending_op.prompt_hash != current_prompt_hash:
+                # Prompt has changed, need to regenerate
+                needs_generation = True
+                click.echo("  Prompt changed, regenerating suggestions...")
+
+            if needs_generation:
                 # Generate LLM suggestions
                 document = session.query(Document).filter(Document.id == copy.document_id).first()
 
@@ -432,13 +446,27 @@ def plan(path: str | None, recursive: bool) -> None:
                             user_prompt
                         )
 
-                        pending_op = PendingOperation(
-                            document_copy_id=copy.id,
-                            suggested_directory_path=suggestions["suggested_directory_path"],
-                            suggested_filename=suggestions["suggested_filename"],
-                            reason=suggestions["reason"],
-                            confidence=suggestions["confidence"],
-                        )
+                        if existing_pending_op:
+                            # Update existing pending operation
+                            existing_pending_op.suggested_directory_path = suggestions["suggested_directory_path"]
+                            existing_pending_op.suggested_filename = suggestions["suggested_filename"]
+                            existing_pending_op.reason = suggestions["reason"]
+                            existing_pending_op.confidence = suggestions["confidence"]
+                            existing_pending_op.prompt_hash = current_prompt_hash
+                            pending_ops_updated += 1
+                        else:
+                            # Create new pending operation
+                            pending_op = PendingOperation(
+                                document_copy_id=copy.id,
+                                suggested_directory_path=suggestions["suggested_directory_path"],
+                                suggested_filename=suggestions["suggested_filename"],
+                                reason=suggestions["reason"],
+                                confidence=suggestions["confidence"],
+                                prompt_hash=current_prompt_hash,
+                            )
+                            session.add(pending_op)
+                            pending_ops_created += 1
+
                         click.echo(
                             f"  → {suggestions['suggested_directory_path']}/"
                             f"{suggestions['suggested_filename']}"
@@ -452,13 +480,26 @@ def plan(path: str | None, recursive: bool) -> None:
                         )
                         current_filename = file_path_obj.name
 
-                        pending_op = PendingOperation(
-                            document_copy_id=copy.id,
-                            suggested_directory_path=current_directory,
-                            suggested_filename=current_filename,
-                            reason="LLM analysis failed, kept original location",
-                            confidence=0.5,
-                        )
+                        if existing_pending_op:
+                            # Update existing pending operation
+                            existing_pending_op.suggested_directory_path = current_directory
+                            existing_pending_op.suggested_filename = current_filename
+                            existing_pending_op.reason = "LLM analysis failed, kept original location"
+                            existing_pending_op.confidence = 0.5
+                            existing_pending_op.prompt_hash = current_prompt_hash
+                            pending_ops_updated += 1
+                        else:
+                            # Create new pending operation
+                            pending_op = PendingOperation(
+                                document_copy_id=copy.id,
+                                suggested_directory_path=current_directory,
+                                suggested_filename=current_filename,
+                                reason="LLM analysis failed, kept original location",
+                                confidence=0.5,
+                                prompt_hash=current_prompt_hash,
+                            )
+                            session.add(pending_op)
+                            pending_ops_created += 1
                 else:
                     # Fallback to stub if no content or LLM not available
                     file_path_obj = Path(file_path_str)
@@ -467,18 +508,28 @@ def plan(path: str | None, recursive: bool) -> None:
                     )
                     current_filename = file_path_obj.name
 
-                    pending_op = PendingOperation(
-                        document_copy_id=copy.id,
-                        suggested_directory_path=current_directory,
-                        suggested_filename=current_filename,
-                        reason="No content available for analysis",
-                        confidence=0.5,
-                    )
-
-                session.add(pending_op)
-                pending_ops_created += 1
+                    if existing_pending_op:
+                        # Update existing pending operation
+                        existing_pending_op.suggested_directory_path = current_directory
+                        existing_pending_op.suggested_filename = current_filename
+                        existing_pending_op.reason = "No content available for analysis"
+                        existing_pending_op.confidence = 0.5
+                        existing_pending_op.prompt_hash = current_prompt_hash
+                        pending_ops_updated += 1
+                    else:
+                        # Create new pending operation
+                        pending_op = PendingOperation(
+                            document_copy_id=copy.id,
+                            suggested_directory_path=current_directory,
+                            suggested_filename=current_filename,
+                            reason="No content available for analysis",
+                            confidence=0.5,
+                            prompt_hash=current_prompt_hash,
+                        )
+                        session.add(pending_op)
+                        pending_ops_created += 1
             else:
-                click.echo("  Pending operation already exists")
+                click.echo("  Reusing existing suggestions (prompt unchanged)")
 
         # Commit all changes
         session.commit()
@@ -491,6 +542,7 @@ def plan(path: str | None, recursive: bool) -> None:
         click.echo(f"  Reused copies (already in this repo): {reused_count}")
         click.echo(f"  Failed (hash or extraction errors): {failed_count}")
         click.echo(f"  Pending operations created: {pending_ops_created}")
+        click.echo(f"  Pending operations updated: {pending_ops_updated}")
         click.echo(f"  Total files: {len(document_files)}")
         click.echo("=" * 50)
 
