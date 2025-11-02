@@ -9,6 +9,8 @@ from pathlib import Path
 
 import click
 
+from docling.document_converter import DocumentConverter
+
 from docman.config import ensure_app_config
 from docman.database import ensure_database, get_session
 from docman.llm_config import (
@@ -395,6 +397,9 @@ def plan(path: str | None, recursive: bool) -> None:
         pending_ops_created = 0
         pending_ops_updated = 0
 
+        # Create a single DocumentConverter instance to reuse for all files
+        converter = DocumentConverter()
+
         # Process each file
         for idx, file_path in enumerate(document_files, start=1):
             file_path_str = str(file_path)
@@ -451,7 +456,7 @@ def plan(path: str | None, recursive: bool) -> None:
                             duplicate_count += 1
                         else:
                             # Extract new content
-                            content = extract_content(full_path)
+                            content = extract_content(full_path, converter=converter)
                             if content is None:
                                 click.echo("  Warning: Content extraction failed")
                             else:
@@ -510,7 +515,7 @@ def plan(path: str | None, recursive: bool) -> None:
                     duplicate_count += 1
                 else:
                     # New document - extract content
-                    content = extract_content(full_path)
+                    content = extract_content(full_path, converter=converter)
 
                     if content is None:
                         click.echo("  Warning: Content extraction failed")

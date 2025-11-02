@@ -5,19 +5,21 @@ from pathlib import Path
 from docling.document_converter import DocumentConverter
 
 
-def extract_content(file_path: Path) -> str | None:
+def extract_content(file_path: Path, converter: DocumentConverter | None = None) -> str | None:
     """
     Extract text content from a document using docling.
 
     Args:
         file_path: Path to the document file.
+        converter: Optional DocumentConverter instance to reuse. If None, creates a new one.
 
     Returns:
         Extracted text content as a string, or None if extraction fails.
     """
     try:
-        # Initialize the document converter
-        converter = DocumentConverter()
+        # Initialize the document converter if not provided
+        if converter is None:
+            converter = DocumentConverter()
 
         # Convert the document
         result = converter.convert(str(file_path))

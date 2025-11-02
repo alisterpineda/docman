@@ -141,6 +141,11 @@ class DocumentCopy(Base):
     # Relationship to canonical document
     document: Mapped["Document"] = relationship("Document", back_populates="copies")
 
+    # Relationship to pending operations (cascade delete)
+    pending_operations: Mapped[list["PendingOperation"]] = relationship(
+        "PendingOperation", cascade="all, delete-orphan"
+    )
+
     def __repr__(self) -> str:
         """Return string representation of DocumentCopy."""
         return (
@@ -192,7 +197,7 @@ class PendingOperation(Base):
     )
 
     # Relationship to document copy
-    document_copy: Mapped["DocumentCopy"] = relationship("DocumentCopy")
+    document_copy: Mapped["DocumentCopy"] = relationship("DocumentCopy", back_populates="pending_operations")
 
     def __repr__(self) -> str:
         """Return string representation of PendingOperation."""

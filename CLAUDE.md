@@ -93,6 +93,7 @@ Three main tables model document tracking and operations:
    - Stores: `suggested_directory_path`, `suggested_filename`, `reason`, `confidence`
    - Invalidation tracking: `prompt_hash` (system prompt + instructions + model), `document_content_hash`, `model_name`
    - Regenerates suggestions when prompt, content, or model changes
+   - **Cascade delete**: Automatically deleted when parent `DocumentCopy` is removed
 
 ### LLM Integration Architecture
 
@@ -106,6 +107,9 @@ Three main tables model document tracking and operations:
 **Provider Abstraction** (`llm_providers.py`):
 - `LLMProvider` abstract base class
 - `GoogleGeminiProvider` implementation (currently supported)
+  - Custom exceptions: `GeminiSafetyBlockError`, `GeminiEmptyResponseError`
+  - Response normalization checks `response.text` and `response.candidates`
+  - Detailed error messages with `finish_reason` from API
 - Factory pattern via `get_provider(config, api_key)`
 - Structured output: JSON with `suggested_directory_path`, `suggested_filename`, `reason`, `confidence`
 
@@ -132,7 +136,9 @@ Three main tables model document tracking and operations:
    - If content changed: updates/creates `Document`, invalidates `PendingOperation`
 
 4. **Content Extraction** (`processor.py`):
-   - Uses docling to extract text content
+   - Uses docling `DocumentConverter` to extract text content
+   - Accepts optional `converter` parameter for reuse (performance optimization)
+   - `plan` command creates single converter instance for all files
    - Computes content hash for deduplication
 
 5. **Database Storage** (`models.py`):
@@ -194,10 +200,10 @@ Main commands:
   - `test_apply_integration.py`: Apply command (interactive & bulk modes)
   - `test_status_integration.py`: Status command
   - `test_reject_integration.py`: Reject command
-  - `test_plan_integration.py`: Plan command
+  - `test_plan_integration.py`: Plan command (includes mutation tests: stale content, deleted files, model changes)
 - Uses `CliRunner` from Click for CLI testing
 - Test fixtures in `conftest.py`
-- Current coverage: 77% (261 tests passing)
+- Current coverage: 77% (256 tests passing)
 
 ## Key Patterns
 
@@ -239,6 +245,17 @@ When modifying prompts, instructions, or model:
 2. Compare with stored `prompt_hash`, `document_content_hash`, `model_name` in `PendingOperation`
 3. Regenerate suggestions if any differ
 4. This avoids unnecessary LLM API calls
+
+### DocumentConverter Reuse
+For batch document processing, reuse the `DocumentConverter` instance:
+```python
+from docling.document_converter import DocumentConverter
+
+converter = DocumentConverter()
+for file_path in files:
+    content = extract_content(file_path, converter=converter)
+```
+Avoids expensive re-initialization on each file. The `plan` command uses this pattern.
 
 ## Typical Development Workflow
 

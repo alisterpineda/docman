@@ -13,6 +13,16 @@ import google.generativeai as genai
 from docman.llm_config import ProviderConfig
 
 
+class GeminiSafetyBlockError(Exception):
+    """Raised when Gemini blocks a response due to safety filters."""
+    pass
+
+
+class GeminiEmptyResponseError(Exception):
+    """Raised when Gemini returns an empty response."""
+    pass
+
+
 class LLMProvider(ABC):
     """Abstract base class for LLM providers.
 
@@ -129,6 +139,8 @@ class GoogleGeminiProvider(LLMProvider):
             Dictionary with organization suggestions.
 
         Raises:
+            GeminiSafetyBlockError: If response is blocked by safety filters.
+            GeminiEmptyResponseError: If response is empty.
             Exception: If API call fails or response cannot be parsed.
         """
         # Combine system and user prompts
@@ -138,9 +150,39 @@ class GoogleGeminiProvider(LLMProvider):
             # Generate response
             response = self.model.generate_content(combined_prompt)
 
+            # Normalize response - check if response.text exists and is non-empty
+            if not hasattr(response, 'text') or not response.text:
+                # Check candidates for blocked or empty responses
+                if hasattr(response, 'candidates') and response.candidates:
+                    candidate = response.candidates[0]
+
+                    # Check finish_reason for blocking
+                    if hasattr(candidate, 'finish_reason'):
+                        finish_reason = str(candidate.finish_reason)
+
+                        # Safety filter blocked the response
+                        if 'SAFETY' in finish_reason:
+                            raise GeminiSafetyBlockError(
+                                f"Gemini blocked response (safety filter): {finish_reason}"
+                            )
+
+                        # Other blocking reasons
+                        if finish_reason not in ['STOP', 'FinishReason.STOP']:
+                            raise GeminiEmptyResponseError(
+                                f"Gemini returned empty response (finish_reason: {finish_reason})"
+                            )
+
+                # No candidates or finish_reason - generic empty response
+                raise GeminiEmptyResponseError(
+                    "Gemini returned empty response with no candidates"
+                )
+
             # Parse the response
             return self._parse_response(response.text)
 
+        except (GeminiSafetyBlockError, GeminiEmptyResponseError):
+            # Re-raise our custom exceptions without wrapping
+            raise
         except Exception as e:
             raise Exception(f"Failed to generate suggestions: {str(e)}") from e
 

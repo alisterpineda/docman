@@ -228,7 +228,7 @@ class TestDocmanPlan:
         mock_hash.side_effect = hash_side_effect
 
         # Mock content extraction to return None for failure
-        def extract_side_effect(path: Path) -> str | None:
+        def extract_side_effect(path: Path, converter=None) -> str | None:
             if "failure" in str(path):
                 return None
             return "Extracted content"
@@ -1133,3 +1133,274 @@ class TestDocmanPlan:
         assert result.exit_code == 1
         assert "Error: Document organization instructions are required" in result.output
         assert "Run 'docman config set-instructions' to create them" in result.output
+
+    @patch("docman.cli.extract_content")
+    @patch("docman.cli.compute_content_hash")
+    def test_plan_detects_stale_content(
+        self,
+        mock_hash: Mock,
+        mock_extract: Mock,
+        cli_runner: CliRunner,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Test that plan detects when file content changes and regenerates suggestions."""
+        repo_dir = self.setup_isolated_env(tmp_path, monkeypatch)
+
+        # Create test document with initial content
+        test_file = repo_dir / "test.pdf"
+        test_file.write_text("Initial content")
+
+        # First run: create document with initial hash
+        mock_hash.return_value = "hash_initial"
+        mock_extract.return_value = "Initial extracted content"
+        monkeypatch.chdir(repo_dir)
+
+        result1 = cli_runner.invoke(main, ["plan"], catch_exceptions=False)
+        assert result1.exit_code == 0
+        assert "Processing: test.pdf" in result1.output
+
+        # Verify initial state
+        session_gen = get_session()
+        session = next(session_gen)
+        try:
+            docs = session.query(Document).all()
+            assert len(docs) == 1
+            assert docs[0].content_hash == "hash_initial"
+            assert docs[0].content == "Initial extracted content"
+
+            copies = session.query(DocumentCopy).all()
+            assert len(copies) == 1
+            initial_copy_id = copies[0].id
+
+            pending_ops = session.query(PendingOperation).all()
+            assert len(pending_ops) == 1
+            assert pending_ops[0].document_content_hash == "hash_initial"
+        finally:
+            try:
+                next(session_gen)
+            except StopIteration:
+                pass
+
+        # Modify file content (same path, different content)
+        test_file.write_text("Modified content - much longer to change size")
+
+        # Second run: should detect change, re-extract, and regenerate suggestions
+        mock_hash.return_value = "hash_modified"
+        mock_extract.return_value = "Modified extracted content"
+
+        result2 = cli_runner.invoke(main, ["plan"], catch_exceptions=False)
+        assert result2.exit_code == 0
+        assert "Checking for changes: test.pdf" in result2.output
+        assert "Content changed, updating document..." in result2.output
+        assert "Extracted" in result2.output
+
+        # Verify content was re-extracted and suggestion regenerated
+        session_gen = get_session()
+        session = next(session_gen)
+        try:
+            # Should have two documents now (old and new content)
+            docs = session.query(Document).all()
+            assert len(docs) == 2
+
+            # Find the new document
+            new_doc = session.query(Document).filter_by(content_hash="hash_modified").first()
+            assert new_doc is not None
+            assert new_doc.content == "Modified extracted content"
+
+            # Copy should still exist with same ID but point to new document
+            copies = session.query(DocumentCopy).all()
+            assert len(copies) == 1
+            assert copies[0].id == initial_copy_id
+            assert copies[0].document_id == new_doc.id
+
+            # Pending operation should be regenerated with new content hash
+            pending_ops = session.query(PendingOperation).all()
+            assert len(pending_ops) == 1
+            assert pending_ops[0].document_content_hash == "hash_modified"
+        finally:
+            try:
+                next(session_gen)
+            except StopIteration:
+                pass
+
+    @patch("docman.cli.extract_content")
+    @patch("docman.cli.compute_content_hash")
+    def test_plan_cleans_up_deleted_files(
+        self,
+        mock_hash: Mock,
+        mock_extract: Mock,
+        cli_runner: CliRunner,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Test that plan cleans up DocumentCopy and PendingOperation when file is deleted."""
+        repo_dir = self.setup_isolated_env(tmp_path, monkeypatch)
+
+        # Create multiple test documents
+        file1 = repo_dir / "file1.pdf"
+        file2 = repo_dir / "file2.pdf"
+        file1.touch()
+        file2.touch()
+
+        # First run: create documents and copies
+        mock_hash.side_effect = ["hash1", "hash2"]
+        mock_extract.return_value = "Content"
+        monkeypatch.chdir(repo_dir)
+
+        result1 = cli_runner.invoke(main, ["plan"], catch_exceptions=False)
+        assert result1.exit_code == 0
+        assert "New documents processed: 2" in result1.output
+
+        # Verify initial state
+        session_gen = get_session()
+        session = next(session_gen)
+        try:
+            assert len(session.query(Document).all()) == 2
+            assert len(session.query(DocumentCopy).all()) == 2
+            assert len(session.query(PendingOperation).all()) == 2
+        finally:
+            try:
+                next(session_gen)
+            except StopIteration:
+                pass
+
+        # Delete file1 outside docman (simulating user deletion)
+        file1.unlink()
+
+        # Second run: should clean up file1's copy and pending operation
+        # Reset the mock and set up for only file2 to be processed
+        mock_hash.reset_mock()
+        mock_hash.return_value = "hash2"
+
+        result2 = cli_runner.invoke(main, ["plan"], catch_exceptions=False)
+        assert result2.exit_code == 0
+        assert "Cleaned up 1 orphaned file(s)" in result2.output
+        assert "Reusing existing copy: file2.pdf" in result2.output
+
+        # Verify cleanup: Document remains, but Copy and PendingOperation for file1 are gone
+        session_gen = get_session()
+        session = next(session_gen)
+        try:
+            # Documents remain (canonical documents are not deleted)
+            docs = session.query(Document).all()
+            assert len(docs) == 2
+
+            # Only file2's copy remains
+            copies = session.query(DocumentCopy).all()
+            assert len(copies) == 1
+            assert copies[0].file_path == "file2.pdf"
+
+            # Only file2's pending operation remains
+            pending_ops = session.query(PendingOperation).all()
+            assert len(pending_ops) == 1
+            assert pending_ops[0].document_copy_id == copies[0].id
+        finally:
+            try:
+                next(session_gen)
+            except StopIteration:
+                pass
+
+    @patch("docman.cli.extract_content")
+    @patch("docman.cli.compute_content_hash")
+    def test_plan_regenerates_on_model_change(
+        self,
+        mock_hash: Mock,
+        mock_extract: Mock,
+        cli_runner: CliRunner,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Test that plan regenerates suggestions when model changes."""
+        repo_dir = self.setup_isolated_env(tmp_path, monkeypatch)
+
+        # Create test document
+        test_file = repo_dir / "test.pdf"
+        test_file.touch()
+
+        # First run with gemini-1.5-flash
+        mock_provider_config_flash = ProviderConfig(
+            name="test-provider-flash",
+            provider_type="google",
+            model="gemini-1.5-flash",
+            is_active=True,
+        )
+        mock_provider_instance_flash = Mock()
+        mock_provider_instance_flash.generate_suggestions.return_value = {
+            "suggested_directory_path": "flash/directory",
+            "suggested_filename": "flash_file.pdf",
+            "reason": "Flash model reason",
+            "confidence": 0.80,
+        }
+
+        monkeypatch.setattr("docman.cli.get_active_provider", Mock(return_value=mock_provider_config_flash))
+        monkeypatch.setattr("docman.cli.get_llm_provider", Mock(return_value=mock_provider_instance_flash))
+
+        mock_hash.return_value = "hash_test"
+        mock_extract.return_value = "Test content"
+        monkeypatch.chdir(repo_dir)
+
+        result1 = cli_runner.invoke(main, ["plan"], catch_exceptions=False)
+        assert result1.exit_code == 0
+        assert "Processing: test.pdf" in result1.output
+
+        # Verify initial pending operation with flash model
+        session_gen = get_session()
+        session = next(session_gen)
+        try:
+            pending_ops = session.query(PendingOperation).all()
+            assert len(pending_ops) == 1
+            assert pending_ops[0].model_name == "gemini-1.5-flash"
+            assert pending_ops[0].suggested_directory_path == "flash/directory"
+            assert pending_ops[0].reason == "Flash model reason"
+        finally:
+            try:
+                next(session_gen)
+            except StopIteration:
+                pass
+
+        # Change model to gemini-1.5-pro
+        mock_provider_config_pro = ProviderConfig(
+            name="test-provider-pro",
+            provider_type="google",
+            model="gemini-1.5-pro",
+            is_active=True,
+        )
+        mock_provider_instance_pro = Mock()
+        mock_provider_instance_pro.generate_suggestions.return_value = {
+            "suggested_directory_path": "pro/directory",
+            "suggested_filename": "pro_file.pdf",
+            "reason": "Pro model reason",
+            "confidence": 0.90,
+        }
+
+        monkeypatch.setattr("docman.cli.get_active_provider", Mock(return_value=mock_provider_config_pro))
+        monkeypatch.setattr("docman.cli.get_llm_provider", Mock(return_value=mock_provider_instance_pro))
+
+        # Second run with pro model
+        result2 = cli_runner.invoke(main, ["plan"], catch_exceptions=False)
+        assert result2.exit_code == 0
+        assert "Reusing existing copy: test.pdf" in result2.output
+        assert "Prompt or model changed, regenerating suggestions..." in result2.output
+        assert "Generating LLM suggestions..." in result2.output
+
+        # Verify pending operation was regenerated with new model
+        session_gen = get_session()
+        session = next(session_gen)
+        try:
+            # Still only one document and copy
+            assert len(session.query(Document).all()) == 1
+            assert len(session.query(DocumentCopy).all()) == 1
+
+            # But pending operation was updated with new model and suggestions
+            pending_ops = session.query(PendingOperation).all()
+            assert len(pending_ops) == 1
+            assert pending_ops[0].model_name == "gemini-1.5-pro"
+            assert pending_ops[0].suggested_directory_path == "pro/directory"
+            assert pending_ops[0].reason == "Pro model reason"
+            assert pending_ops[0].confidence == 0.90
+        finally:
+            try:
+                next(session_gen)
+            except StopIteration:
+                pass
