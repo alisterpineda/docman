@@ -9,8 +9,30 @@ from abc import ABC, abstractmethod
 from typing import Any
 
 import google.generativeai as genai
+from pydantic import BaseModel, field_validator
 
 from docman.llm_config import ProviderConfig
+
+
+class OrganizationSuggestion(BaseModel):
+    """Pydantic model for document organization suggestions.
+
+    This model is used for structured output from LLM providers that support it.
+    It ensures the response matches the expected schema.
+    """
+
+    suggested_directory_path: str
+    suggested_filename: str
+    reason: str
+    confidence: float
+
+    @field_validator("confidence")
+    @classmethod
+    def validate_confidence(cls, v: float) -> float:
+        """Validate that confidence is between 0.0 and 1.0."""
+        if not 0.0 <= v <= 1.0:
+            raise ValueError(f"Confidence must be between 0.0 and 1.0, got {v}")
+        return v
 
 
 class GeminiSafetyBlockError(Exception):
@@ -39,6 +61,16 @@ class LLMProvider(ABC):
         """
         self.config = config
         self.api_key = api_key
+
+    @property
+    def supports_structured_output(self) -> bool:
+        """Indicates if this provider supports native structured output.
+
+        Returns:
+            True if the provider supports structured output (e.g., response schemas),
+            False otherwise. Default is False for maximum compatibility.
+        """
+        return False
 
     @abstractmethod
     def generate_suggestions(self, system_prompt: str, user_prompt: str) -> dict[str, Any]:
@@ -82,7 +114,22 @@ class GoogleGeminiProvider(LLMProvider):
         """
         super().__init__(config, api_key)
         genai.configure(api_key=api_key)
-        self.model = genai.GenerativeModel(config.model)
+
+        # Configure structured output using Pydantic model
+        generation_config = genai.GenerationConfig(
+            response_mime_type="application/json",
+            response_schema=OrganizationSuggestion,
+        )
+
+        self.model = genai.GenerativeModel(
+            config.model,
+            generation_config=generation_config,
+        )
+
+    @property
+    def supports_structured_output(self) -> bool:
+        """Google Gemini supports structured output via response schemas."""
+        return True
 
     @staticmethod
     def list_models(api_key: str) -> list[dict[str, str]]:
@@ -131,6 +178,9 @@ class GoogleGeminiProvider(LLMProvider):
     def generate_suggestions(self, system_prompt: str, user_prompt: str) -> dict[str, Any]:
         """Generate file organization suggestions using Google Gemini.
 
+        With structured output enabled, the API guarantees the response matches
+        the OrganizationSuggestion schema.
+
         Args:
             system_prompt: Static system prompt defining the LLM's task.
             user_prompt: Dynamic user prompt with document-specific information.
@@ -147,7 +197,7 @@ class GoogleGeminiProvider(LLMProvider):
         combined_prompt = f"{system_prompt}\n\n{user_prompt}"
 
         try:
-            # Generate response
+            # Generate response with structured output
             response = self.model.generate_content(combined_prompt)
 
             # Normalize response - check if response.text exists and is non-empty
@@ -177,12 +227,26 @@ class GoogleGeminiProvider(LLMProvider):
                     "Gemini returned empty response with no candidates"
                 )
 
-            # Parse the response
-            return self._parse_response(response.text)
+            # Parse JSON response (API enforces schema via structured output)
+            data = json.loads(response.text)
+
+            # Validate and return as dictionary
+            return {
+                "suggested_directory_path": str(data["suggested_directory_path"]),
+                "suggested_filename": str(data["suggested_filename"]),
+                "reason": str(data["reason"]),
+                "confidence": float(data["confidence"]),
+            }
 
         except (GeminiSafetyBlockError, GeminiEmptyResponseError):
             # Re-raise our custom exceptions without wrapping
             raise
+        except json.JSONDecodeError as e:
+            raise Exception(f"Failed to parse JSON response: {str(e)}") from e
+        except KeyError as e:
+            raise Exception(f"Missing required field in response: {str(e)}") from e
+        except (ValueError, TypeError) as e:
+            raise Exception(f"Invalid field type in response: {str(e)}") from e
         except Exception as e:
             raise Exception(f"Failed to generate suggestions: {str(e)}") from e
 
@@ -227,52 +291,6 @@ class GoogleGeminiProvider(LLMProvider):
             else:
                 # Generic error with original message
                 raise Exception(f"Connection test failed: {str(e)}") from e
-
-
-    def _parse_response(self, response_text: str) -> dict[str, Any]:
-        """Parse the LLM response into structured data.
-
-        Args:
-            response_text: Raw text response from the LLM.
-
-        Returns:
-            Parsed dictionary with suggestion fields.
-
-        Raises:
-            ValueError: If response cannot be parsed or is missing required fields.
-        """
-        # Clean up the response (remove markdown code blocks if present)
-        cleaned_text = response_text.strip()
-        if cleaned_text.startswith("```json"):
-            cleaned_text = cleaned_text[7:]  # Remove ```json
-        if cleaned_text.startswith("```"):
-            cleaned_text = cleaned_text[3:]  # Remove ```
-        if cleaned_text.endswith("```"):
-            cleaned_text = cleaned_text[:-3]  # Remove trailing ```
-        cleaned_text = cleaned_text.strip()
-
-        try:
-            data = json.loads(cleaned_text)
-        except json.JSONDecodeError as e:
-            raise ValueError(f"Failed to parse JSON response: {str(e)}") from e
-
-        # Validate required fields
-        required_fields = ["suggested_directory_path", "suggested_filename", "reason", "confidence"]
-        for field in required_fields:
-            if field not in data:
-                raise ValueError(f"Missing required field: {field}")
-
-        # Validate confidence is between 0 and 1
-        confidence = float(data["confidence"])
-        if not 0.0 <= confidence <= 1.0:
-            raise ValueError(f"Confidence must be between 0.0 and 1.0, got {confidence}")
-
-        return {
-            "suggested_directory_path": str(data["suggested_directory_path"]),
-            "suggested_filename": str(data["suggested_filename"]),
-            "reason": str(data["reason"]),
-            "confidence": confidence,
-        }
 
 
 def list_available_models(provider_type: str, api_key: str) -> list[dict[str, str]]:

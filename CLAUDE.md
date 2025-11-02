@@ -11,6 +11,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 **Core Technologies**:
 - **docling** for document content extraction
 - **LLM models** (Google Gemini) for intelligent organization suggestions
+- **Pydantic** for structured output schemas and validation
 - **SQLite database** for tracking documents, copies, and pending operations
 - **OS-native credential managers** for secure API key storage
 
@@ -99,19 +100,24 @@ Three main tables model document tracking and operations:
 
 **Prompt Building** (`prompt_builder.py`):
 - Uses Jinja2 templates in `src/docman/prompt_templates/`
-- `system_prompt.j2`: Static task definition (cached)
+- `system_prompt.j2`: Adaptive prompts based on provider capabilities
+  - Uses `use_structured_output` flag to conditionally include/omit JSON format instructions
+  - When structured output enabled: API enforces schema, prompt omits format details
+  - When disabled: Includes explicit JSON format instructions for compatibility
 - `user_prompt.j2`: Per-document prompt with file path, content, and organization instructions
 - Smart content truncation: Keeps beginning (60%) and end (30%) of long documents
 - Prompt hash caching: Avoids redundant LLM calls when prompts haven't changed
 
 **Provider Abstraction** (`llm_providers.py`):
-- `LLMProvider` abstract base class
+- `OrganizationSuggestion` Pydantic model: Defines response schema with field validation
+- `LLMProvider` abstract base class with `supports_structured_output` property
 - `GoogleGeminiProvider` implementation (currently supported)
+  - Uses native structured output via `generation_config` with `response_schema`
+  - `supports_structured_output = True`: API guarantees schema compliance
   - Custom exceptions: `GeminiSafetyBlockError`, `GeminiEmptyResponseError`
   - Response normalization checks `response.text` and `response.candidates`
-  - Detailed error messages with `finish_reason` from API
 - Factory pattern via `get_provider(config, api_key)`
-- Structured output: JSON with `suggested_directory_path`, `suggested_filename`, `reason`, `confidence`
+- Output schema: `suggested_directory_path`, `suggested_filename`, `reason`, `confidence` (0.0-1.0)
 
 **Configuration** (`llm_config.py`):
 - Manages multiple provider configurations
@@ -269,6 +275,23 @@ files = [f for f in discover_document_files(repo_root) if f.startswith(subdir_pa
 ```
 The `plan` command uses scoped discovery for subdirectory operations.
 
+### Structured Output and Provider Capabilities
+When adding new LLM providers, declare capabilities and adapt prompts:
+```python
+# In provider class
+@property
+def supports_structured_output(self) -> bool:
+    return True  # or False for providers without schema support
+
+# In CLI code
+system_prompt = build_system_prompt(
+    use_structured_output=provider.supports_structured_output
+)
+```
+- Providers with structured output: Configure API schema (Pydantic model), omit format instructions from prompt
+- Providers without: Include JSON format instructions in prompt, parse manually
+- Template conditionals adapt automatically based on `use_structured_output` flag
+
 ## Typical Development Workflow
 
 **Adding a new command**:
@@ -288,3 +311,12 @@ The `plan` command uses scoped discovery for subdirectory operations.
 3. Review generated migration in `alembic/versions/`
 4. Apply: `alembic upgrade head`
 5. Update tests to reflect schema changes
+
+**Adding a new LLM provider**:
+1. Create provider class in `llm_providers.py` inheriting from `LLMProvider`
+2. Implement `generate_suggestions()` and `test_connection()` methods
+3. Override `supports_structured_output` property if provider supports native schemas
+4. If structured output supported: Configure API with `OrganizationSuggestion` Pydantic model
+5. If not supported: Parse JSON response manually in `generate_suggestions()`
+6. Add to factory function `get_provider()` and `list_available_models()`
+7. Test both structured and unstructured prompt modes

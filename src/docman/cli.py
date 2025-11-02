@@ -360,7 +360,10 @@ def plan(path: str | None, recursive: bool) -> None:
         raise click.Abort()
 
     # Build prompts for LLM (done once for entire repository)
-    system_prompt = build_system_prompt()
+    # Use structured output if provider supports it
+    system_prompt = build_system_prompt(
+        use_structured_output=llm_provider_instance.supports_structured_output
+    )
 
     # Get model name from active provider
     model_name = active_provider.model if active_provider else None

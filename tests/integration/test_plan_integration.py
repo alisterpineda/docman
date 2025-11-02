@@ -29,6 +29,7 @@ class TestDocmanPlan:
         # Create mock provider instance
         mock_provider_instance = Mock()
         mock_provider_instance.test_connection.return_value = True
+        mock_provider_instance.supports_structured_output = True
         mock_provider_instance.generate_suggestions.return_value = {
             "suggested_directory_path": "test/directory",
             "suggested_filename": "test_file.pdf",

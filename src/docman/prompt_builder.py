@@ -71,17 +71,22 @@ def load_organization_instructions(repo_root: Path) -> str | None:
         return None
 
 
-@functools.lru_cache(maxsize=1)
-def build_system_prompt() -> str:
+@functools.lru_cache(maxsize=2)
+def build_system_prompt(use_structured_output: bool = False) -> str:
     """Build the static system prompt that defines the LLM's task.
 
-    This prompt is cached since it never changes during execution.
+    This prompt is cached for both structured and unstructured output modes.
+
+    Args:
+        use_structured_output: If True, omits JSON formatting instructions
+            (since the API enforces the schema). If False, includes detailed
+            JSON format instructions for models without structured output support.
 
     Returns:
         System prompt string defining the document organization task.
     """
     template = _template_env.get_template("system_prompt.j2")
-    return template.render()
+    return template.render(use_structured_output=use_structured_output)
 
 
 def build_user_prompt(

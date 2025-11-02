@@ -15,6 +15,7 @@ authors = [
 dependencies = [
     "click>=8.1.7",
     "platformdirs>=4.0.0",
+    "pydantic>=2.0.0",
     "pyyaml>=6.0.1",
     "sqlalchemy>=2.0.0",
     "alembic>=1.13.0",

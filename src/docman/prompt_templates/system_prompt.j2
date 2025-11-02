@@ -6,6 +6,7 @@ You will be provided with:
 3. The document's content
 
 Based on this information, suggest an appropriate directory path and filename for the document.
+{% if not use_structured_output %}
 
 Provide your suggestion in the following JSON format:
 {
@@ -14,6 +15,7 @@ Provide your suggestion in the following JSON format:
     "reason": "Brief explanation for this organization",
     "confidence": 0.85
 }
+{% endif %}
 
 Guidelines:
 1. suggested_directory_path should be a relative path with forward slashes (e.g., "finance/invoices/2024")
@@ -28,5 +30,7 @@ Confidence Guidelines:
 - 0.7-0.8: Good fit based on content analysis
 - 0.5-0.6: Reasonable guess but ambiguous
 - 0.0-0.4: Very uncertain, minimal information
+{% if not use_structured_output %}
 
 Return ONLY the JSON object, no additional text or markdown formatting.
+{% endif %}
