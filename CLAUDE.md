@@ -126,7 +126,8 @@ Three main tables model document tracking and operations:
    - Updates `last_seen_at` for existing files
 
 2. **Discovery** (`repository.py`):
-   - `discover_document_files()`: Recursive file finding
+   - `discover_document_files(repo_root, root_path=None)`: Recursive file finding
+     - `root_path` parameter limits walk to subdirectory (defaults to `repo_root`)
    - `discover_document_files_shallow()`: Non-recursive
    - Filters by `SUPPORTED_EXTENSIONS` (PDF, DOCX, TXT, etc.)
 
@@ -256,6 +257,17 @@ for file_path in files:
     content = extract_content(file_path, converter=converter)
 ```
 Avoids expensive re-initialization on each file. The `plan` command uses this pattern.
+
+### Directory Scoping
+When discovering files in subdirectories, pass `root_path` to limit filesystem traversal:
+```python
+# Efficient: walks only subdir/
+files = discover_document_files(repo_root, root_path=subdir_path)
+
+# Inefficient: walks entire repo, then filters
+files = [f for f in discover_document_files(repo_root) if f.startswith(subdir_path)]
+```
+The `plan` command uses scoped discovery for subdirectory operations.
 
 ## Typical Development Workflow
 

@@ -334,12 +334,9 @@ def plan(path: str | None, recursive: bool) -> None:
                     document_files = discover_document_files(repo_root)
                     click.echo("Discovering documents recursively in entire repository...")
                 else:
-                    # Recursive discovery in subdirectory
-                    all_files = discover_document_files(repo_root)
+                    # Recursive discovery in subdirectory - pass target_path as root_path
+                    document_files = discover_document_files(repo_root, root_path=target_path)
                     rel_target = target_path.relative_to(repo_root)
-                    document_files = [
-                        f for f in all_files if f.parts[:len(rel_target.parts)] == rel_target.parts
-                    ]
                     click.echo(f"Discovering documents recursively in: {rel_target}")
             else:
                 # Shallow discovery - only immediate files

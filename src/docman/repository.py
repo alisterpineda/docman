@@ -140,7 +140,7 @@ EXCLUDED_DIRS = {
 }
 
 
-def discover_document_files(repo_root: Path) -> list[Path]:
+def discover_document_files(repo_root: Path, root_path: Path | None = None) -> list[Path]:
     """
     Discover all document files in the repository.
 
@@ -149,11 +149,18 @@ def discover_document_files(repo_root: Path) -> list[Path]:
 
     Args:
         repo_root: The repository root directory.
+        root_path: The starting directory for the walk. If None, defaults to repo_root.
+                   Must be within repo_root. Files are still returned as paths relative
+                   to repo_root.
 
     Returns:
         List of file paths relative to the repository root.
     """
     document_files = []
+
+    # Default to repo_root if no root_path specified
+    if root_path is None:
+        root_path = repo_root
 
     def should_exclude_dir(dir_path: Path) -> bool:
         """Check if a directory should be excluded from search."""
@@ -177,7 +184,7 @@ def discover_document_files(repo_root: Path) -> list[Path]:
             # Skip directories we don't have permission to read
             pass
 
-    walk_directory(repo_root)
+    walk_directory(root_path)
     return sorted(document_files)
 
 
