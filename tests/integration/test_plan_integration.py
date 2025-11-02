@@ -932,7 +932,7 @@ class TestDocmanPlan:
         tmp_path: Path,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        """Test the complete reset -> plan workflow recreates pending operations."""
+        """Test the complete reject --all -> plan workflow recreates pending operations."""
         repo_dir = self.setup_isolated_env(tmp_path, monkeypatch)
 
         # Create multiple test documents
@@ -962,10 +962,10 @@ class TestDocmanPlan:
             except StopIteration:
                 pass
 
-        # Step 2: Reset - clears pending operations
-        result2 = cli_runner.invoke(main, ["reset", "-y"], catch_exceptions=False)
+        # Step 2: Reject all - clears pending operations
+        result2 = cli_runner.invoke(main, ["reject", "--all", "-y"], catch_exceptions=False)
         assert result2.exit_code == 0
-        assert "Successfully deleted 2 pending operation(s)" in result2.output
+        assert "Successfully rejected 2 pending operation(s)" in result2.output
 
         # Verify pending operations were deleted
         session_gen = get_session()

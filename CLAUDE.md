@@ -173,7 +173,6 @@ Main commands:
 - `docman status [path]`: Review pending operations (shows paths, confidence, reasons)
 - `docman apply [path]`: Apply pending operations (interactive or bulk with `-y`)
 - `docman reject [path]`: Reject/delete pending operations without applying
-- `docman reset`: Clear all pending operations (legacy, use `reject --all` instead)
 - `docman llm`: Manage LLM providers (add, list, show, test, set-active, remove)
 - `docman config`: Manage repository configuration (set-instructions, show-instructions)
 

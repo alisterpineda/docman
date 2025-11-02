@@ -78,8 +78,8 @@ docman plan docs/ -r           # Process specific directory recursively
 docman plan invoice.pdf        # Process single file
 
 # Clear pending operations for a repository
-docman reset                   # Clear all pending operations
-docman reset -y                # Skip confirmation prompt
+docman reject --all            # Clear all pending operations
+docman reject --all -y         # Skip confirmation prompt
 ```
 
 ### LLM Provider Management
