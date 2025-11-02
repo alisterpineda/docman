@@ -23,7 +23,7 @@ from docman.llm_config import (
 )
 from docman.llm_providers import get_provider as get_llm_provider
 from docman.llm_wizard import run_llm_wizard
-from docman.models import Document, DocumentCopy, PendingOperation, compute_content_hash
+from docman.models import Document, DocumentCopy, PendingOperation, compute_content_hash, get_utc_now, file_needs_rehashing
 from docman.processor import extract_content
 from docman.prompt_builder import (
     build_system_prompt,
@@ -132,6 +132,51 @@ def init(directory: str) -> None:
             f"Error: Failed to initialize repository: {e}", fg="red", err=True
         )
         raise click.Abort()
+
+
+def cleanup_orphaned_copies(session, repo_root: Path) -> tuple[int, int]:
+    """Clean up document copies for files that no longer exist.
+
+    This function performs garbage collection by:
+    1. Checking all DocumentCopy records for the repository
+    2. Verifying if the file still exists on disk
+    3. Deleting copies for missing files (cascades to PendingOperation)
+    4. Updating last_seen_at for files that exist
+
+    Args:
+        session: SQLAlchemy database session.
+        repo_root: Path to the repository root directory.
+
+    Returns:
+        Tuple of (deleted_count, updated_count).
+    """
+    repository_path = str(repo_root)
+
+    # Query all copies for this repository
+    copies = (
+        session.query(DocumentCopy)
+        .filter(DocumentCopy.repository_path == repository_path)
+        .all()
+    )
+
+    deleted_count = 0
+    updated_count = 0
+    current_time = get_utc_now()
+
+    for copy in copies:
+        file_path = repo_root / copy.file_path
+
+        if not file_path.exists():
+            # File no longer exists - delete the copy (cascades to pending operations)
+            session.delete(copy)
+            deleted_count += 1
+        else:
+            # File exists - update last_seen_at
+            copy.last_seen_at = current_time
+            updated_count += 1
+
+    session.commit()
+    return deleted_count, updated_count
 
 
 @main.command()
@@ -318,14 +363,22 @@ def plan(path: str | None, recursive: bool) -> None:
     # Build prompts for LLM (done once for entire repository)
     system_prompt = build_system_prompt()
 
-    # Compute prompt hash for caching (based on system prompt + organization instructions)
-    current_prompt_hash = compute_prompt_hash(system_prompt, organization_instructions)
+    # Get model name from active provider
+    model_name = active_provider.model if active_provider else None
+
+    # Compute prompt hash for caching (based on system prompt + organization instructions + model)
+    current_prompt_hash = compute_prompt_hash(system_prompt, organization_instructions, model_name)
 
     # Get database session
     session_gen = get_session()
     session = next(session_gen)
 
     try:
+        # Clean up orphaned copies (files that no longer exist)
+        deleted_count, _ = cleanup_orphaned_copies(session, repo_root)
+        if deleted_count > 0:
+            click.echo(f"Cleaned up {deleted_count} orphaned file(s)\n")
+
         # Query existing copies in this repository
         existing_copies = (
             session.query(DocumentCopy)
@@ -350,10 +403,6 @@ def plan(path: str | None, recursive: bool) -> None:
             # Check if copy already exists in this repository at this path
             if file_path_str in existing_copy_paths:
                 # Retrieve existing copy
-                click.echo(
-                    f"[{idx}/{len(document_files)}] {percentage}% "
-                    f"Reusing existing copy: {file_path}"
-                )
                 copy = (
                     session.query(DocumentCopy)
                     .filter(
@@ -366,7 +415,74 @@ def plan(path: str | None, recursive: bool) -> None:
                     click.echo("  Error: Expected copy not found in database")
                     failed_count += 1
                     continue
-                reused_count += 1
+
+                full_path = repo_root / file_path
+
+                # Check if file content has changed
+                if file_needs_rehashing(copy, full_path):
+                    click.echo(
+                        f"[{idx}/{len(document_files)}] {percentage}% "
+                        f"Checking for changes: {file_path}"
+                    )
+
+                    # File metadata changed, rehash to check content
+                    try:
+                        content_hash = compute_content_hash(full_path)
+                    except Exception as e:
+                        click.echo(f"  Error computing hash: {e}")
+                        failed_count += 1
+                        continue
+
+                    # Check if content actually changed
+                    if content_hash != copy.document.content_hash:
+                        click.echo("  Content changed, updating document...")
+
+                        # Content changed - update or create new document
+                        new_document = (
+                            session.query(Document)
+                            .filter(Document.content_hash == content_hash)
+                            .first()
+                        )
+
+                        if new_document:
+                            # Document with this content already exists
+                            click.echo(f"  Found existing document (hash: {content_hash[:8]}...)")
+                            copy.document_id = new_document.id
+                            duplicate_count += 1
+                        else:
+                            # Extract new content
+                            content = extract_content(full_path)
+                            if content is None:
+                                click.echo("  Warning: Content extraction failed")
+                            else:
+                                click.echo(f"  Extracted {len(content)} characters")
+                                processed_count += 1
+
+                            # Create new document
+                            new_document = Document(content_hash=content_hash, content=content)
+                            session.add(new_document)
+                            session.flush()
+
+                            # Update copy to point to new document
+                            copy.document_id = new_document.id
+
+                        # Delete existing pending operation (will be regenerated)
+                        session.query(PendingOperation).filter(
+                            PendingOperation.document_copy_id == copy.id
+                        ).delete()
+
+                    # Update stored metadata
+                    stat = full_path.stat()
+                    copy.stored_content_hash = content_hash
+                    copy.stored_size = stat.st_size
+                    copy.stored_mtime = stat.st_mtime
+                    session.flush()
+                else:
+                    click.echo(
+                        f"[{idx}/{len(document_files)}] {percentage}% "
+                        f"Reusing existing copy: {file_path}"
+                    )
+                    reused_count += 1
             else:
                 # Show progress
                 click.echo(f"[{idx}/{len(document_files)}] {percentage}% Processing: {file_path}")
@@ -409,11 +525,15 @@ def plan(path: str | None, recursive: bool) -> None:
                     session.add(document)
                     session.flush()  # Get the document.id for the copy
 
-                # Create document copy for this repository
+                # Create document copy for this repository with stored metadata
+                stat = full_path.stat()
                 copy = DocumentCopy(
                     document_id=document.id,
                     repository_path=repository_path,
                     file_path=file_path_str,
+                    stored_content_hash=content_hash,
+                    stored_size=stat.st_size,
+                    stored_mtime=stat.st_mtime,
                 )
                 session.add(copy)
                 session.flush()  # Get the copy.id for the pending operation
@@ -425,14 +545,30 @@ def plan(path: str | None, recursive: bool) -> None:
                 .first()
             )
 
+            # Get the document to check content hash
+            document = session.query(Document).filter(Document.id == copy.document_id).first()
+
             # Determine if we need to generate new suggestions
             needs_generation = False
+            invalidation_reason = None
+
             if not existing_pending_op:
                 needs_generation = True
             elif existing_pending_op.prompt_hash != current_prompt_hash:
-                # Prompt has changed, need to regenerate
+                # Prompt or model has changed, need to regenerate
                 needs_generation = True
-                click.echo("  Prompt changed, regenerating suggestions...")
+                invalidation_reason = "Prompt or model changed"
+            elif document and existing_pending_op.document_content_hash != document.content_hash:
+                # Document content has changed, need to regenerate
+                needs_generation = True
+                invalidation_reason = "Document content changed"
+            elif model_name and existing_pending_op.model_name != model_name:
+                # Model changed (redundant with prompt hash, but explicit)
+                needs_generation = True
+                invalidation_reason = "Model changed"
+
+            if needs_generation and invalidation_reason:
+                click.echo(f"  {invalidation_reason}, regenerating suggestions...")
 
             if needs_generation:
                 # Generate LLM suggestions
@@ -460,6 +596,8 @@ def plan(path: str | None, recursive: bool) -> None:
                             existing_pending_op.reason = suggestions["reason"]
                             existing_pending_op.confidence = suggestions["confidence"]
                             existing_pending_op.prompt_hash = current_prompt_hash
+                            existing_pending_op.document_content_hash = document.content_hash if document else None
+                            existing_pending_op.model_name = model_name
                             pending_ops_updated += 1
                         else:
                             # Create new pending operation
@@ -470,6 +608,8 @@ def plan(path: str | None, recursive: bool) -> None:
                                 reason=suggestions["reason"],
                                 confidence=suggestions["confidence"],
                                 prompt_hash=current_prompt_hash,
+                                document_content_hash=document.content_hash if document else None,
+                                model_name=model_name,
                             )
                             session.add(pending_op)
                             pending_ops_created += 1
@@ -494,6 +634,8 @@ def plan(path: str | None, recursive: bool) -> None:
                             existing_pending_op.reason = "LLM analysis failed, kept original location"
                             existing_pending_op.confidence = 0.5
                             existing_pending_op.prompt_hash = current_prompt_hash
+                            existing_pending_op.document_content_hash = document.content_hash if document else None
+                            existing_pending_op.model_name = model_name
                             pending_ops_updated += 1
                         else:
                             # Create new pending operation
@@ -504,6 +646,8 @@ def plan(path: str | None, recursive: bool) -> None:
                                 reason="LLM analysis failed, kept original location",
                                 confidence=0.5,
                                 prompt_hash=current_prompt_hash,
+                                document_content_hash=document.content_hash if document else None,
+                                model_name=model_name,
                             )
                             session.add(pending_op)
                             pending_ops_created += 1
@@ -522,6 +666,8 @@ def plan(path: str | None, recursive: bool) -> None:
                         existing_pending_op.reason = "No content available for analysis"
                         existing_pending_op.confidence = 0.5
                         existing_pending_op.prompt_hash = current_prompt_hash
+                        existing_pending_op.document_content_hash = document.content_hash if document else None
+                        existing_pending_op.model_name = model_name
                         pending_ops_updated += 1
                     else:
                         # Create new pending operation
@@ -532,6 +678,8 @@ def plan(path: str | None, recursive: bool) -> None:
                             reason="No content available for analysis",
                             confidence=0.5,
                             prompt_hash=current_prompt_hash,
+                            document_content_hash=document.content_hash if document else None,
+                            model_name=model_name,
                         )
                         session.add(pending_op)
                         pending_ops_created += 1

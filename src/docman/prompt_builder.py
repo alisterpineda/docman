@@ -123,26 +123,30 @@ def clear_prompt_cache() -> None:
 def compute_prompt_hash(
     system_prompt: str,
     organization_instructions: str | None = None,
+    model_name: str | None = None,
 ) -> str:
     """Compute SHA256 hash of the prompt components.
 
     This creates a stable identifier for the "static" part of prompts
-    (system prompt + organization instructions). When this hash changes,
+    (system prompt + organization instructions + model name). When this hash changes,
     it indicates that LLM suggestions should be regenerated.
 
     Args:
         system_prompt: The system prompt template.
         organization_instructions: Document organization instructions (optional).
+        model_name: LLM model name (optional).
 
     Returns:
         Hexadecimal string representation of the SHA256 hash.
     """
     import hashlib
 
-    # Combine system prompt and organization instructions
+    # Combine system prompt, organization instructions, and model name
     combined = system_prompt
     if organization_instructions:
         combined += "\n" + organization_instructions
+    if model_name:
+        combined += "\n" + model_name
 
     # Compute SHA256 hash
     sha256_hash = hashlib.sha256()

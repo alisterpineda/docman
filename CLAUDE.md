@@ -84,13 +84,15 @@ Three main tables model document tracking and operations:
 2. **`document_copies`**: Specific file instances (fungible)
    - Links to canonical document via `document_id`
    - Tracks: `repository_path`, `file_path`
+   - Stale content detection: `stored_content_hash`, `stored_size`, `stored_mtime`
+   - Garbage collection: `last_seen_at` (indexed)
    - Unique constraint on (`repository_path`, `file_path`)
 
 3. **`pending_operations`**: LLM suggestions for file reorganization
    - One per document copy (unique constraint on `document_copy_id`)
    - Stores: `suggested_directory_path`, `suggested_filename`, `reason`, `confidence`
-   - `prompt_hash`: SHA256 of system prompt + organization instructions
-   - Used to invalidate stale suggestions when prompts change
+   - Invalidation tracking: `prompt_hash` (system prompt + instructions + model), `document_content_hash`, `model_name`
+   - Regenerates suggestions when prompt, content, or model changes
 
 ### LLM Integration Architecture
 
@@ -114,29 +116,38 @@ Three main tables model document tracking and operations:
 
 ### Document Processing Flow
 
-1. **Discovery** (`repository.py`):
+1. **Garbage Collection** (`cleanup_orphaned_copies()`):
+   - Runs at start of `plan` command
+   - Deletes `DocumentCopy` for files that no longer exist on disk
+   - Updates `last_seen_at` for existing files
+
+2. **Discovery** (`repository.py`):
    - `discover_document_files()`: Recursive file finding
    - `discover_document_files_shallow()`: Non-recursive
    - Filters by `SUPPORTED_EXTENSIONS` (PDF, DOCX, TXT, etc.)
 
-2. **Content Extraction** (`processor.py`):
+3. **Stale Content Detection** (`file_needs_rehashing()`):
+   - Checks `stored_size` and `stored_mtime` vs current file
+   - Only rehashes if metadata changed (performance optimization)
+   - If content changed: updates/creates `Document`, invalidates `PendingOperation`
+
+4. **Content Extraction** (`processor.py`):
    - Uses docling to extract text content
    - Computes content hash for deduplication
 
-3. **Database Storage** (`models.py`):
+5. **Database Storage** (`models.py`):
    - Create/update `Document` (by content hash)
-   - Create/update `DocumentCopy` (by repo + file path)
+   - Create/update `DocumentCopy` with stored metadata
 
-4. **LLM Suggestion** (`cli.py` `plan` command):
+6. **Invalidation Check** (multi-factor):
+   - Compares: `prompt_hash`, `document_content_hash`, `model_name`
+   - Regenerates if any changed
+
+7. **LLM Suggestion** (`cli.py` `plan` command):
    - Load organization instructions from `.docman/instructions.md`
    - Build prompts using `prompt_builder.py`
    - Call LLM provider for suggestions
-   - Store in `PendingOperation` with prompt hash
-
-5. **Prompt Hash Validation**:
-   - Compare current prompt hash with stored hash
-   - Skip LLM call if hash matches (content already analyzed with same instructions)
-   - Regenerate suggestions if prompt changed
+   - Store in `PendingOperation` with all tracking fields
 
 ### Apply/Reject Workflow
 
@@ -216,11 +227,17 @@ raise click.Abort()
 ### Content Hashing
 Always use `compute_content_hash()` from `models.py` for consistent SHA256 hashing.
 
+### Stale Content Detection
+Use `file_needs_rehashing(copy, file_path)` to efficiently check if file changed:
+- Returns `True` if `stored_size` or `stored_mtime` differ (needs rehash)
+- Returns `False` if metadata matches (skip rehashing for performance)
+- Always update stored metadata after processing
+
 ### Prompt Hash Caching
-When modifying prompts or organization instructions:
-1. Compute new prompt hash using `compute_prompt_hash()`
-2. Compare with stored `prompt_hash` in `PendingOperation`
-3. Regenerate suggestions if hash differs
+When modifying prompts, instructions, or model:
+1. Compute new prompt hash using `compute_prompt_hash(system_prompt, instructions, model_name)`
+2. Compare with stored `prompt_hash`, `document_content_hash`, `model_name` in `PendingOperation`
+3. Regenerate suggestions if any differ
 4. This avoids unnecessary LLM API calls
 
 ## Typical Development Workflow

@@ -147,10 +147,17 @@ class TestDocmanPlan:
             session.add(existing_doc)
             session.flush()
 
+            # Get file metadata for stored fields
+            test_file = repo_dir / "test1.pdf"
+            stat = test_file.stat()
+
             existing_copy = DocumentCopy(
                 document_id=existing_doc.id,
                 repository_path=str(repo_dir),
                 file_path="test1.pdf",
+                stored_content_hash="hash1",
+                stored_size=stat.st_size,
+                stored_mtime=stat.st_mtime,
             )
             session.add(existing_copy)
             session.commit()
@@ -161,7 +168,8 @@ class TestDocmanPlan:
                 pass
 
         # Mock content hash and extraction
-        mock_hash.side_effect = ["hash2"]  # test2.pdf gets new hash
+        # test1.pdf will be reused (no hash computed), test2.pdf gets hash2 for new document
+        mock_hash.side_effect = ["hash2"]
         mock_extract.return_value = "New content"
 
         # Change to the repository directory

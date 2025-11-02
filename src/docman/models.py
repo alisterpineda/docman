@@ -105,6 +105,10 @@ class DocumentCopy(Base):
         document_id: Foreign key to the canonical document.
         repository_path: Absolute path to the repository root.
         file_path: Path to the file (absolute or relative to repository).
+        stored_content_hash: Content hash when last processed (for stale detection).
+        stored_size: File size in bytes when last processed (for stale detection).
+        stored_mtime: File modification time when last processed (for stale detection).
+        last_seen_at: Timestamp when this file was last seen on disk (for cleanup).
         created_at: Timestamp when this copy was first discovered.
         updated_at: Timestamp when this copy was last verified.
         document: Relationship to the canonical document.
@@ -121,6 +125,12 @@ class DocumentCopy(Base):
     )
     repository_path: Mapped[str] = mapped_column(String, nullable=False)
     file_path: Mapped[str] = mapped_column(String, nullable=False)
+    stored_content_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    stored_size: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    stored_mtime: Mapped[float | None] = mapped_column(Float, nullable=True)
+    last_seen_at: Mapped[datetime | None] = mapped_column(
+        "lastSeenAt", DateTime, nullable=True, index=True
+    )
     created_at: Mapped[datetime] = mapped_column(
         "createdAt", DateTime, nullable=False, default=get_utc_now
     )
@@ -154,6 +164,8 @@ class PendingOperation(Base):
         reason: Explanation for why this organization is suggested.
         confidence: Confidence score between 0.0 and 1.0 (inclusive).
         prompt_hash: SHA256 hash of the prompt used to generate this suggestion.
+        document_content_hash: Content hash when this suggestion was generated (for invalidation).
+        model_name: LLM model name when this suggestion was generated (for invalidation).
         created_at: Timestamp when the suggestion was created.
         document_copy: Relationship to the document copy.
     """
@@ -173,6 +185,8 @@ class PendingOperation(Base):
     reason: Mapped[str] = mapped_column(Text, nullable=False)
     confidence: Mapped[float] = mapped_column(Float, nullable=False)
     prompt_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    document_content_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    model_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         "createdAt", DateTime, nullable=False, default=get_utc_now
     )
@@ -186,3 +200,39 @@ class PendingOperation(Base):
             f"<PendingOperation(id={self.id}, document_copy_id={self.document_copy_id}, "
             f"confidence={self.confidence})>"
         )
+
+
+def file_needs_rehashing(copy: DocumentCopy, file_path: Path) -> bool:
+    """Check if a file needs to be rehashed based on stored metadata.
+
+    This is an optimization to avoid rehashing files that haven't changed.
+    We first check the file size and modification time - only if those differ
+    do we need to rehash the file to check if content actually changed.
+
+    Args:
+        copy: The DocumentCopy database record with stored metadata.
+        file_path: Path to the current file on disk.
+
+    Returns:
+        True if the file needs to be rehashed (metadata differs or not stored),
+        False if the stored metadata matches and we can skip rehashing.
+    """
+    # If we don't have stored metadata, we need to hash
+    if copy.stored_size is None or copy.stored_mtime is None:
+        return True
+
+    # Check if file exists
+    if not file_path.exists():
+        return False  # File doesn't exist, no point in rehashing
+
+    # Get current file metadata
+    stat = file_path.stat()
+    current_size = stat.st_size
+    current_mtime = stat.st_mtime
+
+    # If size or mtime differs, we need to rehash
+    if current_size != copy.stored_size or abs(current_mtime - copy.stored_mtime) > 0.001:
+        return True
+
+    # Metadata matches, no need to rehash
+    return False
