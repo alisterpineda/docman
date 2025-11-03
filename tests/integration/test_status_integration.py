@@ -7,7 +7,7 @@ from click.testing import CliRunner
 
 from docman.cli import main
 from docman.database import ensure_database, get_session
-from docman.models import Document, DocumentCopy, PendingOperation
+from docman.models import Document, DocumentCopy, Operation, OperationStatus
 
 
 class TestDocmanStatus:
@@ -62,7 +62,7 @@ class TestDocmanStatus:
             session.flush()
 
             # Create pending operation
-            pending_op = PendingOperation(
+            pending_op = Operation(
                 document_copy_id=copy.id,
                 suggested_directory_path=suggested_dir,
                 suggested_filename=suggested_filename,
@@ -306,7 +306,7 @@ class TestDocmanStatus:
             session.flush()
 
             # Create pending operations for both copies
-            op1 = PendingOperation(
+            op1 = Operation(
                 document_copy_id=copy1.id,
                 suggested_directory_path="reports",
                 suggested_filename="annual-report.pdf",
@@ -314,7 +314,7 @@ class TestDocmanStatus:
                 confidence=0.95,
                 prompt_hash="hash1",
             )
-            op2 = PendingOperation(
+            op2 = Operation(
                 document_copy_id=copy2.id,
                 suggested_directory_path="reports",
                 suggested_filename="annual-report.pdf",
@@ -380,7 +380,7 @@ class TestDocmanStatus:
             session.flush()
 
             # Create pending operations with SAME target
-            op1 = PendingOperation(
+            op1 = Operation(
                 document_copy_id=copy1.id,
                 suggested_directory_path="reports",
                 suggested_filename="report.pdf",
@@ -388,7 +388,7 @@ class TestDocmanStatus:
                 confidence=0.9,
                 prompt_hash="hash1",
             )
-            op2 = PendingOperation(
+            op2 = Operation(
                 document_copy_id=copy2.id,
                 suggested_directory_path="reports",
                 suggested_filename="report.pdf",  # Same target!
@@ -439,7 +439,7 @@ class TestDocmanStatus:
                 session.flush()
 
                 # Create pending operation
-                op = PendingOperation(
+                op = Operation(
                     document_copy_id=copy.id,
                     suggested_directory_path="reports",
                     suggested_filename=f"report{i}.pdf",

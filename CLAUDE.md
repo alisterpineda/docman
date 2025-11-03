@@ -84,18 +84,24 @@ Three main tables model document tracking and operations:
 
 2. **`document_copies`**: Specific file instances (fungible)
    - Links to canonical document via `document_id`
+   - Links to accepted operation via `accepted_operation_id` (nullable FK to `operations.id`)
    - Tracks: `repository_path`, `file_path`
    - Stale content detection: `stored_content_hash`, `stored_size`, `stored_mtime`
    - Garbage collection: `last_seen_at` (indexed)
    - **Organization status**: Enum field (`unorganized`, `organized`, `ignored`) - indexed
    - Unique constraint on (`repository_path`, `file_path`)
 
-3. **`pending_operations`**: LLM suggestions for file reorganization
-   - One per document copy (unique constraint on `document_copy_id`)
+3. **`operations`**: LLM suggestions for file reorganization with lifecycle tracking
+   - **Status tracking**: Enum field (`pending`, `accepted`, `rejected`) - indexed
+   - **One PENDING per copy**: Partial unique index on `(document_copy_id) WHERE status='pending'`
+   - **Historical preservation**: Operations NOT cascade-deleted; `document_copy_id` set to NULL when copy removed
+   - Multiple historical operations (ACCEPTED/REJECTED) preserved for few-shot prompting
    - Stores: `suggested_directory_path`, `suggested_filename`, `reason`, `confidence`
-   - Invalidation tracking: `prompt_hash` (system prompt + instructions + model), `document_content_hash`, `model_name`
+   - Invalidation tracking: `prompt_hash` (indexed), `document_content_hash`, `model_name`
+   - **Few-shot index**: Composite index on `(status, prompt_hash)` for fast historical lookup
    - Regenerates suggestions when prompt, content, or model changes
-   - **Cascade delete**: Automatically deleted when parent `DocumentCopy` is removed
+   - **On accept**: Status set to `ACCEPTED`, `DocumentCopy.accepted_operation_id` links to this operation
+   - **On reject**: Status set to `REJECTED`, operation preserved for historical record
 
 ### LLM Integration Architecture
 
@@ -141,7 +147,7 @@ Three main tables model document tracking and operations:
 3. **Stale Content Detection** (`file_needs_rehashing()`):
    - Checks `stored_size` and `stored_mtime` vs current file
    - Only rehashes if metadata changed (performance optimization)
-   - If content changed: updates/creates `Document`, invalidates `PendingOperation`
+   - If content changed: updates/creates `Document`, invalidates `Operation`
 
 4. **Content Extraction** (`processor.py`):
    - Uses docling `DocumentConverter` to extract text content
@@ -161,19 +167,19 @@ Three main tables model document tracking and operations:
    - Load organization instructions from `.docman/instructions.md`
    - Build prompts using `prompt_builder.py`
    - Call LLM provider for suggestions
-   - Store in `PendingOperation` with all tracking fields
+   - Store in `Operation` with all tracking fields
 
 **Error Handling**:
-- **Content extraction failures**: File counted in `failed_count`, no `PendingOperation` created
-- **LLM API failures**: File skipped, counted in `skipped_count`, no `PendingOperation` created
+- **Content extraction failures**: File counted in `failed_count`, no `Operation` created
+- **LLM API failures**: File skipped, counted in `skipped_count`, no `Operation` created
 - **No double counting**: Extraction failures don't increment `skipped_count`
-- **Stale operations cleanup**: Existing `PendingOperation` deleted if file now fails processing
+- **Stale operations cleanup**: Existing `Operation` deleted if file now fails processing
 - **Summary statistics**: Shows distinct counts for failed (extraction) vs skipped (LLM) files
 
 ### Apply/Reject Workflow
 
 **Reviewing Suggestions** (`status` command):
-- Query `PendingOperation` joined with `DocumentCopy`
+- Query `Operation` (status=PENDING) joined with `DocumentCopy`
 - Display current path, suggested path, confidence, and reason
 - Filter by file or directory path
 - Color-coded confidence: green (≥80%), yellow (≥60%), red (<60%)
@@ -183,11 +189,14 @@ Three main tables model document tracking and operations:
 - **Bulk mode** (`-y` flag): Auto-apply all without prompts
 - File operations via `file_operations.py` module
 - Updates `DocumentCopy.file_path` after successful move
-- Deletes `PendingOperation` after applying
+- **Marks operation as ACCEPTED**: Sets `status=ACCEPTED`, links via `DocumentCopy.accepted_operation_id`
+- Sets `DocumentCopy.organization_status=ORGANIZED`
+- Operation preserved for historical record and few-shot prompting
 - Options: `--force` (overwrite conflicts), `--dry-run` (preview only)
 
 **Rejecting Operations** (`reject` command):
-- Deletes `PendingOperation` records without moving files
+- **Marks operations as REJECTED**: Sets `status=REJECTED`, preserves operation for historical record
+- Does NOT move files or change organization status
 - Preserves `Document` and `DocumentCopy` records
 - Supports recursive (`-r`) and non-recursive directory filtering
 
@@ -216,15 +225,15 @@ Three main tables model document tracking and operations:
   - Sets status to `organized` after successfully moving file
   - Also sets to `organized` if file is already at target location (no-op)
 - **`reject`**:
-  - Deletes `PendingOperation` but does NOT change status
-  - Allows file to be re-planned next time
+  - Marks `Operation` as REJECTED but does NOT change organization status
+  - Allows file to be re-planned next time (new PENDING operation will be created)
 - **`unmark`**:
   - Sets status to `unorganized`
-  - Deletes any existing `PendingOperation`
+  - Deletes any PENDING `Operation` (preserves historical ACCEPTED/REJECTED operations)
   - Supports `--all` flag and `-r` (recursive) for directories
 - **`ignore`**:
   - Sets status to `ignored`
-  - Deletes any existing `PendingOperation`
+  - Deletes any PENDING `Operation` (preserves historical ACCEPTED/REJECTED operations)
   - Supports `-r` (recursive) for directories
   - Requires a path argument (no `--all` flag)
 - **`status`**:
@@ -344,7 +353,7 @@ docman dedupe docs/      # Only deduplicate files in docs/
 - **Dry Run** (`--dry-run`):
   - Shows what would be deleted
   - Works with both interactive and bulk modes
-- **Database Cleanup**: Deletes `DocumentCopy` and cascades to `PendingOperation`
+- **Database Cleanup**: Deletes `DocumentCopy` and cascades to `Operation`
 
 **Example Duplicate Group Display**:
 ```
@@ -422,7 +431,7 @@ Use `file_needs_rehashing(copy, file_path)` to efficiently check if file changed
 ### Prompt Hash Caching
 When modifying prompts, instructions, or model:
 1. Compute new prompt hash using `compute_prompt_hash(system_prompt, instructions, model_name)`
-2. Compare with stored `prompt_hash`, `document_content_hash`, `model_name` in `PendingOperation`
+2. Compare with stored `prompt_hash`, `document_content_hash`, `model_name` in `Operation`
 3. Regenerate suggestions if any differ
 4. This avoids unnecessary LLM API calls
 

@@ -26,7 +26,7 @@ from docman.llm_config import (
 )
 from docman.llm_providers import get_provider as get_llm_provider
 from docman.llm_wizard import run_llm_wizard
-from docman.models import Document, DocumentCopy, OrganizationStatus, PendingOperation, compute_content_hash, get_utc_now, file_needs_rehashing
+from docman.models import Document, DocumentCopy, Operation, OperationStatus, OrganizationStatus, compute_content_hash, get_utc_now, file_needs_rehashing
 from docman.processor import extract_content
 from docman.prompt_builder import (
     build_system_prompt,
@@ -143,7 +143,7 @@ def cleanup_orphaned_copies(session, repo_root: Path) -> tuple[int, int]:
     This function performs garbage collection by:
     1. Checking all DocumentCopy records for the repository
     2. Verifying if the file still exists on disk
-    3. Deleting copies for missing files (cascades to PendingOperation)
+    3. Deleting copies for missing files (cascades to Operation)
     4. Updating last_seen_at for files that exist
 
     Args:
@@ -238,7 +238,7 @@ def find_duplicate_groups(session, repo_root: Path) -> dict[int, list[DocumentCo
 
 def detect_target_conflicts(
     session, repo_root: Path
-) -> dict[str, list[tuple[PendingOperation, DocumentCopy]]]:
+) -> dict[str, list[tuple[Operation, DocumentCopy]]]:
     """Detect pending operations that would create filename conflicts.
 
     Identifies cases where multiple files would be moved to the same target location.
@@ -248,21 +248,22 @@ def detect_target_conflicts(
         repo_root: Path to the repository root directory.
 
     Returns:
-        Dictionary mapping target path to list of (PendingOperation, DocumentCopy) tuples.
+        Dictionary mapping target path to list of (Operation, DocumentCopy) tuples.
         Only includes target paths with multiple operations (conflicts).
     """
     repository_path = str(repo_root)
 
     # Query all pending operations with their copies
     ops = (
-        session.query(PendingOperation, DocumentCopy)
-        .join(DocumentCopy, PendingOperation.document_copy_id == DocumentCopy.id)
+        session.query(Operation, DocumentCopy)
+        .join(DocumentCopy, Operation.document_copy_id == DocumentCopy.id)
         .filter(DocumentCopy.repository_path == repository_path)
+        .filter(Operation.status == OperationStatus.PENDING)
         .all()
     )
 
     # Group by target path
-    target_paths: dict[str, list[tuple[PendingOperation, DocumentCopy]]] = {}
+    target_paths: dict[str, list[tuple[Operation, DocumentCopy]]] = {}
     for op, copy in ops:
         # Build target path
         if op.suggested_directory_path:
@@ -281,22 +282,22 @@ def detect_target_conflicts(
 
 
 def detect_conflicts_in_operations(
-    pending_ops: list[tuple[PendingOperation, DocumentCopy]], repo_root: Path
-) -> dict[str, list[tuple[PendingOperation, DocumentCopy]]]:
+    pending_ops: list[tuple[Operation, DocumentCopy]], repo_root: Path
+) -> dict[str, list[tuple[Operation, DocumentCopy]]]:
     """Detect conflicts within a specific list of pending operations.
 
     Identifies cases where multiple operations would move files to the same target location.
 
     Args:
-        pending_ops: List of (PendingOperation, DocumentCopy) tuples to check.
+        pending_ops: List of (Operation, DocumentCopy) tuples to check.
         repo_root: Path to the repository root directory.
 
     Returns:
-        Dictionary mapping target path to list of (PendingOperation, DocumentCopy) tuples.
+        Dictionary mapping target path to list of (Operation, DocumentCopy) tuples.
         Only includes target paths with multiple operations (conflicts).
     """
     # Group by target path
-    target_paths: dict[str, list[tuple[PendingOperation, DocumentCopy]]] = {}
+    target_paths: dict[str, list[tuple[Operation, DocumentCopy]]] = {}
     for op, copy in pending_ops:
         # Build target path
         if op.suggested_directory_path:
@@ -634,8 +635,8 @@ def plan(path: str | None, recursive: bool, reprocess: bool) -> None:
                             copy.document_id = new_document.id
 
                         # Delete existing pending operation (will be regenerated)
-                        session.query(PendingOperation).filter(
-                            PendingOperation.document_copy_id == copy.id
+                        session.query(Operation).filter(
+                            Operation.document_copy_id == copy.id
                         ).delete()
 
                     # Update stored metadata
@@ -714,8 +715,9 @@ def plan(path: str | None, recursive: bool, reprocess: bool) -> None:
 
             # Step 3: Create or update pending operation based on prompt hash
             existing_pending_op = (
-                session.query(PendingOperation)
-                .filter(PendingOperation.document_copy_id == copy.id)
+                session.query(Operation)
+                .filter(Operation.document_copy_id == copy.id)
+                .filter(Operation.status == OperationStatus.PENDING)
                 .first()
             )
 
@@ -784,7 +786,7 @@ def plan(path: str | None, recursive: bool, reprocess: bool) -> None:
                             pending_ops_updated += 1
                         else:
                             # Create new pending operation
-                            pending_op = PendingOperation(
+                            pending_op = Operation(
                                 document_copy_id=copy.id,
                                 suggested_directory_path=suggestions["suggested_directory_path"],
                                 suggested_filename=suggestions["suggested_filename"],
@@ -928,9 +930,10 @@ def status(path: str | None) -> None:
     try:
         # Query pending operations for this repository
         query = (
-            session.query(PendingOperation, DocumentCopy)
-            .join(DocumentCopy, PendingOperation.document_copy_id == DocumentCopy.id)
+            session.query(Operation, DocumentCopy)
+            .join(DocumentCopy, Operation.document_copy_id == DocumentCopy.id)
             .filter(DocumentCopy.repository_path == repository_path)
+            .filter(Operation.status == OperationStatus.PENDING)
         )
 
         # Filter by path if provided
@@ -987,7 +990,7 @@ def status(path: str | None) -> None:
         # Display duplicate groups first
         if duplicate_ops:
             # Group duplicate operations by document_id
-            dup_groups_display: dict[int, list[tuple[PendingOperation, DocumentCopy]]] = {}
+            dup_groups_display: dict[int, list[tuple[Operation, DocumentCopy]]] = {}
             for pending_op, doc_copy in duplicate_ops:
                 if doc_copy.document_id not in dup_groups_display:
                     dup_groups_display[doc_copy.document_id] = []
@@ -1280,9 +1283,10 @@ def apply(path: str | None, apply_all: bool, yes: bool, force: bool, dry_run: bo
     try:
         # Query pending operations for this repository
         query = (
-            session.query(PendingOperation, DocumentCopy)
-            .join(DocumentCopy, PendingOperation.document_copy_id == DocumentCopy.id)
+            session.query(Operation, DocumentCopy)
+            .join(DocumentCopy, Operation.document_copy_id == DocumentCopy.id)
             .filter(DocumentCopy.repository_path == repository_path)
+            .filter(Operation.status == OperationStatus.PENDING)
         )
 
         # Filter by path if provided
@@ -1394,17 +1398,19 @@ def apply(path: str | None, apply_all: bool, yes: bool, force: bool, dry_run: bo
                     click.echo()
 
                     if click.confirm("Remove this pending operation?", default=True):
-                        # Mark as organized since it's already at the target location
+                        # Mark as organized and accept operation since it's already at the target location
+                        pending_op.status = OperationStatus.ACCEPTED
+                        doc_copy.accepted_operation_id = pending_op.id
                         doc_copy.organization_status = OrganizationStatus.ORGANIZED
-                        session.delete(pending_op)
                         click.secho("  ✓ Removed", fg="green")
                     else:
                         click.secho("  ○ Kept", fg="white")
                 else:
-                    # Non-interactive: always delete and mark as organized
+                    # Non-interactive: always accept and mark as organized
                     if not dry_run:
+                        pending_op.status = OperationStatus.ACCEPTED
+                        doc_copy.accepted_operation_id = pending_op.id
                         doc_copy.organization_status = OrganizationStatus.ORGANIZED
-                        session.delete(pending_op)
 
                 skipped_count += 1
                 continue
@@ -1478,11 +1484,10 @@ def apply(path: str | None, apply_all: bool, yes: bool, force: bool, dry_run: bo
                 # Update the document copy's file path in the database
                 doc_copy.file_path = str(target.relative_to(repo_root))
 
-                # Mark the file as organized
+                # Mark the file as organized and accept the operation
+                pending_op.status = OperationStatus.ACCEPTED
+                doc_copy.accepted_operation_id = pending_op.id
                 doc_copy.organization_status = OrganizationStatus.ORGANIZED
-
-                # Delete the pending operation
-                session.delete(pending_op)
 
                 applied_count += 1
             except FileConflictError as e:
@@ -1523,16 +1528,18 @@ def apply(path: str | None, apply_all: bool, yes: bool, force: bool, dry_run: bo
                         # Use RENAME conflict resolution
                         new_target = move_file(source, target, conflict_resolution=ConflictResolution.RENAME, create_dirs=True)
                         doc_copy.file_path = str(new_target.relative_to(repo_root))
+                        pending_op.status = OperationStatus.ACCEPTED
+                        doc_copy.accepted_operation_id = pending_op.id
                         doc_copy.organization_status = OrganizationStatus.ORGANIZED
-                        session.delete(pending_op)
                         click.secho(f"  ✓ Renamed to {new_target.name}", fg="green")
                         applied_count += 1
                     elif choice.upper() == 'O':
                         # Use OVERWRITE conflict resolution
                         move_file(source, target, conflict_resolution=ConflictResolution.OVERWRITE, create_dirs=True)
                         doc_copy.file_path = str(target.relative_to(repo_root))
+                        pending_op.status = OperationStatus.ACCEPTED
+                        doc_copy.accepted_operation_id = pending_op.id
                         doc_copy.organization_status = OrganizationStatus.ORGANIZED
-                        session.delete(pending_op)
                         click.secho("  ✓ Overwritten", fg="green")
                         applied_count += 1
                     else:
@@ -1696,9 +1703,10 @@ def reject(path: str | None, reject_all: bool, yes: bool, recursive: bool) -> No
     try:
         # Query pending operations for this repository
         query = (
-            session.query(PendingOperation, DocumentCopy)
-            .join(DocumentCopy, PendingOperation.document_copy_id == DocumentCopy.id)
+            session.query(Operation, DocumentCopy)
+            .join(DocumentCopy, Operation.document_copy_id == DocumentCopy.id)
             .filter(DocumentCopy.repository_path == repository_path)
+            .filter(Operation.status == OperationStatus.PENDING)
         )
 
         # Filter by path if provided
@@ -1773,9 +1781,9 @@ def reject(path: str | None, reject_all: bool, yes: bool, recursive: bool) -> No
                 click.echo("Aborted.")
                 return
 
-        # Delete all pending operations
+        # Mark all pending operations as rejected
         for pending_op, doc_copy in pending_ops_to_delete:
-            session.delete(pending_op)
+            pending_op.status = OperationStatus.REJECTED
 
         session.commit()
 
@@ -1972,8 +1980,9 @@ def unmark(path: str | None, unmark_all: bool, yes: bool, recursive: bool) -> No
             doc_copy.organization_status = OrganizationStatus.UNORGANIZED
 
             # Delete any pending operations
-            pending_ops = session.query(PendingOperation).filter(
-                PendingOperation.document_copy_id == doc_copy.id
+            pending_ops = session.query(Operation).filter(
+                Operation.document_copy_id == doc_copy.id,
+                Operation.status == OperationStatus.PENDING
             ).all()
             for pending_op in pending_ops:
                 session.delete(pending_op)
@@ -2140,8 +2149,9 @@ def ignore(path: str | None, yes: bool, recursive: bool) -> None:
             doc_copy.organization_status = OrganizationStatus.IGNORED
 
             # Delete any pending operations
-            pending_ops = session.query(PendingOperation).filter(
-                PendingOperation.document_copy_id == doc_copy.id
+            pending_ops = session.query(Operation).filter(
+                Operation.document_copy_id == doc_copy.id,
+                Operation.status == OperationStatus.PENDING
             ).all()
             for pending_op in pending_ops:
                 session.delete(pending_op)
@@ -2418,7 +2428,7 @@ def dedupe(path: str | None, yes: bool, dry_run: bool) -> None:
                 if file_path.exists():
                     file_path.unlink()
 
-                # Delete from database (will cascade to PendingOperation)
+                # Delete from database (will cascade to Operation)
                 session.delete(copy)
                 deleted_count += 1
             except Exception as e:

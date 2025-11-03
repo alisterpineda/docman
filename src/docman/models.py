@@ -32,6 +32,14 @@ class OrganizationStatus(enum.Enum):
     IGNORED = "ignored"
 
 
+class OperationStatus(enum.Enum):
+    """Enum for tracking operation lifecycle state."""
+
+    PENDING = "pending"
+    ACCEPTED = "accepted"
+    REJECTED = "rejected"
+
+
 def get_utc_now() -> datetime:
     """Get current UTC time as a timezone-aware datetime."""
     return datetime.now(UTC)
@@ -113,6 +121,7 @@ class DocumentCopy(Base):
     Attributes:
         id: Primary key identifier for the copy.
         document_id: Foreign key to the canonical document.
+        accepted_operation_id: Foreign key to the currently accepted operation (nullable).
         repository_path: Absolute path to the repository root.
         file_path: Path to the file (absolute or relative to repository).
         stored_content_hash: Content hash when last processed (for stale detection).
@@ -123,6 +132,8 @@ class DocumentCopy(Base):
         created_at: Timestamp when this copy was first discovered.
         updated_at: Timestamp when this copy was last verified.
         document: Relationship to the canonical document.
+        operations: Relationship to all operations for this document copy.
+        accepted_operation: Relationship to the currently accepted operation.
     """
 
     __tablename__ = "document_copies"
@@ -133,6 +144,9 @@ class DocumentCopy(Base):
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     document_id: Mapped[int] = mapped_column(
         Integer, ForeignKey("documents.id"), nullable=False, index=True
+    )
+    accepted_operation_id: Mapped[int | None] = mapped_column(
+        Integer, ForeignKey("operations.id", ondelete="SET NULL"), nullable=True, index=True
     )
     repository_path: Mapped[str] = mapped_column(String, nullable=False)
     file_path: Mapped[str] = mapped_column(String, nullable=False)
@@ -159,9 +173,18 @@ class DocumentCopy(Base):
     # Relationship to canonical document
     document: Mapped["Document"] = relationship("Document", back_populates="copies")
 
-    # Relationship to pending operations (cascade delete)
-    pending_operations: Mapped[list["PendingOperation"]] = relationship(
-        "PendingOperation", cascade="all, delete-orphan"
+    # Relationship to operations (no cascade - operations preserved for historical record)
+    operations: Mapped[list["Operation"]] = relationship(
+        "Operation",
+        foreign_keys="[Operation.document_copy_id]",
+        back_populates="document_copy"
+    )
+
+    # Relationship to accepted operation (no cascade)
+    accepted_operation: Mapped["Operation | None"] = relationship(
+        "Operation",
+        foreign_keys="[DocumentCopy.accepted_operation_id]",
+        post_update=True
     )
 
     def __repr__(self) -> str:
@@ -172,16 +195,19 @@ class DocumentCopy(Base):
         )
 
 
-class PendingOperation(Base):
+class Operation(Base):
     """
-    Pending operation model storing LLM suggestions for file organization.
+    Operation model storing LLM suggestions for file organization with lifecycle tracking.
 
     This table stores suggestions from the LLM on where a file should be moved
-    and/or renamed to. Each document copy can have at most one pending operation.
+    and/or renamed to, and tracks the full lifecycle (PENDING → ACCEPTED/REJECTED).
+    Each document copy can have at most one PENDING operation, but multiple historical
+    operations (ACCEPTED/REJECTED) are preserved.
 
     Attributes:
-        id: Primary key identifier for the pending operation.
+        id: Primary key identifier for the operation.
         document_copy_id: Foreign key to the document copy this operation applies to.
+        status: Current status of the operation (PENDING, ACCEPTED, REJECTED).
         suggested_directory_path: Suggested directory path for the file.
         suggested_filename: Suggested filename for the file.
         reason: Explanation for why this organization is suggested.
@@ -193,35 +219,44 @@ class PendingOperation(Base):
         document_copy: Relationship to the document copy.
     """
 
-    __tablename__ = "pending_operations"
+    __tablename__ = "operations"
     __table_args__ = (
-        UniqueConstraint("document_copy_id", name="uix_pending_op_copy"),
         CheckConstraint("confidence >= 0.0 AND confidence <= 1.0", name="ck_confidence_range"),
     )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
-    document_copy_id: Mapped[int] = mapped_column(
-        Integer, ForeignKey("document_copies.id", ondelete="CASCADE"), nullable=False, index=True
+    document_copy_id: Mapped[int | None] = mapped_column(
+        Integer, ForeignKey("document_copies.id", ondelete="SET NULL"), nullable=True, index=True
+    )
+    status: Mapped[OperationStatus] = mapped_column(
+        Enum(OperationStatus),
+        nullable=False,
+        default=OperationStatus.PENDING,
+        index=True,
     )
     suggested_directory_path: Mapped[str] = mapped_column(String(255), nullable=False)
     suggested_filename: Mapped[str] = mapped_column(String(255), nullable=False)
     reason: Mapped[str] = mapped_column(Text, nullable=False)
     confidence: Mapped[float] = mapped_column(Float, nullable=False)
-    prompt_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    prompt_hash: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
     document_content_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
     model_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         "createdAt", DateTime, nullable=False, default=get_utc_now
     )
 
-    # Relationship to document copy
-    document_copy: Mapped["DocumentCopy"] = relationship("DocumentCopy", back_populates="pending_operations")
+    # Relationship to document copy (nullable - copy may be deleted but operation preserved)
+    document_copy: Mapped["DocumentCopy | None"] = relationship(
+        "DocumentCopy",
+        foreign_keys=[document_copy_id],
+        back_populates="operations"
+    )
 
     def __repr__(self) -> str:
-        """Return string representation of PendingOperation."""
+        """Return string representation of Operation."""
         return (
-            f"<PendingOperation(id={self.id}, document_copy_id={self.document_copy_id}, "
-            f"confidence={self.confidence})>"
+            f"<Operation(id={self.id}, document_copy_id={self.document_copy_id}, "
+            f"status={self.status.value}, confidence={self.confidence})>"
         )
 
 

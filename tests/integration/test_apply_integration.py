@@ -7,7 +7,7 @@ from click.testing import CliRunner
 
 from docman.cli import main
 from docman.database import ensure_database, get_session
-from docman.models import Document, DocumentCopy, PendingOperation
+from docman.models import Document, DocumentCopy, Operation, OperationStatus
 
 
 class TestDocmanApply:
@@ -62,7 +62,7 @@ class TestDocmanApply:
             session.flush()
 
             # Create pending operation
-            pending_op = PendingOperation(
+            pending_op = Operation(
                 document_copy_id=copy.id,
                 suggested_directory_path=suggested_dir,
                 suggested_filename=suggested_filename,
@@ -161,7 +161,7 @@ class TestDocmanApply:
     def test_apply_updates_database(
         self, cli_runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """Test that apply updates DocumentCopy paths and deletes PendingOperation."""
+        """Test that apply updates DocumentCopy paths and marks Operation as ACCEPTED."""
         repo_dir = self.setup_isolated_env(tmp_path, monkeypatch)
         monkeypatch.chdir(repo_dir)
 
@@ -180,7 +180,7 @@ class TestDocmanApply:
             copy = session.query(DocumentCopy).first()
             assert copy.file_path == "doc.pdf"
 
-            pending_ops = session.query(PendingOperation).all()
+            pending_ops = session.query(Operation).all()
             assert len(pending_ops) == 1
         finally:
             try:
@@ -199,8 +199,11 @@ class TestDocmanApply:
             copy = session.query(DocumentCopy).first()
             assert copy.file_path == "reports/report.pdf"
 
-            pending_ops = session.query(PendingOperation).all()
-            assert len(pending_ops) == 0
+            # Verify operation was marked as ACCEPTED
+            ops = session.query(Operation).all()
+            assert len(ops) == 1
+            assert ops[0].status == OperationStatus.ACCEPTED
+            assert copy.accepted_operation_id == ops[0].id
         finally:
             try:
                 next(session_gen)
@@ -300,7 +303,7 @@ class TestDocmanApply:
         session_gen = get_session()
         session = next(session_gen)
         try:
-            pending_ops = session.query(PendingOperation).all()
+            pending_ops = session.query(Operation).all()
             assert len(pending_ops) == 1
         finally:
             try:
@@ -402,12 +405,15 @@ class TestDocmanApply:
         # Verify file is still at original location
         assert (repo_dir / "doc.pdf").exists()
 
-        # Verify pending operation was deleted
+        # Verify operation was marked as ACCEPTED (no-op case still counts as accepted)
         session_gen = get_session()
         session = next(session_gen)
         try:
-            pending_ops = session.query(PendingOperation).all()
-            assert len(pending_ops) == 0
+            ops = session.query(Operation).all()
+            assert len(ops) == 1
+            assert ops[0].status == OperationStatus.ACCEPTED
+            copy = session.query(DocumentCopy).first()
+            assert copy.accepted_operation_id == ops[0].id
         finally:
             try:
                 next(session_gen)
@@ -530,7 +536,7 @@ class TestDocmanApply:
         session_gen = get_session()
         session = next(session_gen)
         try:
-            pending_ops = session.query(PendingOperation).all()
+            pending_ops = session.query(Operation).all()
             assert len(pending_ops) == 1
         finally:
             try:

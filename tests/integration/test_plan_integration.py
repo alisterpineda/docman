@@ -9,7 +9,7 @@ from click.testing import CliRunner
 from docman.cli import main
 from docman.database import ensure_database, get_session
 from docman.llm_config import ProviderConfig
-from docman.models import Document, DocumentCopy, PendingOperation
+from docman.models import Document, DocumentCopy, Operation, OperationStatus
 
 
 class TestDocmanPlan:
@@ -888,7 +888,7 @@ class TestDocmanPlan:
             assert len(copies) == 1
             copy_id = copies[0].id
 
-            pending_ops = session.query(PendingOperation).all()
+            pending_ops = session.query(Operation).all()
             assert len(pending_ops) == 1
             assert pending_ops[0].document_copy_id == copy_id
 
@@ -922,7 +922,7 @@ class TestDocmanPlan:
             assert len(copies) == 1
 
             # But pending operation was recreated
-            pending_ops = session.query(PendingOperation).all()
+            pending_ops = session.query(Operation).all()
             assert len(pending_ops) == 1
             assert pending_ops[0].document_copy_id == copy_id
         finally:
@@ -964,7 +964,7 @@ class TestDocmanPlan:
         try:
             assert len(session.query(Document).all()) == 2
             assert len(session.query(DocumentCopy).all()) == 2
-            assert len(session.query(PendingOperation).all()) == 2
+            assert len(session.query(Operation).all()) == 2
         finally:
             try:
                 next(session_gen)
@@ -976,13 +976,15 @@ class TestDocmanPlan:
         assert result2.exit_code == 0
         assert "Successfully rejected 2 pending operation(s)" in result2.output
 
-        # Verify pending operations were deleted
+        # Verify pending operations were marked as REJECTED
         session_gen = get_session()
         session = next(session_gen)
         try:
             assert len(session.query(Document).all()) == 2
             assert len(session.query(DocumentCopy).all()) == 2
-            assert len(session.query(PendingOperation).all()) == 0
+            ops = session.query(Operation).all()
+            assert len(ops) == 2
+            assert all(op.status == OperationStatus.REJECTED for op in ops)
         finally:
             try:
                 next(session_gen)
@@ -996,13 +998,17 @@ class TestDocmanPlan:
         assert "Reused copies (already in this repo): 2" in result3.output
         assert "Pending operations created: 2" in result3.output
 
-        # Verify final state: still 2 documents/copies but pending ops recreated
+        # Verify final state: still 2 documents/copies, now with 4 operations total (2 REJECTED + 2 PENDING)
         session_gen = get_session()
         session = next(session_gen)
         try:
             assert len(session.query(Document).all()) == 2
             assert len(session.query(DocumentCopy).all()) == 2
-            assert len(session.query(PendingOperation).all()) == 2
+            ops = session.query(Operation).all()
+            assert len(ops) == 4
+            # 2 rejected from earlier, 2 new pending
+            assert len([op for op in ops if op.status == OperationStatus.REJECTED]) == 2
+            assert len([op for op in ops if op.status == OperationStatus.PENDING]) == 2
         finally:
             try:
                 next(session_gen)
@@ -1049,7 +1055,7 @@ class TestDocmanPlan:
         try:
             assert len(session.query(Document).all()) == 1
             assert len(session.query(DocumentCopy).all()) == 1
-            assert len(session.query(PendingOperation).all()) == 1
+            assert len(session.query(Operation).all()) == 1
         finally:
             try:
                 next(session_gen)
@@ -1101,7 +1107,7 @@ class TestDocmanPlan:
             assert len(session.query(Document).all()) == 2
             assert len(session.query(DocumentCopy).all()) == 2
             # Both should have pending operations (one from first run, one from second)
-            assert len(session.query(PendingOperation).all()) == 2
+            assert len(session.query(Operation).all()) == 2
         finally:
             try:
                 next(session_gen)
@@ -1174,7 +1180,7 @@ class TestDocmanPlan:
             assert len(copies) == 1
             initial_copy_id = copies[0].id
 
-            pending_ops = session.query(PendingOperation).all()
+            pending_ops = session.query(Operation).all()
             assert len(pending_ops) == 1
             assert pending_ops[0].document_content_hash == "hash_initial"
         finally:
@@ -1216,7 +1222,7 @@ class TestDocmanPlan:
             assert copies[0].document_id == new_doc.id
 
             # Pending operation should be regenerated with new content hash
-            pending_ops = session.query(PendingOperation).all()
+            pending_ops = session.query(Operation).all()
             assert len(pending_ops) == 1
             assert pending_ops[0].document_content_hash == "hash_modified"
         finally:
@@ -1235,7 +1241,7 @@ class TestDocmanPlan:
         tmp_path: Path,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        """Test that plan cleans up DocumentCopy and PendingOperation when file is deleted."""
+        """Test that plan cleans up DocumentCopy and Operation when file is deleted."""
         repo_dir = self.setup_isolated_env(tmp_path, monkeypatch)
 
         # Create multiple test documents
@@ -1259,7 +1265,7 @@ class TestDocmanPlan:
         try:
             assert len(session.query(Document).all()) == 2
             assert len(session.query(DocumentCopy).all()) == 2
-            assert len(session.query(PendingOperation).all()) == 2
+            assert len(session.query(Operation).all()) == 2
         finally:
             try:
                 next(session_gen)
@@ -1279,7 +1285,7 @@ class TestDocmanPlan:
         assert "Cleaned up 1 orphaned file(s)" in result2.output
         assert "Reusing existing copy: file2.pdf" in result2.output
 
-        # Verify cleanup: Document remains, but Copy and PendingOperation for file1 are gone
+        # Verify cleanup: Document remains, but Copy and Operation for file1 are gone
         session_gen = get_session()
         session = next(session_gen)
         try:
@@ -1292,10 +1298,14 @@ class TestDocmanPlan:
             assert len(copies) == 1
             assert copies[0].file_path == "file2.pdf"
 
-            # Only file2's pending operation remains
-            pending_ops = session.query(PendingOperation).all()
-            assert len(pending_ops) == 1
-            assert pending_ops[0].document_copy_id == copies[0].id
+            # 2 operations: 1 orphaned (document_copy_id=None) from deleted file1, 1 for file2
+            ops = session.query(Operation).all()
+            assert len(ops) == 2
+            orphaned_ops = [op for op in ops if op.document_copy_id is None]
+            active_ops = [op for op in ops if op.document_copy_id is not None]
+            assert len(orphaned_ops) == 1
+            assert len(active_ops) == 1
+            assert active_ops[0].document_copy_id == copies[0].id
         finally:
             try:
                 next(session_gen)
@@ -1349,7 +1359,7 @@ class TestDocmanPlan:
         session_gen = get_session()
         session = next(session_gen)
         try:
-            pending_ops = session.query(PendingOperation).all()
+            pending_ops = session.query(Operation).all()
             assert len(pending_ops) == 1
             assert pending_ops[0].model_name == "gemini-1.5-flash"
             assert pending_ops[0].suggested_directory_path == "flash/directory"
@@ -1394,7 +1404,7 @@ class TestDocmanPlan:
             assert len(session.query(DocumentCopy).all()) == 1
 
             # But pending operation was updated with new model and suggestions
-            pending_ops = session.query(PendingOperation).all()
+            pending_ops = session.query(Operation).all()
             assert len(pending_ops) == 1
             assert pending_ops[0].model_name == "gemini-1.5-pro"
             assert pending_ops[0].suggested_directory_path == "pro/directory"
@@ -1474,7 +1484,7 @@ class TestDocmanPlan:
             assert len(copies) == 2
 
             # Only one pending operation (for success.pdf)
-            pending_ops = session.query(PendingOperation).all()
+            pending_ops = session.query(Operation).all()
             assert len(pending_ops) == 1
 
             # Find which copy has the pending operation
@@ -1544,7 +1554,7 @@ class TestDocmanPlan:
             assert len(copies) == 2
 
             # Only one pending operation (for success.pdf)
-            pending_ops = session.query(PendingOperation).all()
+            pending_ops = session.query(Operation).all()
             assert len(pending_ops) == 1
 
             # Verify it's for success.pdf

@@ -7,7 +7,7 @@ from click.testing import CliRunner
 
 from docman.cli import main
 from docman.database import ensure_database, get_session
-from docman.models import Document, DocumentCopy, PendingOperation
+from docman.models import Document, DocumentCopy, Operation, OperationStatus
 
 
 class TestDocmanDedupe:
@@ -355,7 +355,7 @@ class TestDocmanDedupe:
                 DocumentCopy.repository_path == str(repo_dir)
             ).all()
             for copy in copies:
-                pending_op = PendingOperation(
+                pending_op = Operation(
                     document_copy_id=copy.id,
                     suggested_directory_path="organized",
                     suggested_filename=f"organized_{Path(copy.file_path).name}",
@@ -376,13 +376,17 @@ class TestDocmanDedupe:
 
         assert result.exit_code == 0
 
-        # Check that pending operations were deleted (cascade)
+        # Check that operations are preserved but orphaned copy's operation has NULL document_copy_id
         session_gen = get_session()
         session = next(session_gen)
         try:
-            pending_ops = session.query(PendingOperation).all()
-            # Only 1 pending operation should remain (for the kept copy)
-            assert len(pending_ops) == 1
+            ops = session.query(Operation).all()
+            # 2 operations: 1 orphaned (document_copy_id=None) from deleted copy, 1 for kept copy
+            assert len(ops) == 2
+            orphaned_ops = [op for op in ops if op.document_copy_id is None]
+            active_ops = [op for op in ops if op.document_copy_id is not None]
+            assert len(orphaned_ops) == 1
+            assert len(active_ops) == 1
         finally:
             try:
                 next(session_gen)

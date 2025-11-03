@@ -7,7 +7,7 @@ from click.testing import CliRunner
 
 from docman.cli import main
 from docman.database import ensure_database, get_session
-from docman.models import Document, DocumentCopy, PendingOperation
+from docman.models import Document, DocumentCopy, Operation, OperationStatus
 
 
 class TestDocmanReject:
@@ -62,7 +62,7 @@ class TestDocmanReject:
             session.flush()
 
             # Create pending operation
-            pending_op = PendingOperation(
+            pending_op = Operation(
                 document_copy_id=copy.id,
                 suggested_directory_path=suggested_dir,
                 suggested_filename=suggested_filename,
@@ -126,12 +126,13 @@ class TestDocmanReject:
         assert result.exit_code == 0
         assert "Successfully rejected 2 pending operation(s)" in result.output
 
-        # Verify pending operations were deleted
+        # Verify pending operations were marked as REJECTED
         session_gen = get_session()
         session = next(session_gen)
         try:
-            pending_ops = session.query(PendingOperation).all()
-            assert len(pending_ops) == 0
+            ops = session.query(Operation).all()
+            assert len(ops) == 2
+            assert all(op.status == OperationStatus.REJECTED for op in ops)
 
             # Verify documents and copies still exist
             docs = session.query(Document).all()
@@ -170,14 +171,20 @@ class TestDocmanReject:
         assert result.exit_code == 0
         assert "Successfully rejected 1 pending operation(s)" in result.output
 
-        # Verify only doc1 operation was deleted
+        # Verify doc1 operation was marked as REJECTED, doc2 remains PENDING
         session_gen = get_session()
         session = next(session_gen)
         try:
-            pending_ops = session.query(PendingOperation).all()
-            assert len(pending_ops) == 1
+            ops = session.query(Operation).all()
+            assert len(ops) == 2
 
-            # The remaining operation should be for doc2
+            # Check statuses
+            pending_ops = [op for op in ops if op.status == OperationStatus.PENDING]
+            rejected_ops = [op for op in ops if op.status == OperationStatus.REJECTED]
+            assert len(pending_ops) == 1
+            assert len(rejected_ops) == 1
+
+            # The pending operation should be for doc2
             remaining_copy = session.query(DocumentCopy).filter_by(id=pending_ops[0].document_copy_id).first()
             assert remaining_copy.file_path == "doc2.pdf"
         finally:
@@ -225,14 +232,20 @@ class TestDocmanReject:
         # Should only reject doc1 (not the nested doc2)
         assert "Successfully rejected 1 pending operation(s)" in result.output
 
-        # Verify correct operations were deleted
+        # Verify doc1 was marked as REJECTED, nested/doc2 and other/doc3 remain PENDING
         session_gen = get_session()
         session = next(session_gen)
         try:
-            pending_ops = session.query(PendingOperation).all()
-            assert len(pending_ops) == 2
+            ops = session.query(Operation).all()
+            assert len(ops) == 3
 
-            # Remaining operations should be for nested/doc2 and other/doc3
+            # Check statuses
+            pending_ops = [op for op in ops if op.status == OperationStatus.PENDING]
+            rejected_ops = [op for op in ops if op.status == OperationStatus.REJECTED]
+            assert len(pending_ops) == 2
+            assert len(rejected_ops) == 1
+
+            # Remaining pending operations should be for nested/doc2 and other/doc3
             remaining_paths = {
                 session.query(DocumentCopy).filter_by(id=op.document_copy_id).first().file_path
                 for op in pending_ops
@@ -284,14 +297,20 @@ class TestDocmanReject:
         # Should reject both doc1 and nested/doc2
         assert "Successfully rejected 2 pending operation(s)" in result.output
 
-        # Verify correct operations were deleted
+        # Verify doc1 and nested/doc2 were marked as REJECTED, other/doc3 remains PENDING
         session_gen = get_session()
         session = next(session_gen)
         try:
-            pending_ops = session.query(PendingOperation).all()
-            assert len(pending_ops) == 1
+            ops = session.query(Operation).all()
+            assert len(ops) == 3
 
-            # Remaining operation should be for other/doc3
+            # Check statuses
+            pending_ops = [op for op in ops if op.status == OperationStatus.PENDING]
+            rejected_ops = [op for op in ops if op.status == OperationStatus.REJECTED]
+            assert len(pending_ops) == 1
+            assert len(rejected_ops) == 2
+
+            # Remaining pending operation should be for other/doc3
             remaining_copy = session.query(DocumentCopy).filter_by(id=pending_ops[0].document_copy_id).first()
             assert remaining_copy.file_path == "other/doc3.pdf"
         finally:
@@ -328,7 +347,7 @@ class TestDocmanReject:
         session_gen = get_session()
         session = next(session_gen)
         try:
-            pending_ops = session.query(PendingOperation).all()
+            pending_ops = session.query(Operation).all()
             assert len(pending_ops) == 1
         finally:
             try:
