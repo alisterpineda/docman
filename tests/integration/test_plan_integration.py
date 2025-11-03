@@ -1405,3 +1405,155 @@ class TestDocmanPlan:
                 next(session_gen)
             except StopIteration:
                 pass
+
+    @patch("docman.cli.extract_content")
+    @patch("docman.cli.compute_content_hash")
+    def test_plan_skips_file_on_llm_failure(
+        self,
+        mock_hash: Mock,
+        mock_extract: Mock,
+        cli_runner: CliRunner,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Test that plan skips files when LLM API fails and doesn't create pending operations."""
+        repo_dir = self.setup_isolated_env(tmp_path, monkeypatch)
+
+        # Create test documents (in alphabetical order: failure.pdf, success.pdf)
+        (repo_dir / "failure.pdf").touch()
+        (repo_dir / "success.pdf").touch()
+
+        # Mock hash with explicit values (failure.pdf processed first, then success.pdf)
+        mock_hash.side_effect = ["hash_failure", "hash_success"]
+        mock_extract.return_value = "Test content"
+
+        # Mock LLM provider to fail for failure.pdf
+        mock_provider_instance = Mock()
+
+        def generate_side_effect(system_prompt: str, user_prompt: str):
+            if "failure.pdf" in user_prompt:
+                raise Exception("LLM API error")
+            return {
+                "suggested_directory_path": "test/directory",
+                "suggested_filename": "test_file.pdf",
+                "reason": "Test reason",
+                "confidence": 0.85,
+            }
+
+        mock_provider_instance.generate_suggestions.side_effect = generate_side_effect
+        monkeypatch.setattr("docman.cli.get_llm_provider", Mock(return_value=mock_provider_instance))
+
+        # Change to repository directory
+        monkeypatch.chdir(repo_dir)
+
+        # Run plan command
+        result = cli_runner.invoke(main, ["plan"], catch_exceptions=False)
+
+        # Verify exit code
+        assert result.exit_code == 0
+
+        # Verify output shows LLM failure warning
+        assert "Warning: LLM suggestion failed" in result.output
+        assert "skipping file" in result.output
+
+        # Verify summary shows skipped count
+        assert "New documents processed: 2" in result.output
+        assert "Skipped (LLM or content errors): 1" in result.output
+        assert "Pending operations created: 1" in result.output  # Only for success.pdf
+
+        # Verify database state
+        session_gen = get_session()
+        session = next(session_gen)
+        try:
+            # Both documents should exist
+            docs = session.query(Document).all()
+            assert len(docs) == 2
+
+            # Both copies should exist
+            copies = session.query(DocumentCopy).all()
+            assert len(copies) == 2
+
+            # Only one pending operation (for success.pdf)
+            pending_ops = session.query(PendingOperation).all()
+            assert len(pending_ops) == 1
+
+            # Find which copy has the pending operation
+            copy_with_op = session.query(DocumentCopy).filter(
+                DocumentCopy.id == pending_ops[0].document_copy_id
+            ).first()
+            assert copy_with_op.file_path == "success.pdf"
+        finally:
+            try:
+                next(session_gen)
+            except StopIteration:
+                pass
+
+    @patch("docman.cli.extract_content")
+    @patch("docman.cli.compute_content_hash")
+    def test_plan_extraction_failure_not_double_counted(
+        self,
+        mock_hash: Mock,
+        mock_extract: Mock,
+        cli_runner: CliRunner,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Test that extraction failures are only in failed_count, not skipped_count."""
+        repo_dir = self.setup_isolated_env(tmp_path, monkeypatch)
+
+        # Create test documents (in alphabetical order: failure.pdf, success.pdf)
+        (repo_dir / "failure.pdf").touch()
+        (repo_dir / "success.pdf").touch()
+
+        # Mock hash with explicit values (failure.pdf processed first, then success.pdf)
+        mock_hash.side_effect = ["hash_failure", "hash_success"]
+
+        # Mock extraction with explicit values (failure.pdf fails, success.pdf succeeds)
+        mock_extract.side_effect = [None, "Extracted content"]
+
+        # Change to repository directory
+        monkeypatch.chdir(repo_dir)
+
+        # Run plan command
+        result = cli_runner.invoke(main, ["plan"], catch_exceptions=False)
+
+        # Verify exit code
+        assert result.exit_code == 0
+
+        # Verify output
+        assert "Processing: failure.pdf" in result.output
+        assert "Content extraction failed" in result.output
+
+        # Verify summary shows failed but NOT skipped
+        assert "New documents processed: 1" in result.output
+        assert "Failed (hash or extraction errors): 1" in result.output
+        # Skipped count should be 0 (extraction failures don't count as skipped)
+        assert "Skipped (LLM or content errors): 0" in result.output
+        assert "Pending operations created: 1" in result.output  # Only for success.pdf
+
+        # Verify database state
+        session_gen = get_session()
+        session = next(session_gen)
+        try:
+            # Both documents should exist (one with null content)
+            docs = session.query(Document).all()
+            assert len(docs) == 2
+
+            # Both copies should exist
+            copies = session.query(DocumentCopy).all()
+            assert len(copies) == 2
+
+            # Only one pending operation (for success.pdf)
+            pending_ops = session.query(PendingOperation).all()
+            assert len(pending_ops) == 1
+
+            # Verify it's for success.pdf
+            copy_with_op = session.query(DocumentCopy).filter(
+                DocumentCopy.id == pending_ops[0].document_copy_id
+            ).first()
+            assert copy_with_op.file_path == "success.pdf"
+        finally:
+            try:
+                next(session_gen)
+            except StopIteration:
+                pass

@@ -394,6 +394,7 @@ def plan(path: str | None, recursive: bool) -> None:
         reused_count = 0
         failed_count = 0
         duplicate_count = 0  # Same document, different location
+        skipped_count = 0  # Files skipped due to LLM or content extraction errors
         pending_ops_created = 0
         pending_ops_updated = 0
 
@@ -624,70 +625,19 @@ def plan(path: str | None, recursive: bool) -> None:
                             f"{suggestions['suggested_filename']}"
                         )
                     except Exception as e:
-                        # Fallback to stub if LLM fails
-                        click.echo(f"  Warning: LLM suggestion failed ({str(e)}), using fallback")
-                        file_path_obj = Path(file_path_str)
-                        current_directory = (
-                            str(file_path_obj.parent) if file_path_obj.parent != Path('.') else ""
-                        )
-                        current_filename = file_path_obj.name
-
+                        # Skip file if LLM fails
+                        click.echo(f"  Warning: LLM suggestion failed ({str(e)}), skipping file")
+                        # Delete existing pending operation if it exists (now invalid)
                         if existing_pending_op:
-                            # Update existing pending operation
-                            existing_pending_op.suggested_directory_path = current_directory
-                            existing_pending_op.suggested_filename = current_filename
-                            existing_pending_op.reason = "LLM analysis failed, kept original location"
-                            existing_pending_op.confidence = 0.5
-                            existing_pending_op.prompt_hash = current_prompt_hash
-                            existing_pending_op.document_content_hash = document.content_hash if document else None
-                            existing_pending_op.model_name = model_name
-                            pending_ops_updated += 1
-                        else:
-                            # Create new pending operation
-                            pending_op = PendingOperation(
-                                document_copy_id=copy.id,
-                                suggested_directory_path=current_directory,
-                                suggested_filename=current_filename,
-                                reason="LLM analysis failed, kept original location",
-                                confidence=0.5,
-                                prompt_hash=current_prompt_hash,
-                                document_content_hash=document.content_hash if document else None,
-                                model_name=model_name,
-                            )
-                            session.add(pending_op)
-                            pending_ops_created += 1
+                            session.delete(existing_pending_op)
+                        skipped_count += 1
+                        continue
                 else:
-                    # Fallback to stub if no content or LLM not available
-                    file_path_obj = Path(file_path_str)
-                    current_directory = (
-                        str(file_path_obj.parent) if file_path_obj.parent != Path('.') else ""
-                    )
-                    current_filename = file_path_obj.name
-
+                    # No content available (extraction failed) or LLM not configured
+                    # Don't create pending operation, but file is already counted in failed_count if extraction failed
                     if existing_pending_op:
-                        # Update existing pending operation
-                        existing_pending_op.suggested_directory_path = current_directory
-                        existing_pending_op.suggested_filename = current_filename
-                        existing_pending_op.reason = "No content available for analysis"
-                        existing_pending_op.confidence = 0.5
-                        existing_pending_op.prompt_hash = current_prompt_hash
-                        existing_pending_op.document_content_hash = document.content_hash if document else None
-                        existing_pending_op.model_name = model_name
-                        pending_ops_updated += 1
-                    else:
-                        # Create new pending operation
-                        pending_op = PendingOperation(
-                            document_copy_id=copy.id,
-                            suggested_directory_path=current_directory,
-                            suggested_filename=current_filename,
-                            reason="No content available for analysis",
-                            confidence=0.5,
-                            prompt_hash=current_prompt_hash,
-                            document_content_hash=document.content_hash if document else None,
-                            model_name=model_name,
-                        )
-                        session.add(pending_op)
-                        pending_ops_created += 1
+                        # Delete stale pending operation
+                        session.delete(existing_pending_op)
             else:
                 click.echo("  Reusing existing suggestions (prompt unchanged)")
 
@@ -701,6 +651,7 @@ def plan(path: str | None, recursive: bool) -> None:
         click.echo(f"  Duplicate documents (already known): {duplicate_count}")
         click.echo(f"  Reused copies (already in this repo): {reused_count}")
         click.echo(f"  Failed (hash or extraction errors): {failed_count}")
+        click.echo(f"  Skipped (LLM or content errors): {skipped_count}")
         click.echo(f"  Pending operations created: {pending_ops_created}")
         click.echo(f"  Pending operations updated: {pending_ops_updated}")
         click.echo(f"  Total files: {len(document_files)}")

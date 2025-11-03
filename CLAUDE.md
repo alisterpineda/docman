@@ -162,6 +162,13 @@ Three main tables model document tracking and operations:
    - Call LLM provider for suggestions
    - Store in `PendingOperation` with all tracking fields
 
+**Error Handling**:
+- **Content extraction failures**: File counted in `failed_count`, no `PendingOperation` created
+- **LLM API failures**: File skipped, counted in `skipped_count`, no `PendingOperation` created
+- **No double counting**: Extraction failures don't increment `skipped_count`
+- **Stale operations cleanup**: Existing `PendingOperation` deleted if file now fails processing
+- **Summary statistics**: Shows distinct counts for failed (extraction) vs skipped (LLM) files
+
 ### Apply/Reject Workflow
 
 **Reviewing Suggestions** (`status` command):
@@ -207,10 +214,12 @@ Main commands:
   - `test_apply_integration.py`: Apply command (interactive & bulk modes)
   - `test_status_integration.py`: Status command
   - `test_reject_integration.py`: Reject command
-  - `test_plan_integration.py`: Plan command (includes mutation tests: stale content, deleted files, model changes)
+  - `test_plan_integration.py`: Plan command (includes mutation tests: stale content, deleted files, model changes, error handling)
+    - `test_plan_skips_file_on_llm_failure`: Verifies LLM failures skip files without creating pending operations
+    - `test_plan_extraction_failure_not_double_counted`: Confirms extraction failures counted only in `failed_count`
 - Uses `CliRunner` from Click for CLI testing
 - Test fixtures in `conftest.py`
-- Current coverage: 77% (256 tests passing)
+- Current coverage: 79% (258 tests passing)
 
 ## Key Patterns
 
