@@ -87,6 +87,7 @@ Three main tables model document tracking and operations:
    - Tracks: `repository_path`, `file_path`
    - Stale content detection: `stored_content_hash`, `stored_size`, `stored_mtime`
    - Garbage collection: `last_seen_at` (indexed)
+   - **Organization status**: Enum field (`unorganized`, `organized`, `ignored`) - indexed
    - Unique constraint on (`repository_path`, `file_path`)
 
 3. **`pending_operations`**: LLM suggestions for file reorganization
@@ -196,14 +197,89 @@ Three main tables model document tracking and operations:
 - Creates target directories automatically (`create_dirs=True`)
 - Custom exceptions: `FileConflictError`, `FileNotFoundError`, `FileOperationError`
 
+### Organization Status Tracking
+
+**Overview**: Each `DocumentCopy` has an `organization_status` field that tracks whether the file has been organized, is still unorganized, or should be ignored.
+
+**Status Lifecycle**:
+1. **New files**: Start as `unorganized`
+2. **After `apply`**: Changed to `organized`
+3. **User marks as ignored**: Changed to `ignored` via `docman ignore`
+4. **User wants to re-process**: Reset to `unorganized` via `docman unmark`
+
+**Behavior by Command**:
+- **`plan`**:
+  - Skips files with status `organized` or `ignored` by default (saves LLM costs)
+  - Use `--reprocess` flag to process all files regardless of status
+  - If file content or prompt changes, status automatically resets to `unorganized` (triggers regeneration)
+- **`apply`**:
+  - Sets status to `organized` after successfully moving file
+  - Also sets to `organized` if file is already at target location (no-op)
+- **`reject`**:
+  - Deletes `PendingOperation` but does NOT change status
+  - Allows file to be re-planned next time
+- **`unmark`**:
+  - Sets status to `unorganized`
+  - Deletes any existing `PendingOperation`
+  - Supports `--all` flag and `-r` (recursive) for directories
+- **`ignore`**:
+  - Sets status to `ignored`
+  - Deletes any existing `PendingOperation`
+  - Supports `-r` (recursive) for directories
+  - Requires a path argument (no `--all` flag)
+- **`status`**:
+  - Displays organization status alongside pending operations
+
+**Invalidation & Auto-Reset**:
+When `plan` detects changes to files marked as `organized`, it automatically resets status to `unorganized`:
+- Document content hash changes (file modified)
+- Prompt hash changes (instructions or model updated)
+- Model name changes (different LLM used)
+
+This ensures organized files are re-analyzed when conditions change, but saves costs when nothing has changed.
+
+**Example Workflows**:
+
+*Standard workflow (organize once)*:
+```bash
+docman plan              # Creates suggestions for all unorganized files
+docman apply --all -y    # Applies suggestions, marks as organized
+docman plan              # Skips organized files, no LLM calls
+```
+
+*Re-organize after instruction changes*:
+```bash
+# Edit .docman/instructions.md with new organization rules
+docman plan              # Auto-resets organized files to unorganized (prompt changed)
+                        # Generates new suggestions for all files
+```
+
+*Force re-processing*:
+```bash
+docman plan --reprocess  # Processes all files regardless of status
+```
+
+*Ignore specific directories*:
+```bash
+docman ignore archives/ -r -y   # Mark all files in archives/ as ignored
+docman plan                      # Skips ignored files
+docman unmark archives/ -r -y   # Reset to unorganized to re-process
+```
+
 ### CLI Structure (`cli.py`)
 
 Main commands:
 - `docman init [directory]`: Initialize repository
 - `docman plan [path]`: Analyze documents and generate LLM organization suggestions
-- `docman status [path]`: Review pending operations (shows paths, confidence, reasons)
+  - `--reprocess`: Reprocess all files, including those already organized or ignored
+- `docman status [path]`: Review pending operations (shows paths, confidence, reasons, organization status)
 - `docman apply [path]`: Apply pending operations (interactive or bulk with `-y`)
 - `docman reject [path]`: Reject/delete pending operations without applying
+- `docman unmark [path]`: Reset organization status to 'unorganized' for specified files
+  - `--all`: Unmark all files in repository
+  - `-r`: Recursively unmark files in subdirectories
+- `docman ignore [path]`: Mark files as 'ignored' to exclude from future plan runs
+  - `-r`: Recursively ignore files in subdirectories
 - `docman llm`: Manage LLM providers (add, list, show, test, set-active, remove)
 - `docman config`: Manage repository configuration (set-instructions, show-instructions)
 

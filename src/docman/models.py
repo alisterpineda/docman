@@ -1,5 +1,6 @@
 """Database models for docman."""
 
+import enum
 import hashlib
 from datetime import UTC, datetime
 from pathlib import Path
@@ -7,6 +8,7 @@ from pathlib import Path
 from sqlalchemy import (
     CheckConstraint,
     DateTime,
+    Enum,
     Float,
     ForeignKey,
     Integer,
@@ -20,6 +22,14 @@ from sqlalchemy.orm import (  # type: ignore[attr-defined]
     mapped_column,
     relationship,
 )
+
+
+class OrganizationStatus(enum.Enum):
+    """Enum for tracking document organization state."""
+
+    UNORGANIZED = "unorganized"
+    ORGANIZED = "organized"
+    IGNORED = "ignored"
 
 
 def get_utc_now() -> datetime:
@@ -109,6 +119,7 @@ class DocumentCopy(Base):
         stored_size: File size in bytes when last processed (for stale detection).
         stored_mtime: File modification time when last processed (for stale detection).
         last_seen_at: Timestamp when this file was last seen on disk (for cleanup).
+        organization_status: Status tracking whether file has been organized (indexed).
         created_at: Timestamp when this copy was first discovered.
         updated_at: Timestamp when this copy was last verified.
         document: Relationship to the canonical document.
@@ -130,6 +141,13 @@ class DocumentCopy(Base):
     stored_mtime: Mapped[float | None] = mapped_column(Float, nullable=True)
     last_seen_at: Mapped[datetime | None] = mapped_column(
         "lastSeenAt", DateTime, nullable=True, index=True
+    )
+    organization_status: Mapped[OrganizationStatus] = mapped_column(
+        "organization_status",
+        Enum(OrganizationStatus),
+        nullable=False,
+        default=OrganizationStatus.UNORGANIZED,
+        index=True,
     )
     created_at: Mapped[datetime] = mapped_column(
         "createdAt", DateTime, nullable=False, default=get_utc_now

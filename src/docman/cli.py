@@ -25,7 +25,7 @@ from docman.llm_config import (
 )
 from docman.llm_providers import get_provider as get_llm_provider
 from docman.llm_wizard import run_llm_wizard
-from docman.models import Document, DocumentCopy, PendingOperation, compute_content_hash, get_utc_now, file_needs_rehashing
+from docman.models import Document, DocumentCopy, OrganizationStatus, PendingOperation, compute_content_hash, get_utc_now, file_needs_rehashing
 from docman.processor import extract_content
 from docman.prompt_builder import (
     build_system_prompt,
@@ -190,7 +190,13 @@ def cleanup_orphaned_copies(session, repo_root: Path) -> tuple[int, int]:
     default=False,
     help="Recursively process subdirectories",
 )
-def plan(path: str | None, recursive: bool) -> None:
+@click.option(
+    "--reprocess",
+    is_flag=True,
+    default=False,
+    help="Reprocess all files, including those already organized or ignored",
+)
+def plan(path: str | None, recursive: bool, reprocess: bool) -> None:
     """
     Process documents in the repository.
 
@@ -203,6 +209,7 @@ def plan(path: str | None, recursive: bool) -> None:
 
     Options:
         -r, --recursive: Recursively process subdirectories when PATH is a directory.
+        --reprocess: Reprocess all files, including those already organized or ignored.
 
     Examples:
         - 'docman plan': Process entire repository recursively (backward compatible)
@@ -211,6 +218,7 @@ def plan(path: str | None, recursive: bool) -> None:
         - 'docman plan docs/ -r': Process docs directory recursively
         - 'docman plan file.pdf': Process single file
         - 'docman plan -r': Process entire repository recursively (same as no args)
+        - 'docman plan --reprocess': Reprocess all files, including organized ones
     """
     # Find the repository root
     # Strategy: Try from the provided path first (if any), then fall back to cwd
@@ -544,7 +552,14 @@ def plan(path: str | None, recursive: bool) -> None:
                 session.add(copy)
                 session.flush()  # Get the copy.id for the pending operation
 
-            # Step 2: Create or update pending operation based on prompt hash
+            # Step 2: Check organization status and skip if already organized/ignored
+            # (unless --reprocess flag is set)
+            if not reprocess and copy.organization_status in (OrganizationStatus.ORGANIZED, OrganizationStatus.IGNORED):
+                status_label = "organized" if copy.organization_status == OrganizationStatus.ORGANIZED else "ignored"
+                click.echo(f"  Skipping (already {status_label})")
+                continue
+
+            # Step 3: Create or update pending operation based on prompt hash
             existing_pending_op = (
                 session.query(PendingOperation)
                 .filter(PendingOperation.document_copy_id == copy.id)
@@ -564,14 +579,23 @@ def plan(path: str | None, recursive: bool) -> None:
                 # Prompt or model has changed, need to regenerate
                 needs_generation = True
                 invalidation_reason = "Prompt or model changed"
+                # Reset organization status since conditions changed
+                if copy.organization_status == OrganizationStatus.ORGANIZED:
+                    copy.organization_status = OrganizationStatus.UNORGANIZED
             elif document and existing_pending_op.document_content_hash != document.content_hash:
                 # Document content has changed, need to regenerate
                 needs_generation = True
                 invalidation_reason = "Document content changed"
+                # Reset organization status since content changed
+                if copy.organization_status == OrganizationStatus.ORGANIZED:
+                    copy.organization_status = OrganizationStatus.UNORGANIZED
             elif model_name and existing_pending_op.model_name != model_name:
                 # Model changed (redundant with prompt hash, but explicit)
                 needs_generation = True
                 invalidation_reason = "Model changed"
+                # Reset organization status since model changed
+                if copy.organization_status == OrganizationStatus.ORGANIZED:
+                    copy.organization_status = OrganizationStatus.UNORGANIZED
 
             if needs_generation and invalidation_reason:
                 click.echo(f"  {invalidation_reason}, regenerating suggestions...")
@@ -790,6 +814,16 @@ def status(path: str | None) -> None:
 
             # Display operation
             click.echo(f"[{idx}] {current_path}")
+
+            # Show organization status
+            status_label = doc_copy.organization_status.value
+            status_color = "white"
+            if doc_copy.organization_status == OrganizationStatus.ORGANIZED:
+                status_color = "green"
+            elif doc_copy.organization_status == OrganizationStatus.IGNORED:
+                status_color = "yellow"
+            click.secho(f"  Status: {status_label}", fg=status_color)
+
             click.secho(f"  → {suggested_path} {operation_type}", fg=op_color)
             click.secho(f"  Confidence: {confidence:.0%}", fg=confidence_color)
             click.echo(f"  Reason: {pending_op.reason}")
@@ -1025,13 +1059,16 @@ def apply(path: str | None, apply_all: bool, yes: bool, force: bool, dry_run: bo
                     click.echo()
 
                     if click.confirm("Remove this pending operation?", default=True):
+                        # Mark as organized since it's already at the target location
+                        doc_copy.organization_status = OrganizationStatus.ORGANIZED
                         session.delete(pending_op)
                         click.secho("  ✓ Removed", fg="green")
                     else:
                         click.secho("  ○ Kept", fg="white")
                 else:
-                    # Non-interactive: always delete
+                    # Non-interactive: always delete and mark as organized
                     if not dry_run:
+                        doc_copy.organization_status = OrganizationStatus.ORGANIZED
                         session.delete(pending_op)
 
                 skipped_count += 1
@@ -1105,6 +1142,9 @@ def apply(path: str | None, apply_all: bool, yes: bool, force: bool, dry_run: bo
 
                 # Update the document copy's file path in the database
                 doc_copy.file_path = str(target.relative_to(repo_root))
+
+                # Mark the file as organized
+                doc_copy.organization_status = OrganizationStatus.ORGANIZED
 
                 # Delete the pending operation
                 session.delete(pending_op)
@@ -1350,6 +1390,375 @@ def reject(path: str | None, reject_all: bool, yes: bool, recursive: bool) -> No
         session.commit()
 
         click.secho(f"✓ Successfully rejected {count} pending operation(s).", fg="green")
+
+    finally:
+        # Close the session
+        try:
+            next(session_gen)
+        except StopIteration:
+            pass
+
+
+@main.command()
+@click.argument("path", default=None, required=False)
+@click.option(
+    "--all",
+    "-a",
+    "unmark_all",
+    is_flag=True,
+    default=False,
+    help="Unmark all files in the repository",
+)
+@click.option(
+    "-y",
+    "--yes",
+    is_flag=True,
+    default=False,
+    help="Skip confirmation prompts",
+)
+@click.option(
+    "-r",
+    "--recursive",
+    is_flag=True,
+    default=False,
+    help="Recursively unmark files in subdirectories",
+)
+def unmark(path: str | None, unmark_all: bool, yes: bool, recursive: bool) -> None:
+    """
+    Unmark files that were previously organized or ignored.
+
+    Sets the organization status back to 'unorganized' and deletes any pending
+    operations, allowing the files to be reprocessed by the next 'plan' command.
+
+    Arguments:
+        PATH: Optional path to unmark files for (default: requires --all flag).
+
+    Options:
+        --all, -a: Unmark all files in the repository
+        -y, --yes: Skip confirmation prompts
+        -r, --recursive: Recursively unmark files in subdirectories
+
+    Examples:
+        - 'docman unmark --all': Unmark all files (with confirmation)
+        - 'docman unmark --all -y': Unmark all without prompts
+        - 'docman unmark docs/': Unmark files in docs directory
+        - 'docman unmark docs/ -r': Unmark files in docs and subdirectories
+        - 'docman unmark file.pdf': Unmark specific file
+    """
+    # Validate flags
+    if not unmark_all and not path:
+        click.secho(
+            "Error: Must specify either --all or a PATH to unmark files.",
+            fg="red",
+            err=True,
+        )
+        click.echo()
+        click.echo("Examples:")
+        click.echo("  docman unmark --all")
+        click.echo("  docman unmark docs/")
+        click.echo("  docman unmark file.pdf")
+        raise click.Abort()
+
+    # Find the repository root
+    repo_root = None
+
+    if path:
+        # Try to find repository from the provided path
+        search_start_path = Path(path).resolve()
+        try:
+            repo_root = get_repository_root(start_path=search_start_path)
+        except RepositoryError:
+            # Path doesn't lead to a repository, try from cwd
+            try:
+                repo_root = get_repository_root(start_path=Path.cwd())
+            except RepositoryError:
+                click.secho(
+                    "Error: Not in a docman repository. Use 'docman init' to create one.",
+                    fg="red",
+                    err=True,
+                )
+                raise click.Abort()
+    else:
+        # No path provided, use current directory
+        try:
+            repo_root = get_repository_root(start_path=Path.cwd())
+        except RepositoryError:
+            click.secho(
+                "Error: Not in a docman repository. Use 'docman init' to create one.",
+                fg="red",
+                err=True,
+            )
+            raise click.Abort()
+
+    repository_path = str(repo_root)
+
+    # Get database session
+    session_gen = get_session()
+    session = next(session_gen)
+
+    try:
+        # Query document copies for this repository
+        query = (
+            session.query(DocumentCopy)
+            .filter(DocumentCopy.repository_path == repository_path)
+            .filter(DocumentCopy.organization_status.in_([OrganizationStatus.ORGANIZED, OrganizationStatus.IGNORED]))
+        )
+
+        # Filter by path if provided
+        if path:
+            target_path = Path(path).resolve()
+
+            # Check if path is a file or directory
+            if target_path.is_file():
+                # Single file - filter by exact match
+                rel_path = str(target_path.relative_to(repo_root))
+                query = query.filter(DocumentCopy.file_path == rel_path)
+            elif target_path.is_dir():
+                # Directory - filter by prefix
+                rel_path = str(target_path.relative_to(repo_root))
+                if recursive:
+                    # Match files in this directory and all subdirectories (prefix match)
+                    query = query.filter(DocumentCopy.file_path.startswith(rel_path))
+                else:
+                    # Match only files directly in this directory (not subdirectories)
+                    import os
+                    sep = os.sep
+                    query = query.filter(
+                        DocumentCopy.file_path.startswith(rel_path),
+                        ~DocumentCopy.file_path.op('LIKE')(f"{rel_path}{sep}%{sep}%")
+                    )
+            else:
+                click.secho(f"Error: Path '{path}' does not exist", fg="red", err=True)
+                raise click.Abort()
+
+        document_copies = query.all()
+        count = len(document_copies)
+
+        if count == 0:
+            click.echo("No organized or ignored files found.")
+            if path:
+                click.echo(f"  (filtered by: {path})")
+            return
+
+        # Show what will be unmarked
+        click.echo()
+        click.secho(f"Files to unmark: {count}", bold=True)
+        click.echo(f"Repository: {repository_path}")
+        if path:
+            click.echo(f"Filter: {path}")
+            if target_path.is_dir() and recursive:
+                click.echo("Mode: Recursive")
+            elif target_path.is_dir():
+                click.echo("Mode: Non-recursive (current directory only)")
+        click.echo()
+
+        # Show the files that will be unmarked
+        if count <= 10:
+            # Show all if there are 10 or fewer
+            for doc_copy in document_copies:
+                status_label = "organized" if doc_copy.organization_status == OrganizationStatus.ORGANIZED else "ignored"
+                click.echo(f"  - {doc_copy.file_path} ({status_label})")
+        else:
+            # Show first 5 and last 3 if there are more than 10
+            for doc_copy in document_copies[:5]:
+                status_label = "organized" if doc_copy.organization_status == OrganizationStatus.ORGANIZED else "ignored"
+                click.echo(f"  - {doc_copy.file_path} ({status_label})")
+            click.echo(f"  ... and {count - 8} more ...")
+            for doc_copy in document_copies[-3:]:
+                status_label = "organized" if doc_copy.organization_status == OrganizationStatus.ORGANIZED else "ignored"
+                click.echo(f"  - {doc_copy.file_path} ({status_label})")
+
+        click.echo()
+
+        # Confirm if not using -y flag
+        if not yes:
+            if not click.confirm(f"Unmark {count} file(s)?"):
+                click.echo("Aborted.")
+                return
+
+        # Unmark all files and delete pending operations
+        for doc_copy in document_copies:
+            # Reset organization status
+            doc_copy.organization_status = OrganizationStatus.UNORGANIZED
+
+            # Delete any pending operations
+            pending_ops = session.query(PendingOperation).filter(
+                PendingOperation.document_copy_id == doc_copy.id
+            ).all()
+            for pending_op in pending_ops:
+                session.delete(pending_op)
+
+        session.commit()
+
+        click.secho(f"✓ Successfully unmarked {count} file(s).", fg="green")
+
+    finally:
+        # Close the session
+        try:
+            next(session_gen)
+        except StopIteration:
+            pass
+
+
+@main.command()
+@click.argument("path", default=None, required=False)
+@click.option(
+    "-y",
+    "--yes",
+    is_flag=True,
+    default=False,
+    help="Skip confirmation prompts",
+)
+@click.option(
+    "-r",
+    "--recursive",
+    is_flag=True,
+    default=False,
+    help="Recursively ignore files in subdirectories",
+)
+def ignore(path: str | None, yes: bool, recursive: bool) -> None:
+    """
+    Mark files to be ignored by docman.
+
+    Sets the organization status to 'ignored', preventing the files from being
+    processed by 'plan' commands (unless --reprocess flag is used). Any existing
+    pending operations will be deleted.
+
+    Arguments:
+        PATH: Path to file or directory to ignore (required).
+
+    Options:
+        -y, --yes: Skip confirmation prompts
+        -r, --recursive: Recursively ignore files in subdirectories
+
+    Examples:
+        - 'docman ignore docs/': Ignore files in docs directory
+        - 'docman ignore docs/ -r': Ignore files in docs and subdirectories
+        - 'docman ignore file.pdf': Ignore specific file
+    """
+    # Validate path argument
+    if not path:
+        click.secho(
+            "Error: Must specify a PATH to ignore files.",
+            fg="red",
+            err=True,
+        )
+        click.echo()
+        click.echo("Examples:")
+        click.echo("  docman ignore docs/")
+        click.echo("  docman ignore file.pdf")
+        raise click.Abort()
+
+    # Find the repository root
+    search_start_path = Path(path).resolve()
+    try:
+        repo_root = get_repository_root(start_path=search_start_path)
+    except RepositoryError:
+        # Path doesn't lead to a repository, try from cwd
+        try:
+            repo_root = get_repository_root(start_path=Path.cwd())
+        except RepositoryError:
+            click.secho(
+                "Error: Not in a docman repository. Use 'docman init' to create one.",
+                fg="red",
+                err=True,
+            )
+            raise click.Abort()
+
+    repository_path = str(repo_root)
+
+    # Get database session
+    session_gen = get_session()
+    session = next(session_gen)
+
+    try:
+        # Query document copies for this repository
+        query = (
+            session.query(DocumentCopy)
+            .filter(DocumentCopy.repository_path == repository_path)
+        )
+
+        # Filter by path
+        target_path = Path(path).resolve()
+
+        # Check if path is a file or directory
+        if target_path.is_file():
+            # Single file - filter by exact match
+            rel_path = str(target_path.relative_to(repo_root))
+            query = query.filter(DocumentCopy.file_path == rel_path)
+        elif target_path.is_dir():
+            # Directory - filter by prefix
+            rel_path = str(target_path.relative_to(repo_root))
+            if recursive:
+                # Match files in this directory and all subdirectories (prefix match)
+                query = query.filter(DocumentCopy.file_path.startswith(rel_path))
+            else:
+                # Match only files directly in this directory (not subdirectories)
+                import os
+                sep = os.sep
+                query = query.filter(
+                    DocumentCopy.file_path.startswith(rel_path),
+                    ~DocumentCopy.file_path.op('LIKE')(f"{rel_path}{sep}%{sep}%")
+                )
+        else:
+            click.secho(f"Error: Path '{path}' does not exist", fg="red", err=True)
+            raise click.Abort()
+
+        document_copies = query.all()
+        count = len(document_copies)
+
+        if count == 0:
+            click.echo("No files found.")
+            click.echo(f"  (filtered by: {path})")
+            return
+
+        # Show what will be ignored
+        click.echo()
+        click.secho(f"Files to ignore: {count}", bold=True)
+        click.echo(f"Repository: {repository_path}")
+        click.echo(f"Filter: {path}")
+        if target_path.is_dir() and recursive:
+            click.echo("Mode: Recursive")
+        elif target_path.is_dir():
+            click.echo("Mode: Non-recursive (current directory only)")
+        click.echo()
+
+        # Show the files that will be ignored
+        if count <= 10:
+            # Show all if there are 10 or fewer
+            for doc_copy in document_copies:
+                click.echo(f"  - {doc_copy.file_path}")
+        else:
+            # Show first 5 and last 3 if there are more than 10
+            for doc_copy in document_copies[:5]:
+                click.echo(f"  - {doc_copy.file_path}")
+            click.echo(f"  ... and {count - 8} more ...")
+            for doc_copy in document_copies[-3:]:
+                click.echo(f"  - {doc_copy.file_path}")
+
+        click.echo()
+
+        # Confirm if not using -y flag
+        if not yes:
+            if not click.confirm(f"Ignore {count} file(s)?"):
+                click.echo("Aborted.")
+                return
+
+        # Mark all files as ignored and delete pending operations
+        for doc_copy in document_copies:
+            # Set organization status to ignored
+            doc_copy.organization_status = OrganizationStatus.IGNORED
+
+            # Delete any pending operations
+            pending_ops = session.query(PendingOperation).filter(
+                PendingOperation.document_copy_id == doc_copy.id
+            ).all()
+            for pending_op in pending_ops:
+                session.delete(pending_op)
+
+        session.commit()
+
+        click.secho(f"✓ Successfully ignored {count} file(s).", fg="green")
 
     finally:
         # Close the session
