@@ -39,6 +39,19 @@ dev = [
     "types-sqlalchemy",
 ]
 
+[tool.hatch.build.targets.wheel]
+packages = ["src/docman"]
+include = [
+    "src/docman/alembic.ini",
+    "src/docman/alembic/**",
+]
+
+[tool.hatch.build.targets.sdist]
+include = [
+    "src/docman/alembic.ini",
+    "src/docman/alembic/**",
+]
+
 [tool.ruff]
 line-length = 100
 target-version = "py312"

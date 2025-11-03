@@ -50,13 +50,13 @@ uv run mypy src/
 ### Database Migrations
 ```bash
 # Create a new migration (after modifying models)
-alembic revision --autogenerate -m "description"
+alembic -c src/docman/alembic.ini revision --autogenerate -m "description"
 
 # Run migrations to latest version
-alembic upgrade head
+alembic -c src/docman/alembic.ini upgrade head
 
 # View migration history
-alembic history
+alembic -c src/docman/alembic.ini history
 ```
 
 ## Architecture

@@ -1,6 +1,7 @@
 """Unit tests for the database module."""
 
 from pathlib import Path
+from types import TracebackType
 
 import pytest
 from sqlalchemy import inspect, text
@@ -225,20 +226,34 @@ def test_run_migrations_without_alembic_config_raises_error(
     """Test that run_migrations raises error if alembic.ini doesn't exist."""
     monkeypatch.setenv("DOCMAN_APP_CONFIG_DIR", str(tmp_path))
 
-    # Create a temporary directory that doesn't have alembic.ini
-    fake_project_dir = tmp_path / "fake_project"
-    fake_project_dir.mkdir()
-
-    # Temporarily change the module path
     import docman.database as db_module
 
-    original_file = db_module.__file__
-    monkeypatch.setattr(
-        db_module, "__file__", str(fake_project_dir / "src/docman/database.py")
-    )
+    fake_pkg = tmp_path / "fake_pkg"
+    fake_pkg.mkdir()
 
-    try:
-        with pytest.raises(FileNotFoundError, match="Alembic configuration not found"):
-            run_migrations()
-    finally:
-        monkeypatch.setattr(db_module, "__file__", original_file)
+    def fake_files(_: str) -> Path:
+        return fake_pkg
+
+    class _ContextManager:
+        def __init__(self, target: Path) -> None:
+            self._target = target
+
+        def __enter__(self) -> Path:
+            return self._target
+
+        def __exit__(
+            self,
+            exc_type: type[BaseException] | None,
+            exc: BaseException | None,
+            tb: TracebackType | None,
+        ) -> bool:
+            return False
+
+    def fake_as_file(target: Path) -> _ContextManager:
+        return _ContextManager(target)
+
+    monkeypatch.setattr(db_module.resources, "files", fake_files)
+    monkeypatch.setattr(db_module.resources, "as_file", fake_as_file)
+
+    with pytest.raises(FileNotFoundError, match="Alembic configuration not packaged"):
+        run_migrations()

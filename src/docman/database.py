@@ -1,6 +1,8 @@
 """Database configuration and session management for docman."""
 
 from collections.abc import Generator
+from contextlib import ExitStack
+from importlib import resources
 from pathlib import Path
 
 from alembic.config import Config
@@ -83,21 +85,47 @@ def run_migrations() -> None:
     This function locates the alembic.ini file and runs all pending
     migrations to ensure the database schema is current.
     """
-    # Get the path to the alembic directory (relative to this file)
-    # The structure is: src/docman/database.py and alembic/ at project root
-    project_root = Path(__file__).parent.parent.parent
-    alembic_dir = project_root / "alembic"
-    alembic_ini = project_root / "alembic.ini"
+    with ExitStack() as exit_stack:
+        try:
+            docman_pkg = resources.files("docman")
+        except ModuleNotFoundError as exc:
+            raise FileNotFoundError(
+                "The 'docman' package could not be located when loading Alembic resources."
+            ) from exc
 
-    if not alembic_ini.exists():
-        raise FileNotFoundError(
-            f"Alembic configuration not found at {alembic_ini}. "
-            "Please run 'alembic init alembic' first."
-        )
+        try:
+            alembic_ini = exit_stack.enter_context(
+                resources.as_file(docman_pkg / "alembic.ini")
+            )
+        except FileNotFoundError as exc:
+            raise FileNotFoundError(
+                "Alembic configuration not packaged with docman. "
+                "Reinstall docman to restore migration assets."
+            ) from exc
+        if not Path(alembic_ini).exists():
+            raise FileNotFoundError(
+                "Alembic configuration not packaged with docman. "
+                "Reinstall docman to restore migration assets."
+            )
 
-    # Create Alembic config
-    alembic_cfg = Config(str(alembic_ini))
-    alembic_cfg.set_main_option("script_location", str(alembic_dir))
+        try:
+            alembic_dir = exit_stack.enter_context(
+                resources.as_file(docman_pkg / "alembic")
+            )
+        except FileNotFoundError as exc:
+            raise FileNotFoundError(
+                "Alembic migration scripts not packaged with docman. "
+                "Reinstall docman to restore migration assets."
+            ) from exc
+        if not Path(alembic_dir).exists():
+            raise FileNotFoundError(
+                "Alembic migration scripts not packaged with docman. "
+                "Reinstall docman to restore migration assets."
+            )
+
+        # Create Alembic config
+        alembic_cfg = Config(str(alembic_ini))
+        alembic_cfg.set_main_option("script_location", str(alembic_dir))
 
     # Set the database URL dynamically
     db_path = get_database_path()
