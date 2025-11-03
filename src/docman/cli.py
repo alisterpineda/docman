@@ -215,13 +215,14 @@ def find_duplicate_groups(session, repo_root: Path) -> dict[int, list[DocumentCo
     if not doc_ids:
         return {}
 
-    # Now get all copies for these documents
+    # Now get all copies for these documents, ordered by ID for predictable behavior
     copies = (
         session.query(DocumentCopy)
         .filter(
             DocumentCopy.document_id.in_(doc_ids),
             DocumentCopy.repository_path == repository_path,
         )
+        .order_by(DocumentCopy.id)
         .all()
     )
 
@@ -263,6 +264,40 @@ def detect_target_conflicts(
     # Group by target path
     target_paths: dict[str, list[tuple[PendingOperation, DocumentCopy]]] = {}
     for op, copy in ops:
+        # Build target path
+        if op.suggested_directory_path:
+            target = f"{op.suggested_directory_path}/{op.suggested_filename}"
+        else:
+            target = op.suggested_filename
+
+        if target not in target_paths:
+            target_paths[target] = []
+        target_paths[target].append((op, copy))
+
+    # Return only paths with conflicts (multiple files to same location)
+    conflicts = {path: ops for path, ops in target_paths.items() if len(ops) > 1}
+
+    return conflicts
+
+
+def detect_conflicts_in_operations(
+    pending_ops: list[tuple[PendingOperation, DocumentCopy]], repo_root: Path
+) -> dict[str, list[tuple[PendingOperation, DocumentCopy]]]:
+    """Detect conflicts within a specific list of pending operations.
+
+    Identifies cases where multiple operations would move files to the same target location.
+
+    Args:
+        pending_ops: List of (PendingOperation, DocumentCopy) tuples to check.
+        repo_root: Path to the repository root directory.
+
+    Returns:
+        Dictionary mapping target path to list of (PendingOperation, DocumentCopy) tuples.
+        Only includes target paths with multiple operations (conflicts).
+    """
+    # Group by target path
+    target_paths: dict[str, list[tuple[PendingOperation, DocumentCopy]]] = {}
+    for op, copy in pending_ops:
         # Build target path
         if op.suggested_directory_path:
             target = f"{op.suggested_directory_path}/{op.suggested_filename}"
@@ -1276,6 +1311,22 @@ def apply(path: str | None, apply_all: bool, yes: bool, force: bool, dry_run: bo
                 click.echo(f"  (filtered by: {path})")
             return
 
+        # Detect conflicts before applying
+        conflicts = detect_conflicts_in_operations(pending_ops, repo_root)
+        if conflicts:
+            click.secho(f"\n⚠️  Warning: {len(conflicts)} target conflict(s) detected", fg="yellow")
+            click.echo("Multiple files will attempt to move to the same location:")
+            for target, ops in conflicts.items():
+                click.echo(f"\n  Target: {target}")
+                for op, copy in ops:
+                    click.echo(f"    - {copy.file_path}")
+            click.echo()
+
+            # Only prompt in interactive mode; in bulk mode just show warning and continue
+            if not yes and not dry_run:  # interactive mode
+                if not click.confirm("Continue anyway?"):
+                    raise click.Abort()
+
         # Show what will be applied
         click.echo()
         if dry_run:
@@ -1435,12 +1486,67 @@ def apply(path: str | None, apply_all: bool, yes: bool, force: bool, dry_run: bo
 
                 applied_count += 1
             except FileConflictError as e:
-                click.secho(f"  ✗ Skipped: Target file already exists", fg="yellow")
-                click.secho(f"    Use --force to overwrite", fg="yellow")
-                failed_operations.append((current_path, str(e)))
-                skipped_count += 1
+                # Check if this file is part of a duplicate group (only in interactive mode)
+                source_doc_id = doc_copy.document_id
+                duplicate_groups = find_duplicate_groups(session, repo_root)
+
+                if interactive_mode and source_doc_id in duplicate_groups and len(duplicate_groups[source_doc_id]) > 1:
+                    # This is a duplicate - offer more contextual options
+                    click.secho(f"  ⚠️  CONFLICT: Target already exists", fg="yellow")
+                    click.echo(f"    Current: {e.source}")
+                    click.echo(f"    Target:  {e.target}")
+                    click.echo()
+                    click.echo("These files have identical content (duplicates detected)")
+                    click.echo()
+                    click.echo("Choose action:")
+                    click.echo("  [D]elete this copy (recommended)")
+                    click.echo("  [R]ename → {}_1{}".format(target.stem, target.suffix))
+                    click.echo("  [O]verwrite existing file")
+                    click.echo("  [S]kip")
+                    click.echo()
+
+                    choice = click.prompt(
+                        "Your choice",
+                        type=click.Choice(['D', 'R', 'O', 'S'], case_sensitive=False),
+                        default='D'
+                    )
+
+                    if choice.upper() == 'D':
+                        # Delete source copy from database
+                        session.delete(doc_copy)
+                        # Delete file from disk
+                        if source.exists():
+                            source.unlink()
+                        click.secho("  ✓ Deleted duplicate copy", fg="green")
+                        applied_count += 1
+                    elif choice.upper() == 'R':
+                        # Use RENAME conflict resolution
+                        new_target = move_file(source, target, conflict_resolution=ConflictResolution.RENAME, create_dirs=True)
+                        doc_copy.file_path = str(new_target.relative_to(repo_root))
+                        doc_copy.organization_status = OrganizationStatus.ORGANIZED
+                        session.delete(pending_op)
+                        click.secho(f"  ✓ Renamed to {new_target.name}", fg="green")
+                        applied_count += 1
+                    elif choice.upper() == 'O':
+                        # Use OVERWRITE conflict resolution
+                        move_file(source, target, conflict_resolution=ConflictResolution.OVERWRITE, create_dirs=True)
+                        doc_copy.file_path = str(target.relative_to(repo_root))
+                        doc_copy.organization_status = OrganizationStatus.ORGANIZED
+                        session.delete(pending_op)
+                        click.secho("  ✓ Overwritten", fg="green")
+                        applied_count += 1
+                    else:
+                        # Skip
+                        click.echo("  ○ Skipped")
+                        skipped_count += 1
+                else:
+                    # Not a duplicate - show original error message
+                    click.secho("  ✗ Skipped: Target file already exists", fg="yellow")
+                    click.secho("    Use --force to overwrite", fg="yellow")
+                    failed_operations.append((current_path, str(e)))
+                    skipped_count += 1
             except DocmanFileNotFoundError as e:
-                click.secho(f"  ✗ Failed: Source file not found", fg="red")
+                click.secho("  ✗ Failed: Source file not found", fg="red")
                 failed_operations.append((current_path, str(e)))
                 failed_count += 1
             except (FileOperationError, PermissionError) as e:
@@ -2120,8 +2226,6 @@ def dedupe(path: str | None, yes: bool, dry_run: bool) -> None:
                 err=True,
             )
             raise click.Abort()
-
-    repository_path = str(repo_root)
 
     # Get database session
     session_gen = get_session()

@@ -690,3 +690,31 @@ class TestDocmanApply:
         assert "Suggested: reports/annual-report.pdf" in result.output
         assert "Reason: This is a financial report" in result.output
         assert "Confidence: 92%" in result.output
+
+    def test_apply_bulk_mode_with_conflicts_non_interactive(
+        self, cli_runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Test that -y flag remains non-interactive even with conflicts."""
+        repo_dir = self.setup_isolated_env(tmp_path, monkeypatch)
+        monkeypatch.chdir(repo_dir)
+
+        # Create two files targeting the same location (conflict)
+        (repo_dir / "inbox/doc1.pdf").parent.mkdir(parents=True)
+        (repo_dir / "inbox/doc1.pdf").write_text("content1")
+        (repo_dir / "inbox/doc2.pdf").write_text("content2")
+
+        self.create_pending_operation(
+            str(repo_dir), "inbox/doc1.pdf", "organized", "report.pdf"
+        )
+        self.create_pending_operation(
+            str(repo_dir), "inbox/doc2.pdf", "organized", "report.pdf"
+        )
+
+        # Run with -y flag - should not prompt for input
+        result = cli_runner.invoke(main, ["apply", "--all", "-y"], catch_exceptions=False)
+
+        # Should succeed without waiting for input
+        assert result.exit_code == 0
+        # Should show warning but not prompt
+        assert "target conflict(s) detected" in result.output
+        assert "Continue anyway?" not in result.output  # No prompt in bulk mode
