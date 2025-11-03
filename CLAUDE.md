@@ -272,9 +272,16 @@ Main commands:
 - `docman init [directory]`: Initialize repository
 - `docman plan [path]`: Analyze documents and generate LLM organization suggestions
   - `--reprocess`: Reprocess all files, including those already organized or ignored
+  - Shows warnings when duplicates detected to save LLM costs
 - `docman status [path]`: Review pending operations (shows paths, confidence, reasons, organization status)
+  - Groups duplicate files together visually
+  - Shows conflict warnings when multiple files target same destination
 - `docman apply [path]`: Apply pending operations (interactive or bulk with `-y`)
 - `docman reject [path]`: Reject/delete pending operations without applying
+- `docman dedupe [path]`: Find and resolve duplicate files
+  - Interactive mode (default): Review each duplicate group, choose which copy to keep
+  - Bulk mode (`-y`): Auto-delete duplicates, keep first copy
+  - `--dry-run`: Preview changes without deleting files
 - `docman unmark [path]`: Reset organization status to 'unorganized' for specified files
   - `--all`: Unmark all files in repository
   - `-r`: Recursively unmark files in subdirectories
@@ -282,6 +289,87 @@ Main commands:
   - `-r`: Recursively ignore files in subdirectories
 - `docman llm`: Manage LLM providers (add, list, show, test, set-active, remove)
 - `docman config`: Manage repository configuration (set-instructions, show-instructions)
+
+### Duplicate Document Handling
+
+**Architecture**: docman uses content-based deduplication at the database level.
+
+**Key Components**:
+1. **Canonical Documents** (`documents` table): One record per unique content (SHA256 hash)
+2. **Document Copies** (`document_copies` table): Multiple copies can reference same document
+3. **Duplicate Detection**: `find_duplicate_groups()` identifies documents with multiple copies
+4. **Conflict Detection**: `detect_target_conflicts()` finds operations targeting same destination
+
+**Workflow for Managing Duplicates**:
+```bash
+# Standard workflow with deduplication
+docman plan              # Shows duplicate warning with count
+docman status            # Duplicates grouped with [1a], [1b] numbering
+docman dedupe            # Interactively resolve duplicates
+docman plan              # Generate suggestions for remaining files
+docman apply --all -y    # Apply suggestions (no conflicts)
+
+# Quick bulk deduplication
+docman dedupe -y         # Auto-resolve, keep first copy of each
+docman dedupe --dry-run  # Preview what would be deleted
+
+# Scope to specific directory
+docman dedupe docs/      # Only deduplicate files in docs/
+```
+
+**Status Command Enhancements**:
+- **Duplicate Grouping**: Files with same content grouped together
+  - Sub-numbering: `[1a], [1b], [1c]` for copies in same group
+  - Shows content hash for each group
+- **Conflict Warnings**: Visual `⚠️ CONFLICT` indicators when files target same destination
+- **Summary Statistics**: Shows duplicate group count and files with conflicts
+- **Tip Display**: Suggests running `docman dedupe` when duplicates detected
+
+**Plan Command Warnings**:
+- Detects duplicates after processing completes
+- Shows warning: "Found X duplicate document(s) with Y total copies"
+- Estimates potential LLM cost savings from deduplicating first
+- Example: "~15 LLM call(s) could be saved by deduplicating first"
+
+**Dedupe Command Features**:
+- **Discovery**: Finds all document groups with 2+ copies
+- **Path Filtering**: Optional path argument limits scope
+- **Interactive Mode**:
+  - Shows all copies with metadata (size, modified time)
+  - User chooses which copy to keep (or skip group)
+  - Options: number (keep), 'a' (keep all), 's' (skip)
+- **Bulk Mode** (`-y` flag):
+  - Automatically keeps first copy, deletes rest
+  - No prompts, fast execution
+- **Dry Run** (`--dry-run`):
+  - Shows what would be deleted
+  - Works with both interactive and bulk modes
+- **Database Cleanup**: Deletes `DocumentCopy` and cascades to `PendingOperation`
+
+**Example Duplicate Group Display**:
+```
+[Group 1/2] 3 copies, hash: abc12345...
+
+  [1] inbox/report.pdf
+      Size: 145.2 KB, Modified: 2025-01-15 10:30:45
+  [2] backup/old/report.pdf
+      Size: 145.2 KB, Modified: 2025-01-10 09:15:22
+  [3] downloads/report.pdf
+      Size: 145.2 KB, Modified: 2025-01-14 14:20:10
+
+Which copy do you want to keep?
+  Enter number to keep that copy
+  Enter 'a' to keep all (skip this group)
+  Enter 's' to skip this group
+
+Your choice [1]:
+```
+
+**Cost Optimization**:
+- Duplicates result in N LLM API calls for same content
+- Running `dedupe` before `plan` saves (N-1) calls per duplicate group
+- Plan command shows estimated savings when duplicates detected
+- Example: 100 duplicate invoices = 100 LLM calls → dedupe first = 1 call
 
 ### Testing Structure
 

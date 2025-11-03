@@ -5,6 +5,7 @@ This tool uses docling and LLM models (cloud or local) to help organize,
 move, and rename documents intelligently.
 """
 
+from datetime import datetime
 from pathlib import Path
 
 import click
@@ -179,6 +180,123 @@ def cleanup_orphaned_copies(session, repo_root: Path) -> tuple[int, int]:
 
     session.commit()
     return deleted_count, updated_count
+
+
+def find_duplicate_groups(session, repo_root: Path) -> dict[int, list[DocumentCopy]]:
+    """Find all documents that have multiple copies in the repository.
+
+    Groups DocumentCopy records by their document_id to identify duplicates.
+
+    Args:
+        session: SQLAlchemy database session.
+        repo_root: Path to the repository root directory.
+
+    Returns:
+        Dictionary mapping document_id to list of DocumentCopy records.
+        Only includes documents with 2 or more copies (duplicates).
+    """
+    from sqlalchemy import func
+
+    repository_path = str(repo_root)
+
+    # Query to find documents with multiple copies
+    # First, get document_ids that have count > 1
+    duplicate_doc_ids = (
+        session.query(DocumentCopy.document_id)
+        .filter(DocumentCopy.repository_path == repository_path)
+        .group_by(DocumentCopy.document_id)
+        .having(func.count(DocumentCopy.id) > 1)
+        .all()
+    )
+
+    # Extract just the IDs
+    doc_ids = [doc_id for (doc_id,) in duplicate_doc_ids]
+
+    if not doc_ids:
+        return {}
+
+    # Now get all copies for these documents
+    copies = (
+        session.query(DocumentCopy)
+        .filter(
+            DocumentCopy.document_id.in_(doc_ids),
+            DocumentCopy.repository_path == repository_path,
+        )
+        .all()
+    )
+
+    # Group by document_id
+    groups: dict[int, list[DocumentCopy]] = {}
+    for copy in copies:
+        if copy.document_id not in groups:
+            groups[copy.document_id] = []
+        groups[copy.document_id].append(copy)
+
+    return groups
+
+
+def detect_target_conflicts(
+    session, repo_root: Path
+) -> dict[str, list[tuple[PendingOperation, DocumentCopy]]]:
+    """Detect pending operations that would create filename conflicts.
+
+    Identifies cases where multiple files would be moved to the same target location.
+
+    Args:
+        session: SQLAlchemy database session.
+        repo_root: Path to the repository root directory.
+
+    Returns:
+        Dictionary mapping target path to list of (PendingOperation, DocumentCopy) tuples.
+        Only includes target paths with multiple operations (conflicts).
+    """
+    repository_path = str(repo_root)
+
+    # Query all pending operations with their copies
+    ops = (
+        session.query(PendingOperation, DocumentCopy)
+        .join(DocumentCopy, PendingOperation.document_copy_id == DocumentCopy.id)
+        .filter(DocumentCopy.repository_path == repository_path)
+        .all()
+    )
+
+    # Group by target path
+    target_paths: dict[str, list[tuple[PendingOperation, DocumentCopy]]] = {}
+    for op, copy in ops:
+        # Build target path
+        if op.suggested_directory_path:
+            target = f"{op.suggested_directory_path}/{op.suggested_filename}"
+        else:
+            target = op.suggested_filename
+
+        if target not in target_paths:
+            target_paths[target] = []
+        target_paths[target].append((op, copy))
+
+    # Return only paths with conflicts (multiple files to same location)
+    conflicts = {path: ops for path, ops in target_paths.items() if len(ops) > 1}
+
+    return conflicts
+
+
+def get_duplicate_summary(session, repo_root: Path) -> tuple[int, int]:
+    """Get summary statistics about duplicate documents in the repository.
+
+    Args:
+        session: SQLAlchemy database session.
+        repo_root: Path to the repository root directory.
+
+    Returns:
+        Tuple of (unique_duplicated_docs, total_duplicate_copies).
+        - unique_duplicated_docs: Number of distinct documents that have duplicates
+        - total_duplicate_copies: Total number of duplicate file copies
+    """
+    duplicate_groups = find_duplicate_groups(session, repo_root)
+
+    unique_duplicated_docs = len(duplicate_groups)
+    total_duplicate_copies = sum(len(copies) for copies in duplicate_groups.values())
+
+    return unique_duplicated_docs, total_duplicate_copies
 
 
 @main.command()
@@ -681,6 +799,35 @@ def plan(path: str | None, recursive: bool, reprocess: bool) -> None:
         click.echo(f"  Total files: {len(document_files)}")
         click.echo("=" * 50)
 
+        # Check for duplicates and show warning
+        unique_dup_docs, total_dup_copies = get_duplicate_summary(session, repo_root)
+        if unique_dup_docs > 0:
+            click.echo()
+            click.secho(
+                f"⚠️  Found {unique_dup_docs} duplicate document(s) "
+                f"with {total_dup_copies} total copies",
+                fg="yellow",
+            )
+            click.echo()
+            click.echo("💡 Tip: Run 'docman dedupe' to resolve duplicate files")
+            click.echo("       before generating LLM suggestions to save costs.")
+            click.echo()
+            if pending_ops_created > 0 or pending_ops_updated > 0:
+                click.echo(
+                    f"Note: {pending_ops_created + pending_ops_updated} LLM suggestion(s) were generated."
+                )
+                estimated_saveable = sum(
+                    1
+                    for doc_id, copies in find_duplicate_groups(session, repo_root).items()
+                    if len(copies) > 1
+                    for _ in copies[1:]  # All but one copy per group
+                )
+                if estimated_saveable > 0:
+                    click.echo(
+                        f"      ~{estimated_saveable} LLM call(s) could be saved by deduplicating first."
+                    )
+        click.echo()
+
     finally:
         # Close the session
         try:
@@ -774,6 +921,23 @@ def status(path: str | None) -> None:
                 click.echo(f"  (filtered by: {path})")
             return
 
+        # Detect duplicates and conflicts
+        duplicate_groups = find_duplicate_groups(session, repo_root)
+        target_conflicts = detect_target_conflicts(session, repo_root)
+
+        # Build a lookup for document_copy_id to document_id
+        copy_to_doc_id = {copy.id: copy.document_id for _, copy in pending_ops}
+
+        # Separate operations into duplicates and non-duplicates
+        duplicate_ops = []
+        non_duplicate_ops = []
+
+        for pending_op, doc_copy in pending_ops:
+            if doc_copy.document_id in duplicate_groups:
+                duplicate_ops.append((pending_op, doc_copy))
+            else:
+                non_duplicate_ops.append((pending_op, doc_copy))
+
         # Display header
         click.echo()
         click.secho(f"Pending Operations ({len(pending_ops)}):", bold=True)
@@ -782,8 +946,102 @@ def status(path: str | None) -> None:
             click.echo(f"Filter: {path}")
         click.echo()
 
-        # Display each operation
-        for idx, (pending_op, doc_copy) in enumerate(pending_ops, start=1):
+        # Initialize counter for all operations
+        group_idx = 1
+
+        # Display duplicate groups first
+        if duplicate_ops:
+            # Group duplicate operations by document_id
+            dup_groups_display: dict[int, list[tuple[PendingOperation, DocumentCopy]]] = {}
+            for pending_op, doc_copy in duplicate_ops:
+                if doc_copy.document_id not in dup_groups_display:
+                    dup_groups_display[doc_copy.document_id] = []
+                dup_groups_display[doc_copy.document_id].append((pending_op, doc_copy))
+
+            # Display each duplicate group
+            for document_id, group_ops in dup_groups_display.items():
+                # Get content hash for display
+                first_copy = group_ops[0][1]
+                doc = session.query(Document).filter(Document.id == document_id).first()
+                content_hash_display = doc.content_hash[:8] if doc else "unknown"
+
+                # Display group header
+                click.secho(
+                    f"[⚠️  DUPLICATE GROUP - {len(group_ops)} copies, hash: {content_hash_display}...]",
+                    fg="yellow",
+                    bold=True,
+                )
+                click.echo()
+
+                # Display each operation in the group
+                for sub_idx, (pending_op, doc_copy) in enumerate(group_ops, start=1):
+                    # Determine confidence color
+                    confidence = pending_op.confidence
+                    if confidence >= 0.8:
+                        confidence_color = "green"
+                    elif confidence >= 0.6:
+                        confidence_color = "yellow"
+                    else:
+                        confidence_color = "red"
+
+                    # Current path
+                    current_path = doc_copy.file_path
+
+                    # Suggested path
+                    suggested_dir = pending_op.suggested_directory_path
+                    suggested_filename = pending_op.suggested_filename
+                    if suggested_dir:
+                        suggested_path = f"{suggested_dir}/{suggested_filename}"
+                    else:
+                        suggested_path = suggested_filename
+
+                    # Check for conflict with this target
+                    conflict_warning = ""
+                    if suggested_path in target_conflicts:
+                        # Find which other operations conflict
+                        conflicting_ops = target_conflicts[suggested_path]
+                        if len(conflicting_ops) > 1:
+                            # Build list of conflicting indices
+                            conflict_refs = []
+                            for conf_op, conf_copy in conflicting_ops:
+                                if conf_copy.id != doc_copy.id:
+                                    # Find the index/sub-index of the conflicting operation
+                                    # For simplicity, just mark as conflict
+                                    conflict_refs.append("another file")
+                            if conflict_refs:
+                                conflict_warning = f" ⚠️ CONFLICT: Same target as {conflict_refs[0]}"
+
+                    # Check if it's a move or just a rename
+                    operation_type = ""
+                    op_color = "cyan"
+                    if current_path == suggested_path:
+                        operation_type = "(no change)"
+                        op_color = "white"
+
+                    # Display operation with sub-numbering
+                    click.echo(f"  [{group_idx}{chr(96 + sub_idx)}] {current_path}")
+
+                    # Show organization status
+                    status_label = doc_copy.organization_status.value
+                    status_color = "white"
+                    if doc_copy.organization_status == OrganizationStatus.ORGANIZED:
+                        status_color = "green"
+                    elif doc_copy.organization_status == OrganizationStatus.IGNORED:
+                        status_color = "yellow"
+                    click.secho(f"    Status: {status_label}", fg=status_color)
+
+                    click.secho(
+                        f"    → {suggested_path} {operation_type}{conflict_warning}",
+                        fg=op_color,
+                    )
+                    click.secho(f"    Confidence: {confidence:.0%}", fg=confidence_color)
+                    click.echo(f"    Reason: {pending_op.reason}")
+                    click.echo()
+
+                group_idx += 1
+
+        # Display non-duplicate operations
+        for idx, (pending_op, doc_copy) in enumerate(non_duplicate_ops, start=group_idx):
             # Determine confidence color
             confidence = pending_op.confidence
             if confidence >= 0.8:
@@ -803,6 +1061,11 @@ def status(path: str | None) -> None:
                 suggested_path = f"{suggested_dir}/{suggested_filename}"
             else:
                 suggested_path = suggested_filename
+
+            # Check for conflict
+            conflict_warning = ""
+            if suggested_path in target_conflicts and len(target_conflicts[suggested_path]) > 1:
+                conflict_warning = " ⚠️ CONFLICT"
 
             # Check if it's a move or just a rename
             if current_path == suggested_path:
@@ -824,7 +1087,7 @@ def status(path: str | None) -> None:
                 status_color = "yellow"
             click.secho(f"  Status: {status_label}", fg=status_color)
 
-            click.secho(f"  → {suggested_path} {operation_type}", fg=op_color)
+            click.secho(f"  → {suggested_path} {operation_type}{conflict_warning}", fg=op_color)
             click.secho(f"  Confidence: {confidence:.0%}", fg=confidence_color)
             click.echo(f"  Reason: {pending_op.reason}")
             click.echo()
@@ -832,7 +1095,28 @@ def status(path: str | None) -> None:
         # Display summary
         click.echo("=" * 50)
         click.echo(f"Total pending operations: {len(pending_ops)}")
+
+        # Add duplicate and conflict stats
+        if duplicate_groups:
+            total_dup_copies = sum(len(copies) for copies in duplicate_groups.values())
+            click.secho(
+                f"Duplicate groups: {len(duplicate_groups)} ({total_dup_copies} total copies)",
+                fg="yellow",
+            )
+
+        if target_conflicts:
+            total_conflicts = sum(len(ops) for ops in target_conflicts.values())
+            click.secho(
+                f"Files with conflicting targets: {total_conflicts}",
+                fg="yellow",
+            )
+
         click.echo()
+
+        if duplicate_groups:
+            click.echo("💡 Tip: Run 'docman dedupe' to resolve duplicates")
+            click.echo()
+
         click.echo("To apply these changes, run:")
         click.echo("  docman apply --all       # Review each operation interactively")
         click.echo("  docman apply --all -y    # Apply all operations without prompts")
@@ -1759,6 +2043,293 @@ def ignore(path: str | None, yes: bool, recursive: bool) -> None:
         session.commit()
 
         click.secho(f"✓ Successfully ignored {count} file(s).", fg="green")
+
+    finally:
+        # Close the session
+        try:
+            next(session_gen)
+        except StopIteration:
+            pass
+
+
+@main.command()
+@click.argument("path", default=None, required=False)
+@click.option(
+    "-y",
+    "--yes",
+    is_flag=True,
+    default=False,
+    help="Automatically delete duplicate copies without confirmation (bulk mode)",
+)
+@click.option(
+    "--dry-run",
+    is_flag=True,
+    default=False,
+    help="Show what would be deleted without actually deleting files",
+)
+def dedupe(path: str | None, yes: bool, dry_run: bool) -> None:
+    """
+    Find and resolve duplicate files in the repository.
+
+    Identifies documents with multiple copies (same content, different locations)
+    and allows you to delete duplicates, keeping only one copy of each document.
+
+    Interactive mode (default): Review each duplicate group and choose which copy to keep.
+    Bulk mode (-y): Automatically keep the first copy found and delete the rest.
+
+    Arguments:
+        PATH: Optional path to limit deduplication scope (default: entire repository).
+
+    Options:
+        -y, --yes: Skip confirmation prompts (bulk mode)
+        --dry-run: Preview changes without modifying files
+
+    Examples:
+        - 'docman dedupe': Interactive deduplication of entire repository
+        - 'docman dedupe docs/': Deduplicate only files in docs directory
+        - 'docman dedupe -y --dry-run': Preview bulk deduplication
+        - 'docman dedupe -y': Auto-delete duplicates (keep first copy)
+    """
+    # Find the repository root
+    repo_root = None
+
+    if path:
+        # Try to find repository from the provided path
+        search_start_path = Path(path).resolve()
+        try:
+            repo_root = get_repository_root(start_path=search_start_path)
+        except RepositoryError:
+            # Path doesn't lead to a repository, try from cwd
+            try:
+                repo_root = get_repository_root(start_path=Path.cwd())
+            except RepositoryError:
+                click.secho(
+                    "Error: Not in a docman repository. Use 'docman init' to create one.",
+                    fg="red",
+                    err=True,
+                )
+                raise click.Abort()
+    else:
+        # No path provided, use current directory
+        try:
+            repo_root = get_repository_root(start_path=Path.cwd())
+        except RepositoryError:
+            click.secho(
+                "Error: Not in a docman repository. Use 'docman init' to create one.",
+                fg="red",
+                err=True,
+            )
+            raise click.Abort()
+
+    repository_path = str(repo_root)
+
+    # Get database session
+    session_gen = get_session()
+    session = next(session_gen)
+
+    try:
+        # Find all duplicate groups
+        all_duplicate_groups = find_duplicate_groups(session, repo_root)
+
+        # Filter by path if provided
+        if path:
+            target_path = Path(path).resolve()
+
+            # Validate path exists
+            if not target_path.exists():
+                click.secho(f"Error: Path '{path}' does not exist", fg="red", err=True)
+                raise click.Abort()
+
+            # Validate path is within repository
+            try:
+                target_path.relative_to(repo_root)
+            except ValueError:
+                click.secho(
+                    f"Error: Path '{path}' is outside the repository at {repo_root}",
+                    fg="red",
+                    err=True,
+                )
+                raise click.Abort()
+
+            # Filter duplicate groups to only include copies in target path
+            filtered_groups: dict[int, list[DocumentCopy]] = {}
+            for doc_id, copies in all_duplicate_groups.items():
+                # Filter copies to those in target path
+                matching_copies = [
+                    copy
+                    for copy in copies
+                    if (repo_root / copy.file_path).resolve().is_relative_to(target_path)
+                ]
+                # Only include if we still have duplicates after filtering
+                if len(matching_copies) > 1:
+                    filtered_groups[doc_id] = matching_copies
+
+            duplicate_groups = filtered_groups
+        else:
+            duplicate_groups = all_duplicate_groups
+
+        if not duplicate_groups:
+            click.echo("No duplicate files found.")
+            if path:
+                click.echo(f"  (searched in: {path})")
+            return
+
+        # Calculate statistics
+        total_groups = len(duplicate_groups)
+        total_copies = sum(len(copies) for copies in duplicate_groups.values())
+        duplicate_copies = total_copies - total_groups  # All but one per group
+
+        # Display header
+        click.echo()
+        click.secho(f"Found {total_groups} duplicate group(s)", bold=True)
+        click.echo(f"Total copies: {total_copies}")
+        click.echo(f"Duplicates to resolve: {duplicate_copies}")
+        if path:
+            click.echo(f"Scope: {path}")
+        click.echo()
+
+        if dry_run:
+            click.secho("DRY RUN MODE - No files will be deleted", fg="yellow")
+            click.echo()
+
+        # Track what to delete
+        copies_to_delete: list[DocumentCopy] = []
+
+        # Process each duplicate group
+        for group_idx, (document_id, copies) in enumerate(duplicate_groups.items(), start=1):
+            # Get document for display
+            doc = session.query(Document).filter(Document.id == document_id).first()
+            content_hash_display = doc.content_hash[:8] if doc else "unknown"
+
+            # Display group header
+            click.secho(
+                f"[Group {group_idx}/{total_groups}] {len(copies)} copies, "
+                f"hash: {content_hash_display}...",
+                fg="cyan",
+                bold=True,
+            )
+            click.echo()
+
+            # Display all copies in this group with metadata
+            for idx, copy in enumerate(copies, start=1):
+                file_path = repo_root / copy.file_path
+                if file_path.exists():
+                    stat = file_path.stat()
+                    size_kb = stat.st_size / 1024
+                    mtime = datetime.fromtimestamp(stat.st_mtime).strftime("%Y-%m-%d %H:%M:%S")
+                    click.echo(f"  [{idx}] {copy.file_path}")
+                    click.echo(f"      Size: {size_kb:.1f} KB, Modified: {mtime}")
+                else:
+                    click.echo(f"  [{idx}] {copy.file_path}")
+                    click.secho("      (file not found on disk)", fg="red")
+
+            click.echo()
+
+            if yes:
+                # Bulk mode: keep first, delete rest
+                copies_to_delete.extend(copies[1:])
+                click.echo(f"  Keeping: [1] {copies[0].file_path}")
+                click.secho(f"  Deleting: {len(copies) - 1} duplicate(s)", fg="yellow")
+                click.echo()
+            else:
+                # Interactive mode: ask user which to keep
+                click.echo("Which copy do you want to keep?")
+                click.echo("  Enter number to keep that copy")
+                click.echo("  Enter 'a' to keep all (skip this group)")
+                click.echo("  Enter 's' to skip this group")
+                click.echo()
+
+                while True:
+                    choice = click.prompt("Your choice", type=str, default="1")
+
+                    if choice.lower() in ["a", "all"]:
+                        click.echo("  Keeping all copies, skipping group.")
+                        break
+                    elif choice.lower() in ["s", "skip"]:
+                        click.echo("  Skipping group.")
+                        break
+                    else:
+                        try:
+                            choice_idx = int(choice)
+                            if 1 <= choice_idx <= len(copies):
+                                # Keep the chosen copy, delete the rest
+                                kept_copy = copies[choice_idx - 1]
+                                for idx, copy in enumerate(copies):
+                                    if idx != (choice_idx - 1):
+                                        copies_to_delete.append(copy)
+
+                                click.echo(f"  Keeping: [{choice_idx}] {kept_copy.file_path}")
+                                click.secho(
+                                    f"  Marking {len(copies) - 1} duplicate(s) for deletion",
+                                    fg="yellow",
+                                )
+                                break
+                            else:
+                                click.secho(
+                                    f"  Invalid choice. Please enter 1-{len(copies)}, 'a', or 's'",
+                                    fg="red",
+                                )
+                        except ValueError:
+                            click.secho(
+                                f"  Invalid input. Please enter 1-{len(copies)}, 'a', or 's'",
+                                fg="red",
+                            )
+
+                click.echo()
+
+        # Show summary
+        if not copies_to_delete:
+            click.echo("No duplicates selected for deletion.")
+            return
+
+        click.echo("=" * 50)
+        click.secho(f"Summary: {len(copies_to_delete)} file(s) to delete", bold=True)
+        click.echo()
+
+        # Show files to be deleted
+        for copy in copies_to_delete:
+            click.echo(f"  - {copy.file_path}")
+
+        click.echo()
+
+        if dry_run:
+            click.secho("DRY RUN: No files were deleted.", fg="yellow")
+            return
+
+        # Final confirmation if not in bulk mode
+        if not yes:
+            if not click.confirm(f"Delete {len(copies_to_delete)} file(s)?"):
+                click.echo("Aborted.")
+                return
+
+        # Delete files and database records
+        deleted_count = 0
+        failed_count = 0
+
+        for copy in copies_to_delete:
+            file_path = repo_root / copy.file_path
+
+            try:
+                # Delete file from disk if it exists
+                if file_path.exists():
+                    file_path.unlink()
+
+                # Delete from database (will cascade to PendingOperation)
+                session.delete(copy)
+                deleted_count += 1
+            except Exception as e:
+                click.secho(f"  Error deleting {copy.file_path}: {e}", fg="red")
+                failed_count += 1
+
+        # Commit changes
+        session.commit()
+
+        # Show results
+        click.echo()
+        if deleted_count > 0:
+            click.secho(f"✓ Successfully deleted {deleted_count} duplicate file(s).", fg="green")
+        if failed_count > 0:
+            click.secho(f"✗ Failed to delete {failed_count} file(s).", fg="red")
 
     finally:
         # Close the session

@@ -267,4 +267,199 @@ class TestDocmanStatus:
 
         assert result.exit_code == 0
         assert "To apply these changes, run:" in result.output
+
+    def test_status_groups_duplicates(
+        self, cli_runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Test that status groups duplicate files by content hash."""
+        repo_dir = self.setup_isolated_env(tmp_path, monkeypatch)
+        monkeypatch.chdir(repo_dir)
+
+        # Create test files
+        (repo_dir / "inbox" / "report.pdf").parent.mkdir(parents=True, exist_ok=True)
+        (repo_dir / "inbox" / "report.pdf").touch()
+        (repo_dir / "backup" / "report.pdf").parent.mkdir(parents=True, exist_ok=True)
+        (repo_dir / "backup" / "report.pdf").touch()
+
+        # Create document and copies for duplicate files
+        ensure_database()
+        session_gen = get_session()
+        session = next(session_gen)
+        try:
+            # Create one document with two copies (duplicates)
+            doc = Document(content_hash="hash_duplicate", content="Duplicate content")
+            session.add(doc)
+            session.flush()
+
+            # Create two copies
+            copy1 = DocumentCopy(
+                document_id=doc.id,
+                repository_path=str(repo_dir),
+                file_path="inbox/report.pdf",
+            )
+            copy2 = DocumentCopy(
+                document_id=doc.id,
+                repository_path=str(repo_dir),
+                file_path="backup/report.pdf",
+            )
+            session.add_all([copy1, copy2])
+            session.flush()
+
+            # Create pending operations for both copies
+            op1 = PendingOperation(
+                document_copy_id=copy1.id,
+                suggested_directory_path="reports",
+                suggested_filename="annual-report.pdf",
+                reason="Test reason",
+                confidence=0.95,
+                prompt_hash="hash1",
+            )
+            op2 = PendingOperation(
+                document_copy_id=copy2.id,
+                suggested_directory_path="reports",
+                suggested_filename="annual-report.pdf",
+                reason="Test reason",
+                confidence=0.92,
+                prompt_hash="hash2",
+            )
+            session.add_all([op1, op2])
+            session.commit()
+        finally:
+            try:
+                next(session_gen)
+            except StopIteration:
+                pass
+
+        result = cli_runner.invoke(main, ["status"], catch_exceptions=False)
+
+        assert result.exit_code == 0
+        # Check for duplicate group header
+        assert "DUPLICATE GROUP" in result.output
+        assert "2 copies" in result.output
+        assert "hash_dup" in result.output  # First 8 chars of hash
+        # Check for sub-numbering (e.g., [1a], [1b])
+        assert "[1a]" in result.output
+        assert "[1b]" in result.output
+        # Check for tip about dedupe command
+        assert "docman dedupe" in result.output
+
+    def test_status_shows_conflict_warnings(
+        self, cli_runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Test that status shows conflict warnings for files with same target."""
+        repo_dir = self.setup_isolated_env(tmp_path, monkeypatch)
+        monkeypatch.chdir(repo_dir)
+
+        # Create test files
+        (repo_dir / "file1.pdf").touch()
+        (repo_dir / "file2.pdf").touch()
+
+        # Create two separate documents (not duplicates) with same target
+        ensure_database()
+        session_gen = get_session()
+        session = next(session_gen)
+        try:
+            # Create two different documents
+            doc1 = Document(content_hash="hash1", content="Content 1")
+            doc2 = Document(content_hash="hash2", content="Content 2")
+            session.add_all([doc1, doc2])
+            session.flush()
+
+            # Create copies
+            copy1 = DocumentCopy(
+                document_id=doc1.id,
+                repository_path=str(repo_dir),
+                file_path="file1.pdf",
+            )
+            copy2 = DocumentCopy(
+                document_id=doc2.id,
+                repository_path=str(repo_dir),
+                file_path="file2.pdf",
+            )
+            session.add_all([copy1, copy2])
+            session.flush()
+
+            # Create pending operations with SAME target
+            op1 = PendingOperation(
+                document_copy_id=copy1.id,
+                suggested_directory_path="reports",
+                suggested_filename="report.pdf",
+                reason="Test reason",
+                confidence=0.9,
+                prompt_hash="hash1",
+            )
+            op2 = PendingOperation(
+                document_copy_id=copy2.id,
+                suggested_directory_path="reports",
+                suggested_filename="report.pdf",  # Same target!
+                reason="Test reason",
+                confidence=0.85,
+                prompt_hash="hash2",
+            )
+            session.add_all([op1, op2])
+            session.commit()
+        finally:
+            try:
+                next(session_gen)
+            except StopIteration:
+                pass
+
+        result = cli_runner.invoke(main, ["status"], catch_exceptions=False)
+
+        assert result.exit_code == 0
+        # Check for conflict warning
+        assert "CONFLICT" in result.output
+        # Check for conflict summary
+        assert "Files with conflicting targets:" in result.output
+
+    def test_status_duplicate_summary_stats(
+        self, cli_runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Test that status summary includes duplicate statistics."""
+        repo_dir = self.setup_isolated_env(tmp_path, monkeypatch)
+        monkeypatch.chdir(repo_dir)
+
+        # Create document with 3 copies (duplicates)
+        ensure_database()
+        session_gen = get_session()
+        session = next(session_gen)
+        try:
+            doc = Document(content_hash="hash_dup", content="Duplicate content")
+            session.add(doc)
+            session.flush()
+
+            # Create 3 copies
+            for i in range(3):
+                copy = DocumentCopy(
+                    document_id=doc.id,
+                    repository_path=str(repo_dir),
+                    file_path=f"path{i}/file.pdf",
+                )
+                session.add(copy)
+                session.flush()
+
+                # Create pending operation
+                op = PendingOperation(
+                    document_copy_id=copy.id,
+                    suggested_directory_path="reports",
+                    suggested_filename=f"report{i}.pdf",
+                    reason="Test",
+                    confidence=0.9,
+                    prompt_hash=f"hash{i}",
+                )
+                session.add(op)
+
+            session.commit()
+        finally:
+            try:
+                next(session_gen)
+            except StopIteration:
+                pass
+
+        result = cli_runner.invoke(main, ["status"], catch_exceptions=False)
+
+        assert result.exit_code == 0
+        # Check for duplicate stats in summary
+        assert "Duplicate groups: 1" in result.output
+        assert "3 total copies" in result.output
         assert "docman apply --all -y" in result.output
