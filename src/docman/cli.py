@@ -1167,83 +1167,20 @@ def status(path: str | None) -> None:
             pass
 
 
-@main.command()
-@click.argument("path", default=None, required=False)
-@click.option(
-    "--all",
-    "-a",
-    "apply_all",
-    is_flag=True,
-    default=False,
-    help="Apply all pending operations",
-)
-@click.option(
-    "-y",
-    "--yes",
-    is_flag=True,
-    default=False,
-    help="Skip confirmation prompts",
-)
-@click.option(
-    "--force",
-    is_flag=True,
-    default=False,
-    help="Overwrite existing files at target locations",
-)
-@click.option(
-    "--dry-run",
-    is_flag=True,
-    default=False,
-    help="Preview changes without applying them",
-)
-def apply(path: str | None, apply_all: bool, yes: bool, force: bool, dry_run: bool) -> None:
+# Helper functions for review command (shared with apply/reject)
+def _resolve_repository_root(path: str | None) -> Path:
     """
-    Apply pending organization operations.
+    Find and return the repository root path.
 
-    Moves files to their suggested locations based on LLM analysis.
+    Args:
+        path: Optional path to search from (file or directory)
 
-    By default (without -y flag), runs in interactive mode where you can
-    review each operation individually and choose to apply or skip it.
+    Returns:
+        Path object representing the repository root
 
-    Arguments:
-        PATH: Optional path to apply operations for (default: requires --all flag).
-
-    Options:
-        --all, -a: Apply all pending operations in the repository
-        -y, --yes: Skip confirmation prompts and interactive mode (auto-approve all)
-        --force: Overwrite existing files at target locations
-        --dry-run: Preview what would happen without making changes
-
-    Interactive Mode:
-        When running without -y, you'll be prompted for each operation with:
-        [A]pply - Move the file to suggested location
-        [S]kip  - Skip this operation (keeps it pending)
-        [Q]uit  - Stop processing and exit
-        [H]elp  - Show help for available options
-
-    Examples:
-        - 'docman apply --all': Interactive mode for all operations
-        - 'docman apply --all -y': Apply all without prompts (bulk mode)
-        - 'docman apply docs/': Interactive mode for docs directory
-        - 'docman apply file.pdf': Interactive mode for single file
-        - 'docman apply file.pdf -y': Apply single file without prompt
-        - 'docman apply --all --dry-run': Preview all changes
+    Raises:
+        click.Abort: If repository cannot be found
     """
-    # Validate flags
-    if not apply_all and not path:
-        click.secho(
-            "Error: Must specify either --all or a PATH to apply operations.",
-            fg="red",
-            err=True,
-        )
-        click.echo()
-        click.echo("Examples:")
-        click.echo("  docman apply --all -y")
-        click.echo("  docman apply docs/")
-        click.echo("  docman apply file.pdf")
-        raise click.Abort()
-
-    # Find the repository root
     repo_root = None
 
     if path:
@@ -1274,426 +1211,721 @@ def apply(path: str | None, apply_all: bool, yes: bool, force: bool, dry_run: bo
             )
             raise click.Abort()
 
-    repository_path = str(repo_root)
+    return repo_root
 
-    # Get database session
-    session_gen = get_session()
-    session = next(session_gen)
 
-    try:
-        # Query pending operations for this repository
-        query = (
-            session.query(Operation, DocumentCopy)
-            .join(DocumentCopy, Operation.document_copy_id == DocumentCopy.id)
-            .filter(DocumentCopy.repository_path == repository_path)
-            .filter(Operation.status == OperationStatus.PENDING)
+def _validate_review_flags(
+    path: str | None,
+    apply_all: bool,
+    reject_all: bool,
+    dry_run: bool,
+    force: bool,
+    recursive: bool
+) -> None:
+    """
+    Validate that review command flags are properly specified.
+
+    Args:
+        path: Optional path argument
+        apply_all: Whether --apply-all flag is set
+        reject_all: Whether --reject-all flag is set
+        dry_run: Whether --dry-run flag is set
+        force: Whether --force flag is set
+        recursive: Whether --recursive flag is set
+
+    Raises:
+        click.Abort: If validation fails
+    """
+    # Check for mutually exclusive bulk actions
+    if apply_all and reject_all:
+        click.secho(
+            "Error: Cannot use both --apply-all and --reject-all",
+            fg="red",
+            err=True,
+        )
+        raise click.Abort()
+
+    # Check that --dry-run is only used with bulk modes
+    if dry_run and not (apply_all or reject_all):
+        click.secho(
+            "Error: --dry-run can only be used with --apply-all or --reject-all",
+            fg="red",
+            err=True,
+        )
+        raise click.Abort()
+
+    # Check that --force is only used with --apply-all
+    if force and not apply_all:
+        click.secho(
+            "Warning: --force is ignored (only applies with --apply-all)",
+            fg="yellow",
         )
 
-        # Filter by path if provided
-        if path:
-            target_path = Path(path).resolve()
+    # Check that --recursive is only used with --reject-all
+    if recursive and not reject_all:
+        click.secho(
+            "Warning: -r/--recursive is ignored (only applies with --reject-all)",
+            fg="yellow",
+        )
 
-            # Check if path is a file or directory
-            if target_path.is_file():
-                # Single file - filter by exact match
-                rel_path = str(target_path.relative_to(repo_root))
-                query = query.filter(DocumentCopy.file_path == rel_path)
-            elif target_path.is_dir():
-                # Directory - filter by prefix
-                rel_path = str(target_path.relative_to(repo_root))
-                # Match files in this directory (prefix match)
+
+def _query_pending_operations(
+    session,
+    repo_root: Path,
+    path: str | None,
+    recursive: bool = True
+) -> list:
+    """
+    Query pending operations with optional path filtering.
+
+    Args:
+        session: Database session
+        repo_root: Repository root path
+        path: Optional path to filter by (file or directory)
+        recursive: Whether to recursively process directories (default True for apply, False for reject)
+
+    Returns:
+        List of (Operation, DocumentCopy) tuples
+
+    Raises:
+        click.Abort: If path doesn't exist
+    """
+    repository_path = str(repo_root)
+
+    # Query pending operations for this repository
+    query = (
+        session.query(Operation, DocumentCopy)
+        .join(DocumentCopy, Operation.document_copy_id == DocumentCopy.id)
+        .filter(DocumentCopy.repository_path == repository_path)
+        .filter(Operation.status == OperationStatus.PENDING)
+    )
+
+    # Filter by path if provided
+    if path:
+        target_path = Path(path).resolve()
+
+        # Check if path is a file or directory
+        if target_path.is_file():
+            # Single file - filter by exact match
+            rel_path = str(target_path.relative_to(repo_root))
+            query = query.filter(DocumentCopy.file_path == rel_path)
+        elif target_path.is_dir():
+            # Directory - filter by prefix
+            rel_path = str(target_path.relative_to(repo_root))
+            if recursive:
+                # Match files in this directory and all subdirectories (prefix match)
                 query = query.filter(DocumentCopy.file_path.startswith(rel_path))
             else:
-                click.secho(f"Error: Path '{path}' does not exist", fg="red", err=True)
-                raise click.Abort()
+                # Match only files directly in this directory (not subdirectories)
+                # This is a bit complex - we need files that start with rel_path
+                # but don't have additional path separators after it
+                import os
+                sep = os.sep
+                # Files in the directory: rel_path/filename (no more separators after directory)
+                query = query.filter(
+                    DocumentCopy.file_path.startswith(rel_path),
+                    ~DocumentCopy.file_path.op('LIKE')(f"{rel_path}{sep}%{sep}%")
+                )
+        else:
+            click.secho(f"Error: Path '{path}' does not exist", fg="red", err=True)
+            raise click.Abort()
 
-        pending_ops = query.all()
+    return query.all()
 
-        if not pending_ops:
-            click.echo("No pending operations found.")
-            if path:
-                click.echo(f"  (filtered by: {path})")
-            return
 
-        # Detect conflicts before applying
-        conflicts = detect_conflicts_in_operations(pending_ops, repo_root)
-        if conflicts:
-            click.secho(f"\n⚠️  Warning: {len(conflicts)} target conflict(s) detected", fg="yellow")
-            click.echo("Multiple files will attempt to move to the same location:")
-            for target, ops in conflicts.items():
-                click.echo(f"\n  Target: {target}")
-                for op, copy in ops:
-                    click.echo(f"    - {copy.file_path}")
-            click.echo()
+def _handle_interactive_review(
+    session,
+    repo_root: Path,
+    path: str | None
+) -> None:
+    """
+    Handle interactive review mode - review each operation individually.
 
-            # Only prompt in interactive mode; in bulk mode just show warning and continue
-            if not yes and not dry_run:  # interactive mode
-                if not click.confirm("Continue anyway?"):
-                    raise click.Abort()
+    User can choose to apply, reject, or skip each operation.
 
-        # Show what will be applied
-        click.echo()
-        if dry_run:
-            click.secho("DRY RUN - No changes will be made", fg="yellow", bold=True)
-            click.echo()
+    Args:
+        session: Database session
+        repo_root: Repository root path
+        path: Optional path filter
+    """
+    # Query pending operations (always recursive in interactive mode)
+    pending_ops = _query_pending_operations(session, repo_root, path, recursive=True)
 
-        click.secho(f"Operations to apply: {len(pending_ops)}", bold=True)
-        click.echo(f"Repository: {repository_path}")
+    if not pending_ops:
+        click.echo("No pending operations found.")
         if path:
-            click.echo(f"Filter: {path}")
+            click.echo(f"  (filtered by: {path})")
+        return
+
+    # Detect conflicts before applying
+    conflicts = detect_conflicts_in_operations(pending_ops, repo_root)
+    if conflicts:
+        click.secho(f"\n⚠️  Warning: {len(conflicts)} target conflict(s) detected", fg="yellow")
+        click.echo("Multiple files will attempt to move to the same location:")
+        for target, ops in conflicts.items():
+            click.echo(f"\n  Target: {target}")
+            for op, copy in ops:
+                click.echo(f"    - {copy.file_path}")
         click.echo()
 
-        # Determine if we should run in interactive mode
-        # Interactive mode: when user hasn't provided -y flag and not in dry-run
-        interactive_mode = not yes and not dry_run
+        if not click.confirm("Continue anyway?"):
+            raise click.Abort()
 
-        # No additional confirmation needed - either interactive mode handles per-op,
-        # or -y flag means user already confirmed they want to auto-apply all
+    # Show summary
+    click.echo()
+    click.secho(f"Operations to review: {len(pending_ops)}", bold=True)
+    click.echo(f"Repository: {str(repo_root)}")
+    if path:
+        click.echo(f"Filter: {path}")
+    click.echo()
 
-        # Determine conflict resolution strategy
-        conflict_resolution = ConflictResolution.OVERWRITE if force else ConflictResolution.SKIP
+    # Process each operation interactively
+    applied_count = 0
+    rejected_count = 0
+    skipped_count = 0
+    failed_count = 0
+    failed_operations = []
+    user_quit = False
+    last_processed_idx = 0
 
-        # Apply each operation
-        applied_count = 0
-        skipped_count = 0
-        failed_count = 0
-        failed_operations = []
-        user_quit = False
-        last_processed_idx = 0
+    for idx, (pending_op, doc_copy) in enumerate(pending_ops, start=1):
+        # Check if user quit
+        if user_quit:
+            break
 
-        for idx, (pending_op, doc_copy) in enumerate(pending_ops, start=1):
-            # Check if user quit in interactive mode
-            if user_quit:
+        # Track which operation we're processing
+        last_processed_idx = idx
+
+        # Current path
+        current_path = doc_copy.file_path
+        source = repo_root / current_path
+
+        # Suggested path
+        suggested_dir = pending_op.suggested_directory_path
+        suggested_filename = pending_op.suggested_filename
+        if suggested_dir:
+            target = repo_root / suggested_dir / suggested_filename
+        else:
+            target = repo_root / suggested_filename
+
+        # Show progress
+        percentage = int((idx / len(pending_ops)) * 100)
+        click.echo()
+        click.echo(f"[{idx}/{len(pending_ops)}] {percentage}%")
+
+        # Check if it's a no-op (file already at target location)
+        if source.resolve() == target.resolve():
+            click.echo(f"  {current_path}")
+            click.secho("  → (no change needed, already at target location)", fg="yellow")
+            click.echo(f"  Reason: {pending_op.reason}")
+            click.secho(f"  Confidence: {pending_op.confidence:.0%}", fg="green" if pending_op.confidence >= 0.8 else "yellow")
+            click.echo()
+
+            if click.confirm("Remove this pending operation?", default=True):
+                # Mark as organized and accept operation since it's already at the target location
+                pending_op.status = OperationStatus.ACCEPTED
+                doc_copy.accepted_operation_id = pending_op.id
+                doc_copy.organization_status = OrganizationStatus.ORGANIZED
+                click.secho("  ✓ Removed", fg="green")
+            else:
+                click.secho("  ○ Kept", fg="white")
+
+            skipped_count += 1
+            continue
+
+        # Display operation details
+        click.echo(f"  Current:  {current_path}")
+        click.echo(f"  Suggested: {target.relative_to(repo_root)}")
+        click.echo(f"  Reason: {pending_op.reason}")
+
+        # Color-code confidence
+        confidence = pending_op.confidence
+        if confidence >= 0.8:
+            confidence_color = "green"
+        elif confidence >= 0.6:
+            confidence_color = "yellow"
+        else:
+            confidence_color = "red"
+        click.secho(f"  Confidence: {confidence:.0%}", fg=confidence_color)
+        click.echo()
+
+        # Prompt user for action
+        while True:
+            action = click.prompt(
+                "  [A]pply / [R]eject / [S]kip / [Q]uit / [H]elp",
+                type=str,
+                default="A" if confidence >= 0.85 else "S",
+                show_default=True,
+            ).strip().upper()
+
+            if action in ["A", "APPLY"]:
+                # Apply: move file and mark as ACCEPTED
+                try:
+                    move_file(source, target, conflict_resolution=ConflictResolution.SKIP, create_dirs=True)
+                    click.secho("  ✓ Applied", fg="green")
+
+                    # Update the document copy's file path in the database
+                    doc_copy.file_path = str(target.relative_to(repo_root))
+
+                    # Mark the file as organized and accept the operation
+                    pending_op.status = OperationStatus.ACCEPTED
+                    doc_copy.accepted_operation_id = pending_op.id
+                    doc_copy.organization_status = OrganizationStatus.ORGANIZED
+
+                    applied_count += 1
+                except FileConflictError as e:
+                    # Check if this file is part of a duplicate group
+                    source_doc_id = doc_copy.document_id
+                    duplicate_groups = find_duplicate_groups(session, repo_root)
+
+                    if source_doc_id in duplicate_groups and len(duplicate_groups[source_doc_id]) > 1:
+                        # This is a duplicate - offer more contextual options
+                        click.secho(f"  ⚠️  CONFLICT: Target already exists", fg="yellow")
+                        click.echo(f"    Current: {e.source}")
+                        click.echo(f"    Target:  {e.target}")
+                        click.echo()
+                        click.echo("These files have identical content (duplicates detected)")
+                        click.echo()
+                        click.echo("Choose action:")
+                        click.echo("  [D]elete this copy (recommended)")
+                        click.echo("  [R]ename → {}_1{}".format(target.stem, target.suffix))
+                        click.echo("  [O]verwrite existing file")
+                        click.echo("  [S]kip")
+                        click.echo()
+
+                        choice = click.prompt(
+                            "Your choice",
+                            type=click.Choice(['D', 'R', 'O', 'S'], case_sensitive=False),
+                            default='D'
+                        )
+
+                        if choice.upper() == 'D':
+                            # Delete source copy from database
+                            session.delete(doc_copy)
+                            # Delete file from disk
+                            if source.exists():
+                                source.unlink()
+                            click.secho("  ✓ Deleted duplicate copy", fg="green")
+                            applied_count += 1
+                        elif choice.upper() == 'R':
+                            # Use RENAME conflict resolution
+                            new_target = move_file(source, target, conflict_resolution=ConflictResolution.RENAME, create_dirs=True)
+                            doc_copy.file_path = str(new_target.relative_to(repo_root))
+                            pending_op.status = OperationStatus.ACCEPTED
+                            doc_copy.accepted_operation_id = pending_op.id
+                            doc_copy.organization_status = OrganizationStatus.ORGANIZED
+                            click.secho(f"  ✓ Renamed to {new_target.name}", fg="green")
+                            applied_count += 1
+                        elif choice.upper() == 'O':
+                            # Use OVERWRITE conflict resolution
+                            move_file(source, target, conflict_resolution=ConflictResolution.OVERWRITE, create_dirs=True)
+                            doc_copy.file_path = str(target.relative_to(repo_root))
+                            pending_op.status = OperationStatus.ACCEPTED
+                            doc_copy.accepted_operation_id = pending_op.id
+                            doc_copy.organization_status = OrganizationStatus.ORGANIZED
+                            click.secho("  ✓ Overwritten", fg="green")
+                            applied_count += 1
+                        else:
+                            # Skip
+                            click.echo("  ○ Skipped")
+                            skipped_count += 1
+                    else:
+                        # Not a duplicate - show original error message
+                        click.secho("  ✗ Skipped: Target file already exists", fg="yellow")
+                        failed_operations.append((current_path, str(e)))
+                        skipped_count += 1
+                except DocmanFileNotFoundError as e:
+                    click.secho("  ✗ Failed: Source file not found", fg="red")
+                    failed_operations.append((current_path, str(e)))
+                    failed_count += 1
+                except (FileOperationError, PermissionError) as e:
+                    click.secho(f"  ✗ Failed: {e}", fg="red")
+                    failed_operations.append((current_path, str(e)))
+                    failed_count += 1
+                except Exception as e:
+                    click.secho(f"  ✗ Failed: Unexpected error: {e}", fg="red")
+                    failed_operations.append((current_path, str(e)))
+                    failed_count += 1
                 break
 
-            # Track which operation we're processing
-            last_processed_idx = idx
+            elif action in ["R", "REJECT"]:
+                # Reject: mark operation as REJECTED
+                pending_op.status = OperationStatus.REJECTED
+                click.secho("  ✗ Rejected", fg="red")
+                rejected_count += 1
+                break
 
-            # Current path
-            current_path = doc_copy.file_path
-            source = repo_root / current_path
-
-            # Suggested path
-            suggested_dir = pending_op.suggested_directory_path
-            suggested_filename = pending_op.suggested_filename
-            if suggested_dir:
-                target = repo_root / suggested_dir / suggested_filename
-            else:
-                target = repo_root / suggested_filename
-
-            # Show progress
-            percentage = int((idx / len(pending_ops)) * 100)
-            click.echo()
-            click.echo(f"[{idx}/{len(pending_ops)}] {percentage}%")
-
-            # Check if it's a no-op (file already at target location)
-            if source.resolve() == target.resolve():
-                click.echo(f"  {current_path}")
-                click.secho("  → (no change needed, already at target location)", fg="yellow")
-
-                # In interactive mode, ask if user wants to remove this pending operation
-                if interactive_mode:
-                    click.echo(f"  Reason: {pending_op.reason}")
-                    click.secho(f"  Confidence: {pending_op.confidence:.0%}", fg="green" if pending_op.confidence >= 0.8 else "yellow")
-                    click.echo()
-
-                    if click.confirm("Remove this pending operation?", default=True):
-                        # Mark as organized and accept operation since it's already at the target location
-                        pending_op.status = OperationStatus.ACCEPTED
-                        doc_copy.accepted_operation_id = pending_op.id
-                        doc_copy.organization_status = OrganizationStatus.ORGANIZED
-                        click.secho("  ✓ Removed", fg="green")
-                    else:
-                        click.secho("  ○ Kept", fg="white")
-                else:
-                    # Non-interactive: always accept and mark as organized
-                    if not dry_run:
-                        pending_op.status = OperationStatus.ACCEPTED
-                        doc_copy.accepted_operation_id = pending_op.id
-                        doc_copy.organization_status = OrganizationStatus.ORGANIZED
-
+            elif action in ["S", "SKIP"]:
+                # Skip: leave as pending
+                click.secho("  ○ Skipped by user", fg="yellow")
                 skipped_count += 1
-                continue
+                break
 
-            # Display operation details
-            click.echo(f"  Current:  {current_path}")
-            click.echo(f"  Suggested: {target.relative_to(repo_root)}")
-
-            # In interactive mode, show more details and prompt
-            if interactive_mode:
-                click.echo(f"  Reason: {pending_op.reason}")
-
-                # Color-code confidence
-                confidence = pending_op.confidence
-                if confidence >= 0.8:
-                    confidence_color = "green"
-                elif confidence >= 0.6:
-                    confidence_color = "yellow"
-                else:
-                    confidence_color = "red"
-                click.secho(f"  Confidence: {confidence:.0%}", fg=confidence_color)
+            elif action in ["Q", "QUIT"]:
+                # Quit: stop processing
                 click.echo()
+                click.secho("Quitting...", fg="yellow")
+                user_quit = True
+                break
 
-                # Prompt user for action
-                while True:
-                    action = click.prompt(
-                        "  [A]pply / [S]kip / [Q]uit / [H]elp",
-                        type=str,
-                        default="A",
-                        show_default=True,
-                    ).strip().upper()
-
-                    if action in ["A", "APPLY"]:
-                        break
-                    elif action in ["S", "SKIP"]:
-                        click.secho("  ○ Skipped by user", fg="yellow")
-                        skipped_count += 1
-                        break
-                    elif action in ["Q", "QUIT"]:
-                        click.echo()
-                        click.secho("Quitting...", fg="yellow")
-                        user_quit = True
-                        break
-                    elif action in ["H", "HELP"]:
-                        click.echo()
-                        click.echo("  Commands:")
-                        click.echo("    [A]pply - Move this file to the suggested location")
-                        click.echo("    [S]kip  - Skip this operation (keep pending)")
-                        click.echo("    [Q]uit  - Stop processing and exit")
-                        click.echo("    [H]elp  - Show this help message")
-                        click.echo()
-                        continue
-                    else:
-                        click.secho(f"  Invalid option '{action}'. Type 'H' for help.", fg="red")
-                        continue
-
-                # If user chose skip or quit, move to next operation
-                if action in ["S", "SKIP"] or user_quit:
-                    continue
-
-            if dry_run:
-                click.secho("  [DRY RUN] Would move file", fg="cyan")
-                applied_count += 1
+            elif action in ["H", "HELP"]:
+                # Show help
+                click.echo()
+                click.echo("  Commands:")
+                click.echo("    [A]pply  - Move this file to the suggested location")
+                click.echo("    [R]eject - Reject this suggestion (marks as rejected, won't show again)")
+                click.echo("    [S]kip   - Skip this operation (keeps as pending for later review)")
+                click.echo("    [Q]uit   - Stop processing and exit")
+                click.echo("    [H]elp   - Show this help message")
+                click.echo()
                 continue
 
-            # Perform the move
-            try:
-                move_file(source, target, conflict_resolution=conflict_resolution, create_dirs=True)
-                click.secho("  ✓ Applied", fg="green")
+            else:
+                click.secho(f"  Invalid option '{action}'. Type 'H' for help.", fg="red")
+                continue
 
-                # Update the document copy's file path in the database
-                doc_copy.file_path = str(target.relative_to(repo_root))
+    # Commit changes to database
+    session.commit()
 
-                # Mark the file as organized and accept the operation
+    # Display summary
+    click.echo()
+    click.echo("=" * 50)
+    click.secho("Summary:", bold=True)
+    click.secho(f"  Applied: {applied_count}", fg="green")
+    click.secho(f"  Rejected: {rejected_count}", fg="red")
+    click.secho(f"  Skipped: {skipped_count}", fg="yellow")
+    click.secho(f"  Failed: {failed_count}", fg="red" if failed_count > 0 else "white")
+
+    if user_quit:
+        remaining = len(pending_ops) - last_processed_idx
+        if remaining > 0:
+            click.secho(f"  Not processed (quit early): {remaining}", fg="white")
+
+    if failed_operations:
+        click.echo()
+        click.secho("Failed operations:", fg="red", bold=True)
+        for file_path, error in failed_operations:
+            click.echo(f"  {file_path}")
+            click.echo(f"    {error}")
+
+    click.echo("=" * 50)
+
+
+def _handle_bulk_apply(
+    session,
+    repo_root: Path,
+    path: str | None,
+    yes: bool,
+    force: bool,
+    dry_run: bool
+) -> None:
+    """
+    Handle bulk apply mode - apply all operations without individual prompts.
+
+    Args:
+        session: Database session
+        repo_root: Repository root path
+        path: Optional path filter
+        yes: Skip confirmation prompts
+        force: Overwrite existing files
+        dry_run: Preview without making changes
+    """
+    # Query pending operations
+    pending_ops = _query_pending_operations(session, repo_root, path, recursive=True)
+
+    if not pending_ops:
+        click.echo("No pending operations found.")
+        if path:
+            click.echo(f"  (filtered by: {path})")
+        return
+
+    # Detect conflicts before applying
+    conflicts = detect_conflicts_in_operations(pending_ops, repo_root)
+    if conflicts:
+        click.secho(f"\n⚠️  Warning: {len(conflicts)} target conflict(s) detected", fg="yellow")
+        click.echo("Multiple files will attempt to move to the same location:")
+        for target, ops in conflicts.items():
+            click.echo(f"\n  Target: {target}")
+            for op, copy in ops:
+                click.echo(f"    - {copy.file_path}")
+        click.echo()
+
+    # Show what will be applied
+    click.echo()
+    if dry_run:
+        click.secho("DRY RUN - No changes will be made", fg="yellow", bold=True)
+        click.echo()
+
+    click.secho(f"Operations to apply: {len(pending_ops)}", bold=True)
+    click.echo(f"Repository: {str(repo_root)}")
+    if path:
+        click.echo(f"Filter: {path}")
+    click.echo()
+
+    # Confirm if not using -y flag and not in dry-run
+    if not yes and not dry_run:
+        if not click.confirm(f"Apply {len(pending_ops)} operation(s)?"):
+            click.echo("Aborted.")
+            return
+
+    # Determine conflict resolution strategy
+    conflict_resolution = ConflictResolution.OVERWRITE if force else ConflictResolution.SKIP
+
+    # Apply each operation
+    applied_count = 0
+    skipped_count = 0
+    failed_count = 0
+    failed_operations = []
+
+    for idx, (pending_op, doc_copy) in enumerate(pending_ops, start=1):
+        # Current path
+        current_path = doc_copy.file_path
+        source = repo_root / current_path
+
+        # Suggested path
+        suggested_dir = pending_op.suggested_directory_path
+        suggested_filename = pending_op.suggested_filename
+        if suggested_dir:
+            target = repo_root / suggested_dir / suggested_filename
+        else:
+            target = repo_root / suggested_filename
+
+        # Show progress
+        percentage = int((idx / len(pending_ops)) * 100)
+        click.echo()
+        click.echo(f"[{idx}/{len(pending_ops)}] {percentage}%")
+
+        # Check if it's a no-op (file already at target location)
+        if source.resolve() == target.resolve():
+            click.echo(f"  {current_path}")
+            click.secho("  → (no change needed, already at target location)", fg="yellow")
+
+            # Non-interactive: always accept and mark as organized
+            if not dry_run:
                 pending_op.status = OperationStatus.ACCEPTED
                 doc_copy.accepted_operation_id = pending_op.id
                 doc_copy.organization_status = OrganizationStatus.ORGANIZED
 
-                applied_count += 1
-            except FileConflictError as e:
-                # Check if this file is part of a duplicate group (only in interactive mode)
-                source_doc_id = doc_copy.document_id
-                duplicate_groups = find_duplicate_groups(session, repo_root)
+            skipped_count += 1
+            continue
 
-                if interactive_mode and source_doc_id in duplicate_groups and len(duplicate_groups[source_doc_id]) > 1:
-                    # This is a duplicate - offer more contextual options
-                    click.secho(f"  ⚠️  CONFLICT: Target already exists", fg="yellow")
-                    click.echo(f"    Current: {e.source}")
-                    click.echo(f"    Target:  {e.target}")
-                    click.echo()
-                    click.echo("These files have identical content (duplicates detected)")
-                    click.echo()
-                    click.echo("Choose action:")
-                    click.echo("  [D]elete this copy (recommended)")
-                    click.echo("  [R]ename → {}_1{}".format(target.stem, target.suffix))
-                    click.echo("  [O]verwrite existing file")
-                    click.echo("  [S]kip")
-                    click.echo()
+        # Display operation details
+        click.echo(f"  Current:  {current_path}")
+        click.echo(f"  Suggested: {target.relative_to(repo_root)}")
 
-                    choice = click.prompt(
-                        "Your choice",
-                        type=click.Choice(['D', 'R', 'O', 'S'], case_sensitive=False),
-                        default='D'
-                    )
-
-                    if choice.upper() == 'D':
-                        # Delete source copy from database
-                        session.delete(doc_copy)
-                        # Delete file from disk
-                        if source.exists():
-                            source.unlink()
-                        click.secho("  ✓ Deleted duplicate copy", fg="green")
-                        applied_count += 1
-                    elif choice.upper() == 'R':
-                        # Use RENAME conflict resolution
-                        new_target = move_file(source, target, conflict_resolution=ConflictResolution.RENAME, create_dirs=True)
-                        doc_copy.file_path = str(new_target.relative_to(repo_root))
-                        pending_op.status = OperationStatus.ACCEPTED
-                        doc_copy.accepted_operation_id = pending_op.id
-                        doc_copy.organization_status = OrganizationStatus.ORGANIZED
-                        click.secho(f"  ✓ Renamed to {new_target.name}", fg="green")
-                        applied_count += 1
-                    elif choice.upper() == 'O':
-                        # Use OVERWRITE conflict resolution
-                        move_file(source, target, conflict_resolution=ConflictResolution.OVERWRITE, create_dirs=True)
-                        doc_copy.file_path = str(target.relative_to(repo_root))
-                        pending_op.status = OperationStatus.ACCEPTED
-                        doc_copy.accepted_operation_id = pending_op.id
-                        doc_copy.organization_status = OrganizationStatus.ORGANIZED
-                        click.secho("  ✓ Overwritten", fg="green")
-                        applied_count += 1
-                    else:
-                        # Skip
-                        click.echo("  ○ Skipped")
-                        skipped_count += 1
-                else:
-                    # Not a duplicate - show original error message
-                    click.secho("  ✗ Skipped: Target file already exists", fg="yellow")
-                    click.secho("    Use --force to overwrite", fg="yellow")
-                    failed_operations.append((current_path, str(e)))
-                    skipped_count += 1
-            except DocmanFileNotFoundError as e:
-                click.secho("  ✗ Failed: Source file not found", fg="red")
-                failed_operations.append((current_path, str(e)))
-                failed_count += 1
-            except (FileOperationError, PermissionError) as e:
-                click.secho(f"  ✗ Failed: {e}", fg="red")
-                failed_operations.append((current_path, str(e)))
-                failed_count += 1
-            except Exception as e:
-                click.secho(f"  ✗ Failed: Unexpected error: {e}", fg="red")
-                failed_operations.append((current_path, str(e)))
-                failed_count += 1
-
-        # Commit changes to database
-        if not dry_run:
-            session.commit()
-
-        # Display summary
-        click.echo()
-        click.echo("=" * 50)
-        click.secho("Summary:", bold=True)
         if dry_run:
-            click.secho(f"  Would apply: {applied_count}", fg="cyan")
-            click.secho(f"  Would skip: {skipped_count}", fg="yellow")
-        else:
-            click.secho(f"  Applied: {applied_count}", fg="green")
-            click.secho(f"  Skipped: {skipped_count}", fg="yellow")
-            click.secho(f"  Failed: {failed_count}", fg="red" if failed_count > 0 else "white")
+            click.secho("  [DRY RUN] Would move file", fg="cyan")
+            applied_count += 1
+            continue
 
-            if user_quit:
-                remaining = len(pending_ops) - last_processed_idx
-                if remaining > 0:
-                    click.secho(f"  Not processed (quit early): {remaining}", fg="white")
-
-        if failed_operations and not dry_run:
-            click.echo()
-            click.secho("Failed operations:", fg="red", bold=True)
-            for file_path, error in failed_operations:
-                click.echo(f"  {file_path}")
-                click.echo(f"    {error}")
-
-        click.echo("=" * 50)
-
-    finally:
-        # Close the session
+        # Perform the move
         try:
-            next(session_gen)
-        except StopIteration:
-            pass
+            move_file(source, target, conflict_resolution=conflict_resolution, create_dirs=True)
+            click.secho("  ✓ Applied", fg="green")
+
+            # Update the document copy's file path in the database
+            doc_copy.file_path = str(target.relative_to(repo_root))
+
+            # Mark the file as organized and accept the operation
+            pending_op.status = OperationStatus.ACCEPTED
+            doc_copy.accepted_operation_id = pending_op.id
+            doc_copy.organization_status = OrganizationStatus.ORGANIZED
+
+            applied_count += 1
+        except FileConflictError as e:
+            click.secho("  ✗ Skipped: Target file already exists", fg="yellow")
+            click.secho("    Use --force to overwrite", fg="yellow")
+            failed_operations.append((current_path, str(e)))
+            skipped_count += 1
+        except DocmanFileNotFoundError as e:
+            click.secho("  ✗ Failed: Source file not found", fg="red")
+            failed_operations.append((current_path, str(e)))
+            failed_count += 1
+        except (FileOperationError, PermissionError) as e:
+            click.secho(f"  ✗ Failed: {e}", fg="red")
+            failed_operations.append((current_path, str(e)))
+            failed_count += 1
+        except Exception as e:
+            click.secho(f"  ✗ Failed: Unexpected error: {e}", fg="red")
+            failed_operations.append((current_path, str(e)))
+            failed_count += 1
+
+    # Commit changes to database
+    if not dry_run:
+        session.commit()
+
+    # Display summary
+    click.echo()
+    click.echo("=" * 50)
+    click.secho("Summary:", bold=True)
+    if dry_run:
+        click.secho(f"  Would apply: {applied_count}", fg="cyan")
+        click.secho(f"  Would skip: {skipped_count}", fg="yellow")
+    else:
+        click.secho(f"  Applied: {applied_count}", fg="green")
+        click.secho(f"  Skipped: {skipped_count}", fg="yellow")
+        click.secho(f"  Failed: {failed_count}", fg="red" if failed_count > 0 else "white")
+
+    if failed_operations and not dry_run:
+        click.echo()
+        click.secho("Failed operations:", fg="red", bold=True)
+        for file_path, error in failed_operations:
+            click.echo(f"  {file_path}")
+            click.echo(f"    {error}")
+
+    click.echo("=" * 50)
+
+
+def _handle_bulk_reject(
+    session,
+    repo_root: Path,
+    path: str | None,
+    yes: bool,
+    recursive: bool,
+    dry_run: bool
+) -> None:
+    """
+    Handle bulk reject mode - reject all operations without individual prompts.
+
+    Args:
+        session: Database session
+        repo_root: Repository root path
+        path: Optional path filter
+        yes: Skip confirmation prompts
+        recursive: Whether to recursively process directories (False by default for safety)
+        dry_run: Preview without making changes
+    """
+    # Query pending operations - reject defaults to non-recursive for safety
+    pending_ops = _query_pending_operations(session, repo_root, path, recursive=recursive)
+
+    if not pending_ops:
+        click.echo("No pending operations found.")
+        if path:
+            click.echo(f"  (filtered by: {path})")
+        return
+
+    count = len(pending_ops)
+
+    # Show what will be rejected
+    click.echo()
+    if dry_run:
+        click.secho("DRY RUN - No changes will be made", fg="yellow", bold=True)
+        click.echo()
+
+    click.secho(f"Operations to reject: {count}", bold=True)
+    click.echo(f"Repository: {str(repo_root)}")
+    if path:
+        click.echo(f"Filter: {path}")
+        target_path = Path(path).resolve()
+        if target_path.is_dir() and recursive:
+            click.echo("Mode: Recursive")
+        elif target_path.is_dir():
+            click.echo("Mode: Non-recursive (current directory only)")
+    click.echo()
+
+    # Show the operations that will be deleted
+    if count <= 10:
+        # Show all if there are 10 or fewer
+        for pending_op, doc_copy in pending_ops:
+            click.echo(f"  - {doc_copy.file_path}")
+    else:
+        # Show first 5 and last 3 if there are more than 10
+        for pending_op, doc_copy in pending_ops[:5]:
+            click.echo(f"  - {doc_copy.file_path}")
+        click.echo(f"  ... and {count - 8} more ...")
+        for pending_op, doc_copy in pending_ops[-3:]:
+            click.echo(f"  - {doc_copy.file_path}")
+
+    click.echo()
+
+    # Confirm if not using -y flag
+    if not yes and not dry_run:
+        if not click.confirm(f"Reject (delete) {count} pending operation(s)?"):
+            click.echo("Aborted.")
+            return
+
+    if dry_run:
+        click.secho(f"[DRY RUN] Would reject {count} operation(s)", fg="cyan")
+        return
+
+    # Mark all pending operations as rejected
+    for pending_op, doc_copy in pending_ops:
+        pending_op.status = OperationStatus.REJECTED
+
+    session.commit()
+
+    click.secho(f"✓ Successfully rejected {count} pending operation(s).", fg="green")
 
 
 @main.command()
 @click.argument("path", default=None, required=False)
 @click.option(
-    "--all",
-    "-a",
-    "reject_all",
+    "--apply-all",
     is_flag=True,
     default=False,
-    help="Reject all pending operations",
+    help="Apply all operations (bulk mode)"
+)
+@click.option(
+    "--reject-all",
+    is_flag=True,
+    default=False,
+    help="Reject all operations (bulk mode)"
 )
 @click.option(
     "-y",
     "--yes",
     is_flag=True,
     default=False,
-    help="Skip confirmation prompts",
+    help="Skip confirmation prompts"
+)
+@click.option(
+    "--force",
+    is_flag=True,
+    default=False,
+    help="Overwrite existing files (only with --apply-all)"
+)
+@click.option(
+    "--dry-run",
+    is_flag=True,
+    default=False,
+    help="Preview changes without making them (only with --apply-all or --reject-all)"
 )
 @click.option(
     "-r",
     "--recursive",
     is_flag=True,
     default=False,
-    help="Recursively reject operations in subdirectories",
+    help="Recursive directory processing (only with --reject-all)"
 )
-def reject(path: str | None, reject_all: bool, yes: bool, recursive: bool) -> None:
+def review(
+    path: str | None,
+    apply_all: bool,
+    reject_all: bool,
+    yes: bool,
+    force: bool,
+    dry_run: bool,
+    recursive: bool
+) -> None:
     """
-    Reject (delete) pending organization operations.
+    Review and process pending organization operations.
 
-    Removes suggestions from the database without applying them. This is useful
-    when you disagree with the LLM's suggestions or want to start fresh.
+    Interactive mode (default): Review each operation and choose to apply,
+    reject, or skip it. Press 'H' during review for help.
 
-    Arguments:
-        PATH: Optional path to reject operations for (default: requires --all flag).
-
-    Options:
-        --all, -a: Reject all pending operations in the repository
-        -y, --yes: Skip confirmation prompts
-        -r, --recursive: Recursively reject operations in subdirectories
+    Bulk modes: Use --apply-all or --reject-all for batch operations.
 
     Examples:
-        - 'docman reject --all': Reject all pending operations (with confirmation)
-        - 'docman reject --all -y': Reject all without prompts
-        - 'docman reject docs/': Reject operations for docs directory
-        - 'docman reject docs/ -r': Reject operations in docs and subdirectories
-        - 'docman reject file.pdf': Reject operation for specific file
+        - 'docman review': Review all operations interactively
+        - 'docman review docs/': Review operations in docs/ directory
+        - 'docman review --apply-all -y': Apply all without prompts
+        - 'docman review --reject-all docs/': Reject all in docs/ (non-recursive)
+        - 'docman review --reject-all -r': Reject all recursively
     """
     # Validate flags
-    if not reject_all and not path:
-        click.secho(
-            "Error: Must specify either --all or a PATH to reject operations.",
-            fg="red",
-            err=True,
-        )
-        click.echo()
-        click.echo("Examples:")
-        click.echo("  docman reject --all")
-        click.echo("  docman reject docs/")
-        click.echo("  docman reject file.pdf")
-        raise click.Abort()
+    _validate_review_flags(path, apply_all, reject_all, dry_run, force, recursive)
 
-    # Find the repository root
-    repo_root = None
-
-    if path:
-        # Try to find repository from the provided path
-        search_start_path = Path(path).resolve()
-        try:
-            repo_root = get_repository_root(start_path=search_start_path)
-        except RepositoryError:
-            # Path doesn't lead to a repository, try from cwd
-            try:
-                repo_root = get_repository_root(start_path=Path.cwd())
-            except RepositoryError:
-                click.secho(
-                    "Error: Not in a docman repository. Use 'docman init' to create one.",
-                    fg="red",
-                    err=True,
-                )
-                raise click.Abort()
-    else:
-        # No path provided, use current directory
-        try:
-            repo_root = get_repository_root(start_path=Path.cwd())
-        except RepositoryError:
-            click.secho(
-                "Error: Not in a docman repository. Use 'docman init' to create one.",
-                fg="red",
-                err=True,
-            )
-            raise click.Abort()
-
+    # Find repository root
+    repo_root = _resolve_repository_root(path)
     repository_path = str(repo_root)
 
     # Get database session
@@ -1701,93 +1933,13 @@ def reject(path: str | None, reject_all: bool, yes: bool, recursive: bool) -> No
     session = next(session_gen)
 
     try:
-        # Query pending operations for this repository
-        query = (
-            session.query(Operation, DocumentCopy)
-            .join(DocumentCopy, Operation.document_copy_id == DocumentCopy.id)
-            .filter(DocumentCopy.repository_path == repository_path)
-            .filter(Operation.status == OperationStatus.PENDING)
-        )
-
-        # Filter by path if provided
-        if path:
-            target_path = Path(path).resolve()
-
-            # Check if path is a file or directory
-            if target_path.is_file():
-                # Single file - filter by exact match
-                rel_path = str(target_path.relative_to(repo_root))
-                query = query.filter(DocumentCopy.file_path == rel_path)
-            elif target_path.is_dir():
-                # Directory - filter by prefix
-                rel_path = str(target_path.relative_to(repo_root))
-                if recursive:
-                    # Match files in this directory and all subdirectories (prefix match)
-                    query = query.filter(DocumentCopy.file_path.startswith(rel_path))
-                else:
-                    # Match only files directly in this directory (not subdirectories)
-                    # This is a bit complex - we need files that start with rel_path
-                    # but don't have additional path separators after it
-                    import os
-                    sep = os.sep
-                    # Files in the directory: rel_path/filename (no more separators after directory)
-                    query = query.filter(
-                        DocumentCopy.file_path.startswith(rel_path),
-                        ~DocumentCopy.file_path.op('LIKE')(f"{rel_path}{sep}%{sep}%")
-                    )
-            else:
-                click.secho(f"Error: Path '{path}' does not exist", fg="red", err=True)
-                raise click.Abort()
-
-        pending_ops_to_delete = query.all()
-        count = len(pending_ops_to_delete)
-
-        if count == 0:
-            click.echo("No pending operations found.")
-            if path:
-                click.echo(f"  (filtered by: {path})")
-            return
-
-        # Show what will be rejected
-        click.echo()
-        click.secho(f"Operations to reject: {count}", bold=True)
-        click.echo(f"Repository: {repository_path}")
-        if path:
-            click.echo(f"Filter: {path}")
-            if target_path.is_dir() and recursive:
-                click.echo("Mode: Recursive")
-            elif target_path.is_dir():
-                click.echo("Mode: Non-recursive (current directory only)")
-        click.echo()
-
-        # Show the operations that will be deleted
-        if count <= 10:
-            # Show all if there are 10 or fewer
-            for pending_op, doc_copy in pending_ops_to_delete:
-                click.echo(f"  - {doc_copy.file_path}")
+        # Route to appropriate handler based on mode
+        if apply_all:
+            _handle_bulk_apply(session, repo_root, path, yes, force, dry_run)
+        elif reject_all:
+            _handle_bulk_reject(session, repo_root, path, yes, recursive, dry_run)
         else:
-            # Show first 5 and last 3 if there are more than 10
-            for pending_op, doc_copy in pending_ops_to_delete[:5]:
-                click.echo(f"  - {doc_copy.file_path}")
-            click.echo(f"  ... and {count - 8} more ...")
-            for pending_op, doc_copy in pending_ops_to_delete[-3:]:
-                click.echo(f"  - {doc_copy.file_path}")
-
-        click.echo()
-
-        # Confirm if not using -y flag
-        if not yes:
-            if not click.confirm(f"Reject (delete) {count} pending operation(s)?"):
-                click.echo("Aborted.")
-                return
-
-        # Mark all pending operations as rejected
-        for pending_op, doc_copy in pending_ops_to_delete:
-            pending_op.status = OperationStatus.REJECTED
-
-        session.commit()
-
-        click.secho(f"✓ Successfully rejected {count} pending operation(s).", fg="green")
+            _handle_interactive_review(session, repo_root, path)
 
     finally:
         # Close the session

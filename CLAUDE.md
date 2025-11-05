@@ -6,7 +6,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 `docman` is a CLI tool for organizing documents using AI-powered analysis.
 
-**Workflow**: `plan` → `status` → `apply` or `reject`
+**Workflow**: `plan` → `status` → `review`
 
 **Core Technologies**:
 - **docling** for document content extraction
@@ -184,21 +184,21 @@ Three main tables model document tracking and operations:
 - Filter by file or directory path
 - Color-coded confidence: green (≥80%), yellow (≥60%), red (<60%)
 
-**Applying Operations** (`apply` command):
-- **Interactive mode** (default): Per-operation prompts with [A]pply/[S]kip/[Q]uit/[H]elp
-- **Bulk mode** (`-y` flag): Auto-apply all without prompts
-- File operations via `file_operations.py` module
-- Updates `DocumentCopy.file_path` after successful move
-- **Marks operation as ACCEPTED**: Sets `status=ACCEPTED`, links via `DocumentCopy.accepted_operation_id`
-- Sets `DocumentCopy.organization_status=ORGANIZED`
-- Operation preserved for historical record and few-shot prompting
-- Options: `--force` (overwrite conflicts), `--dry-run` (preview only)
-
-**Rejecting Operations** (`reject` command):
-- **Marks operations as REJECTED**: Sets `status=REJECTED`, preserves operation for historical record
-- Does NOT move files or change organization status
-- Preserves `Document` and `DocumentCopy` records
-- Supports recursive (`-r`) and non-recursive directory filtering
+**Review Operations** (`review` command):
+- **Interactive mode** (default): Per-operation prompts with [A]pply/[R]eject/[S]kip/[Q]uit/[H]elp
+  - **Apply**: Moves file, marks operation as ACCEPTED, sets organization_status=ORGANIZED
+  - **Reject**: Marks operation as REJECTED (preserves for historical record), does NOT move file
+  - **Skip**: Leaves operation as PENDING for later review
+- **Bulk apply mode** (`--apply-all`): Auto-apply all operations
+  - Options: `-y` (skip confirmation), `--force` (overwrite conflicts), `--dry-run` (preview only)
+  - File operations via `file_operations.py` module
+  - Updates `DocumentCopy.file_path` after successful move
+  - Sets `status=ACCEPTED`, links via `DocumentCopy.accepted_operation_id`
+  - Sets `DocumentCopy.organization_status=ORGANIZED`
+- **Bulk reject mode** (`--reject-all`): Mark all operations as REJECTED
+  - Options: `-y` (skip confirmation), `-r` (recursive), `--dry-run` (preview only)
+  - Does NOT move files or change organization status
+  - Preserves operations for historical record and few-shot prompting
 
 **File Operations** (`file_operations.py`):
 - `move_file()`: Uses `shutil.move()` for cross-filesystem support
@@ -212,7 +212,7 @@ Three main tables model document tracking and operations:
 
 **Status Lifecycle**:
 1. **New files**: Start as `unorganized`
-2. **After `apply`**: Changed to `organized`
+2. **After `review` (apply)**: Changed to `organized`
 3. **User marks as ignored**: Changed to `ignored` via `docman ignore`
 4. **User wants to re-process**: Reset to `unorganized` via `docman unmark`
 
@@ -221,10 +221,10 @@ Three main tables model document tracking and operations:
   - Skips files with status `organized` or `ignored` by default (saves LLM costs)
   - Use `--reprocess` flag to process all files regardless of status
   - If file content or prompt changes, status automatically resets to `unorganized` (triggers regeneration)
-- **`apply`**:
+- **`review`** (apply action):
   - Sets status to `organized` after successfully moving file
   - Also sets to `organized` if file is already at target location (no-op)
-- **`reject`**:
+- **`review`** (reject action):
   - Marks `Operation` as REJECTED but does NOT change organization status
   - Allows file to be re-planned next time (new PENDING operation will be created)
 - **`unmark`**:
@@ -251,9 +251,9 @@ This ensures organized files are re-analyzed when conditions change, but saves c
 
 *Standard workflow (organize once)*:
 ```bash
-docman plan              # Creates suggestions for all unorganized files
-docman apply --all -y    # Applies suggestions, marks as organized
-docman plan              # Skips organized files, no LLM calls
+docman plan                    # Creates suggestions for all unorganized files
+docman review --apply-all -y   # Applies suggestions, marks as organized
+docman plan                    # Skips organized files, no LLM calls
 ```
 
 *Re-organize after instruction changes*:
@@ -285,8 +285,10 @@ Main commands:
 - `docman status [path]`: Review pending operations (shows paths, confidence, reasons, organization status)
   - Groups duplicate files together visually
   - Shows conflict warnings when multiple files target same destination
-- `docman apply [path]`: Apply pending operations (interactive or bulk with `-y`)
-- `docman reject [path]`: Reject/delete pending operations without applying
+- `docman review [path]`: Review and process pending operations
+  - Interactive mode (default): Choose [A]pply, [R]eject, or [S]kip for each operation
+  - Bulk apply mode: `--apply-all` with optional `-y`, `--force`, `--dry-run`
+  - Bulk reject mode: `--reject-all` with optional `-y`, `-r` (recursive), `--dry-run`
 - `docman dedupe [path]`: Find and resolve duplicate files
   - Interactive mode (default): Review each duplicate group, choose which copy to keep
   - Bulk mode (`-y`): Auto-delete duplicates, keep first copy
@@ -312,11 +314,11 @@ Main commands:
 **Workflow for Managing Duplicates**:
 ```bash
 # Standard workflow with deduplication
-docman plan              # Shows duplicate warning with count
-docman status            # Duplicates grouped with [1a], [1b] numbering
-docman dedupe            # Interactively resolve duplicates
-docman plan              # Generate suggestions for remaining files
-docman apply --all -y    # Apply suggestions (no conflicts)
+docman plan                    # Shows duplicate warning with count
+docman status                  # Duplicates grouped with [1a], [1b] numbering
+docman dedupe                  # Interactively resolve duplicates
+docman plan                    # Generate suggestions for remaining files
+docman review --apply-all -y   # Apply suggestions (no conflicts)
 
 # Quick bulk deduplication
 docman dedupe -y         # Auto-resolve, keep first copy of each
@@ -384,15 +386,13 @@ Your choice [1]:
 
 - **Unit tests** (`tests/unit/`): Test modules in isolation (config, models, file_operations, etc.)
 - **Integration tests** (`tests/integration/`): Test full command workflows
-  - `test_apply_integration.py`: Apply command (interactive & bulk modes)
+  - `test_review_integration.py`: Review command (interactive mode with apply/reject/skip, bulk apply mode, bulk reject mode)
   - `test_status_integration.py`: Status command
-  - `test_reject_integration.py`: Reject command
   - `test_plan_integration.py`: Plan command (includes mutation tests: stale content, deleted files, model changes, error handling)
     - `test_plan_skips_file_on_llm_failure`: Verifies LLM failures skip files without creating pending operations
     - `test_plan_extraction_failure_not_double_counted`: Confirms extraction failures counted only in `failed_count`
 - Uses `CliRunner` from Click for CLI testing
 - Test fixtures in `conftest.py`
-- Current coverage: 79% (258 tests passing)
 
 ## Key Patterns
 

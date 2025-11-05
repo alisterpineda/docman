@@ -972,7 +972,7 @@ class TestDocmanPlan:
                 pass
 
         # Step 2: Reject all - clears pending operations
-        result2 = cli_runner.invoke(main, ["reject", "--all", "-y"], catch_exceptions=False)
+        result2 = cli_runner.invoke(main, ["review", "--reject-all", "-y"], catch_exceptions=False)
         assert result2.exit_code == 0
         assert "Successfully rejected 2 pending operation(s)" in result2.output
 
