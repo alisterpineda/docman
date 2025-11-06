@@ -4,10 +4,52 @@ This module provides an interactive setup wizard for first-time LLM configuratio
 guiding users through provider selection and API key setup.
 """
 
+import platform
+
 import click
 
 from docman.llm_config import ProviderConfig, add_provider
 from docman.llm_providers import get_provider, list_available_models
+
+
+def _check_local_provider_support() -> dict[str, bool]:
+    """Check what local provider features are available on this platform.
+
+    Returns:
+        Dictionary with keys:
+            - mlx_available: True if MLX can be imported
+            - quantization_available: True if bitsandbytes can be imported
+            - platform: "darwin", "linux", or "windows"
+            - is_macos: True if running on macOS
+    """
+    system = platform.system().lower()
+    is_macos = system == "darwin"
+
+    # Check MLX availability
+    mlx_available = False
+    if is_macos:
+        try:
+            import mlx  # noqa: F401
+            import mlx_lm  # noqa: F401
+            mlx_available = True
+        except ImportError:
+            pass
+
+    # Check bitsandbytes availability
+    quantization_available = False
+    if not is_macos:  # Only available on Linux/Windows
+        try:
+            import bitsandbytes  # noqa: F401
+            quantization_available = True
+        except ImportError:
+            pass
+
+    return {
+        "mlx_available": mlx_available,
+        "quantization_available": quantization_available,
+        "platform": system,
+        "is_macos": is_macos,
+    }
 
 
 def run_llm_wizard() -> bool:
@@ -44,10 +86,47 @@ def run_llm_wizard() -> bool:
         click.secho("\nSetup cancelled.", fg="yellow")
         return False
 
+    # Step 2.5: For local providers, check platform and dependencies
+    if provider_type == "local":
+        click.echo()
+        support = _check_local_provider_support()
+
+        if support["is_macos"]:
+            if not support["mlx_available"]:
+                click.secho("⚠️  MLX dependencies not found.", fg="yellow")
+                click.echo()
+                click.echo("For best performance on Apple Silicon, install MLX:")
+                click.secho("  uv sync --extra mlx", fg="cyan")
+                click.echo()
+                click.echo("Alternatively, you can use:")
+                click.echo("  • Cloud providers (Google Gemini) - easiest option")
+                click.echo("  • Pre-quantized transformers models")
+                click.echo("  • Full precision transformers models (slower)")
+                click.echo()
+                if not click.confirm("Continue without MLX support?", default=False):
+                    return False
+            else:
+                click.secho("✓ MLX support detected - optimized for Apple Silicon", fg="green")
+        else:
+            # Linux/Windows
+            if not support["quantization_available"]:
+                click.secho("ℹ️  Quantization support not found (optional).", fg="cyan")
+                click.echo()
+                click.echo("For better performance with quantized models, install bitsandbytes:")
+                click.secho("  uv sync --extra quantization", fg="cyan")
+                click.echo()
+                click.echo("You can still use:")
+                click.echo("  • Pre-quantized models (GPTQ, AWQ)")
+                click.echo("  • Full precision models")
+                click.echo()
+
     # Step 3: Model selection (different flow for local vs cloud providers)
     if provider_type == "local":
+        # Show platform-specific recommendations
+        support = _check_local_provider_support()
+
         # For local providers, prompt for model name and quantization
-        model = _get_local_model_name()
+        model = _get_local_model_name(support)
         if model is None:
             click.secho("\nSetup cancelled.", fg="yellow")
             return False
@@ -295,8 +374,11 @@ def _get_provider_name(provider_type: str) -> str | None:
     return provider_name.strip()
 
 
-def _get_local_model_name() -> str | None:
-    """Prompt user for a local model name.
+def _get_local_model_name(support: dict[str, bool]) -> str | None:
+    """Prompt user for a local model name with platform-specific recommendations.
+
+    Args:
+        support: Dictionary from _check_local_provider_support() with platform info.
 
     Returns:
         Model name/path string, or None if cancelled.
@@ -304,15 +386,38 @@ def _get_local_model_name() -> str | None:
     click.echo()
     click.echo("Enter the HuggingFace model identifier.")
     click.echo()
-    click.echo("Examples:")
-    click.echo("  - Transformers: google/gemma-3n-E4B, mistralai/Mistral-7B-Instruct-v0.2")
-    click.echo("  - MLX (Apple Silicon): mlx-community/gemma-3n-E4B-it-4bit")
+
+    # Provide platform-specific recommendations and defaults
+    if support["is_macos"] and support["mlx_available"]:
+        click.echo("Recommended for Apple Silicon (MLX):")
+        click.secho("  mlx-community/gemma-3n-E4B-it-4bit", fg="green")
+        click.echo()
+        click.echo("Other options:")
+        click.echo("  - mlx-community/Mistral-7B-Instruct-v0.2-4bit")
+        click.echo("  - Transformers: google/gemma-3n-E4B, mistralai/Mistral-7B-Instruct-v0.2")
+        default_model = "mlx-community/gemma-3n-E4B-it-4bit"
+    elif support["is_macos"]:
+        click.echo("Options for macOS (no MLX):")
+        click.echo("  - Pre-quantized: TheBloke/Mistral-7B-Instruct-v0.2-GPTQ")
+        click.echo("  - Full precision: google/gemma-3n-E4B, mistralai/Mistral-7B-Instruct-v0.2")
+        default_model = "TheBloke/Mistral-7B-Instruct-v0.2-GPTQ"
+    elif support["quantization_available"]:
+        click.echo("Recommended (with quantization support):")
+        click.secho("  google/gemma-3n-E4B", fg="green")
+        click.echo("  mistralai/Mistral-7B-Instruct-v0.2")
+        default_model = "google/gemma-3n-E4B"
+    else:
+        click.echo("Options (no quantization support):")
+        click.echo("  - Pre-quantized: TheBloke/Mistral-7B-Instruct-v0.2-GPTQ")
+        click.echo("  - Full precision: google/gemma-3n-E4B, mistralai/Mistral-7B-Instruct-v0.2")
+        default_model = "TheBloke/Mistral-7B-Instruct-v0.2-GPTQ"
+
     click.echo()
 
     model_name: str = click.prompt(
         "Model identifier",
         type=str,
-        default="google/gemma-3n-E4B",
+        default=default_model,
     )
 
     if not model_name or not model_name.strip():
