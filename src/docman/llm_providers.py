@@ -406,18 +406,16 @@ class LocalTransformerProvider(LLMProvider):
             # Determine model path (use model_path if specified, otherwise use HF cache)
             model_name_or_path = self.config.model_path or self.config.model
 
-            # Configure quantization if specified
-            quantization_config = None
-            if self.config.quantization == "4bit":
-                quantization_config = BitsAndBytesConfig(
-                    load_in_4bit=True,
-                    bnb_4bit_compute_dtype=torch.float16,
-                    bnb_4bit_use_double_quant=True,
-                    bnb_4bit_quant_type="nf4",
-                )
-            elif self.config.quantization == "8bit":
-                quantization_config = BitsAndBytesConfig(
-                    load_in_8bit=True,
+            # Check for MLX models (not compatible with transformers)
+            if "mlx" in model_name_or_path.lower():
+                raise Exception(
+                    f"MLX models (like '{model_name_or_path}') are designed for Apple Silicon "
+                    f"and use the MLX framework, not transformers. "
+                    f"They are not currently supported by docman's local provider. "
+                    f"\n\nAlternatives:"
+                    f"\n  1. Use a transformers-compatible model (e.g., google/gemma-2b-it)"
+                    f"\n  2. Use a cloud provider (e.g., Google Gemini)"
+                    f"\n\nFor a list of compatible models, visit: https://huggingface.co/models?library=transformers"
                 )
 
             # Load tokenizer
@@ -426,22 +424,29 @@ class LocalTransformerProvider(LLMProvider):
                 trust_remote_code=True,
             )
 
-            # Load model with appropriate quantization
+            # Load model with appropriate configuration
             load_kwargs = {
                 "trust_remote_code": True,
+                "device_map": "auto",  # Let transformers decide device placement
             }
 
-            if quantization_config:
+            # Only apply bitsandbytes quantization if explicitly requested
+            # For pre-quantized models or full precision, let transformers handle it
+            if self.config.quantization == "4bit":
+                quantization_config = BitsAndBytesConfig(
+                    load_in_4bit=True,
+                    bnb_4bit_compute_dtype=torch.float16,
+                    bnb_4bit_use_double_quant=True,
+                    bnb_4bit_quant_type="nf4",
+                )
                 load_kwargs["quantization_config"] = quantization_config
-                load_kwargs["device_map"] = "auto"
-            else:
-                # Full precision - use FP16 or BF16 if available
-                if torch.cuda.is_available():
-                    if torch.cuda.is_bf16_supported():
-                        load_kwargs["torch_dtype"] = torch.bfloat16
-                    else:
-                        load_kwargs["torch_dtype"] = torch.float16
-                    load_kwargs["device_map"] = "auto"
+            elif self.config.quantization == "8bit":
+                quantization_config = BitsAndBytesConfig(
+                    load_in_8bit=True,
+                )
+                load_kwargs["quantization_config"] = quantization_config
+            # For None (pre-quantized or full precision), don't set quantization_config
+            # Let transformers auto-detect and handle the model's native quantization
 
             self.model = AutoModelForCausalLM.from_pretrained(
                 model_name_or_path,

@@ -109,17 +109,28 @@ Three main tables model document tracking and operations:
 **Overview**: docman supports both cloud LLM APIs (Google Gemini) and local transformer models via HuggingFace. Local models run entirely on your machine, requiring no API keys or internet connection.
 
 **Supported Local Models**:
-- Default recommendation: `google/gemma-3n-E4B` (efficient, good quality)
-- Any HuggingFace causal language model
-- Supports quantization: 4-bit, 8-bit, or full precision (FP16/BF16)
+- **Compatible**: Any HuggingFace model using the `transformers` library
+- **Recommended models**:
+  - `google/gemma-2b-it` (small, efficient, instruction-tuned)
+  - `meta-llama/Llama-2-7b-chat-hf` (good quality, requires access approval)
+  - `mistralai/Mistral-7B-Instruct-v0.2` (excellent quality)
+- **Pre-quantized options** (smaller downloads):
+  - `TheBloke/Llama-2-7B-GPTQ` (GPTQ quantized)
+  - `TheBloke/Mistral-7B-Instruct-v0.2-AWQ` (AWQ quantized)
+- **NOT supported**:
+  - ❌ MLX models (e.g., `mlx-community/*`) - use Apple's MLX framework instead
+  - ❌ GGUF models (e.g., `*.gguf`) - use llama.cpp instead
+  - ✅ Use cloud provider (Google Gemini) for simplicity on macOS
 
 **System Requirements**:
-- **GPU recommended**: NVIDIA GPU with CUDA support
-- **VRAM requirements**:
-  - 4-bit quantization: ~3-4GB VRAM (recommended for most users)
+- **NVIDIA GPU recommended**: CUDA support for best performance
+  - 4-bit quantization: ~3-4GB VRAM
   - 8-bit quantization: ~6-8GB VRAM
   - Full precision: ~12-16GB VRAM
-- **CPU fallback**: Works but significantly slower (not recommended for production)
+- **Apple Silicon (M1/M2/M3)**:
+  - Limited support - transformers models work but slower than MLX
+  - Consider using cloud provider (Google Gemini) instead
+- **CPU fallback**: Very slow (not recommended)
 
 **Setup Steps**:
 
