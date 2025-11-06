@@ -125,30 +125,32 @@ Three main tables model document tracking and operations:
 
 1. **Install dependencies** (already included in requirements):
    ```bash
-   uv sync  # Installs transformers, torch, accelerate, bitsandbytes, safetensors
+   uv sync  # Installs transformers, torch, accelerate, bitsandbytes, safetensors, huggingface-hub
    ```
 
-2. **Download a model** (must be done manually, no auto-download):
+2. **Download a model** (automated or manual):
    ```bash
-   # Install HuggingFace CLI
-   pip install huggingface-hub
+   # Recommended: Use docman's built-in downloader
+   docman llm download-model google/gemma-3n-E4B
 
-   # Download model (example: google/gemma-3n-E4B)
+   # Alternative: Manual download with HuggingFace CLI
+   pip install huggingface-hub
    huggingface-cli download google/gemma-3n-E4B
    ```
 
 3. **Add local provider**:
    ```bash
-   # Interactive wizard (recommended)
+   # Interactive wizard (recommended) - offers to download model automatically
    docman llm add
 
-   # Or use command-line arguments
+   # Or use command-line arguments - also offers to download if not present
    docman llm add \
      --name my-local-model \
      --provider local \
      --model google/gemma-3n-E4B \
      --quantization 4bit
    ```
+   Note: Both commands will automatically offer to download the model if it's not already available.
 
 4. **Test the provider**:
    ```bash
@@ -174,6 +176,10 @@ Error: Model 'google/gemma-3n-E4B' not found.
 ```
 Solution: Download the model first:
 ```bash
+# Recommended
+docman llm download-model google/gemma-3n-E4B
+
+# Alternative
 huggingface-cli download google/gemma-3n-E4B
 ```
 
@@ -435,7 +441,14 @@ Main commands:
   - `-r`: Recursively unmark files in subdirectories
 - `docman ignore [path]`: Mark files as 'ignored' to exclude from future plan runs
   - `-r`: Recursively ignore files in subdirectories
-- `docman llm`: Manage LLM providers (add, list, show, test, set-active, remove)
+- `docman llm`: Manage LLM providers
+  - `add`: Add new provider (interactive wizard or command-line)
+  - `list`: List all configured providers
+  - `show`: Show details of a provider
+  - `test`: Test provider connection
+  - `set-active`: Set active provider
+  - `remove`: Remove a provider
+  - `download-model`: Download HuggingFace models for local inference
 - `docman config`: Manage repository configuration (set-instructions, show-instructions)
 
 ### Duplicate Document Handling

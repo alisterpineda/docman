@@ -2652,7 +2652,54 @@ def llm_add(name: str | None, provider: str | None, model: str | None, api_key: 
             is_active=False,  # Will be set to True if it's the first provider
         )
 
+        # For local providers, check if model is downloaded and offer to download
+        if provider == "local":
+            from docman.model_download import check_model_exists, download_model, get_model_info
+
+            if not check_model_exists(model):
+                click.echo()
+                click.secho(f"✗ Model '{model}' is not downloaded yet.", fg="yellow")
+                click.echo()
+
+                # Get model info if available
+                model_info = get_model_info(model)
+                if model_info:
+                    click.echo(f"Model info:")
+                    click.echo(f"  Downloads: {model_info['downloads']}")
+                    click.echo(f"  Likes: {model_info['likes']}")
+                    click.echo(f"  Type: {model_info['pipeline_tag']}")
+                    click.echo()
+
+                click.echo("Note: Model downloads can be several GB in size.")
+                click.echo()
+
+                if click.confirm(f"Would you like to download '{model}' now?", default=True):
+                    click.echo()
+                    click.echo("Downloading model...")
+
+                    def progress_callback(message: str) -> None:
+                        click.echo(message)
+
+                    try:
+                        download_model(model, progress_callback=progress_callback)
+                        click.echo()
+                        click.secho("✓ Model downloaded successfully!", fg="green")
+                    except Exception as e:
+                        click.echo()
+                        click.secho("✗ Download failed:", fg="red")
+                        click.secho(f"  {str(e)}", fg="red")
+                        click.echo()
+                        click.echo("You can download the model later with:")
+                        click.echo(f"  docman llm download-model {model}")
+                        raise click.Abort()
+                else:
+                    click.echo()
+                    click.echo("You can download the model later with:")
+                    click.echo(f"  docman llm download-model {model}")
+                    raise click.Abort()
+
         # Test connection
+        click.echo()
         if provider == "local":
             click.echo("Testing local model...")
             if quantization:
@@ -2856,6 +2903,75 @@ def llm_test(name: str | None) -> None:
         click.secho("✓ Connection successful!", fg="green")
     except Exception as e:
         click.secho("✗ Connection failed:", fg="red")
+        click.secho(f"  {str(e)}", fg="red")
+        raise click.Abort()
+
+
+@llm.command(name="download-model")
+@click.argument("model_id")
+@click.option("-y", "--yes", is_flag=True, help="Skip confirmation prompt")
+def llm_download_model(model_id: str, yes: bool) -> None:
+    """Download a model from HuggingFace Hub for local inference.
+
+    Arguments:
+        MODEL_ID: HuggingFace model identifier (e.g., google/gemma-3n-E4B)
+
+    Examples:
+        docman llm download-model google/gemma-3n-E4B
+        docman llm download-model meta-llama/Llama-2-7b-hf -y
+    """
+    from docman.model_download import check_model_exists, download_model, get_model_info
+
+    # Check if model already exists
+    if check_model_exists(model_id):
+        click.secho(f"✓ Model '{model_id}' is already downloaded.", fg="green")
+
+        if not yes:
+            if not click.confirm("Do you want to re-download it?", default=False):
+                click.echo("Skipping download.")
+                return
+        else:
+            click.echo("Model already exists, skipping download.")
+            return
+
+    # Get model info if available
+    click.echo()
+    click.echo(f"Model: {model_id}")
+
+    model_info = get_model_info(model_id)
+    if model_info:
+        click.echo(f"  Downloads: {model_info['downloads']}")
+        click.echo(f"  Likes: {model_info['likes']}")
+        click.echo(f"  Type: {model_info['pipeline_tag']}")
+
+    click.echo()
+    click.echo("Note: Model downloads can be several GB in size.")
+    click.echo("      Download time depends on your network speed.")
+    click.echo()
+
+    # Confirm download
+    if not yes:
+        if not click.confirm(f"Download model '{model_id}'?", default=True):
+            click.echo("Download cancelled.")
+            return
+
+    # Download the model
+    click.echo()
+
+    def progress_callback(message: str) -> None:
+        """Print progress messages."""
+        click.echo(message)
+
+    try:
+        download_model(model_id, progress_callback=progress_callback)
+        click.echo()
+        click.secho("✓ Model downloaded successfully!", fg="green")
+        click.echo()
+        click.echo("You can now use this model with:")
+        click.echo(f"  docman llm add --provider local --model {model_id}")
+    except Exception as e:
+        click.echo()
+        click.secho("✗ Download failed:", fg="red")
         click.secho(f"  {str(e)}", fg="red")
         raise click.Abort()
 
