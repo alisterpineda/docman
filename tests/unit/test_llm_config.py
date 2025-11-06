@@ -82,6 +82,53 @@ class TestProviderConfig:
         assert provider.endpoint == "http://localhost:8080"
         assert provider.is_active is False  # Default value
 
+    def test_to_dict_with_quantization(self) -> None:
+        """Test converting ProviderConfig with quantization to dictionary."""
+        provider = ProviderConfig(
+            name="test-local",
+            provider_type="local",
+            model="google/gemma-3n-E4B",
+            quantization="4bit",
+            is_active=False,
+        )
+
+        result = provider.to_dict()
+
+        assert result["quantization"] == "4bit"
+        assert result["model"] == "google/gemma-3n-E4B"
+
+    def test_to_dict_with_model_path(self) -> None:
+        """Test converting ProviderConfig with model_path to dictionary."""
+        provider = ProviderConfig(
+            name="test-local",
+            provider_type="local",
+            model="custom-model",
+            model_path="/path/to/model",
+            is_active=False,
+        )
+
+        result = provider.to_dict()
+
+        assert result["model_path"] == "/path/to/model"
+
+    def test_from_dict_with_quantization_and_model_path(self) -> None:
+        """Test creating ProviderConfig from dictionary with quantization and model_path."""
+        data = {
+            "name": "test-local",
+            "provider_type": "local",
+            "model": "google/gemma-3n-E4B",
+            "quantization": "8bit",
+            "model_path": "/custom/path",
+            "is_active": True,
+        }
+
+        provider = ProviderConfig.from_dict(data)
+
+        assert provider.quantization == "8bit"
+        assert provider.model_path == "/custom/path"
+        assert provider.provider_type == "local"
+        assert provider.is_active is True
+
 
 class TestAddProvider:
     """Tests for add_provider function."""

@@ -2615,40 +2615,51 @@ def llm() -> None:
 @click.option("--name", type=str, help="Name for this provider configuration")
 @click.option(
     "--provider",
-    type=click.Choice(["google"], case_sensitive=False),
-    help="Provider type (google, etc.)",
+    type=click.Choice(["google", "local"], case_sensitive=False),
+    help="Provider type (google, local, etc.)",
 )
-@click.option("--model", type=str, help="Model identifier (e.g., gemini-1.5-flash)")
-@click.option("--api-key", type=str, help="API key (will be prompted if not provided)")
-def llm_add(name: str | None, provider: str | None, model: str | None, api_key: str | None) -> None:
+@click.option("--model", type=str, help="Model identifier (e.g., gemini-1.5-flash, google/gemma-3n-E4B)")
+@click.option("--api-key", type=str, help="API key (will be prompted if not provided, not required for local)")
+@click.option("--quantization", type=click.Choice(["4bit", "8bit"], case_sensitive=False), help="Quantization level for local models")
+def llm_add(name: str | None, provider: str | None, model: str | None, api_key: str | None, quantization: str | None) -> None:
     """Add a new LLM provider configuration.
 
     If options are not provided, an interactive wizard will guide you through setup.
     """
-    # If any option is missing, use the wizard
-    if not all([name, provider, model, api_key]):
+    # For local providers, API key is optional
+    required_fields = [name, provider, model]
+    if provider != "local":
+        required_fields.append(api_key)
+
+    # If any required option is missing, use the wizard
+    if not all(required_fields):
         if not run_llm_wizard():
             click.secho("Setup failed or cancelled.", fg="yellow")
             raise click.Abort()
         return
 
     # All options provided - add provider directly
-    # At this point we know all values are not None due to the check above
     assert name is not None
     assert provider is not None
     assert model is not None
-    assert api_key is not None
 
     try:
         provider_config = ProviderConfig(
             name=name,
             provider_type=provider,
             model=model,
+            quantization=quantization,
             is_active=False,  # Will be set to True if it's the first provider
         )
 
         # Test connection
-        click.echo("Testing connection...")
+        if provider == "local":
+            click.echo("Testing local model...")
+            if quantization:
+                click.echo(f"  (using {quantization} quantization)")
+        else:
+            click.echo("Testing connection...")
+
         llm_provider = get_llm_provider(provider_config, api_key)
         try:
             llm_provider.test_connection()
@@ -2659,7 +2670,7 @@ def llm_add(name: str | None, provider: str | None, model: str | None, api_key: 
             raise click.Abort()
 
         # Add provider
-        add_provider(provider_config, api_key)
+        add_provider(provider_config, api_key or None)
         click.secho(f"✓ Provider '{name}' added successfully!", fg="green")
 
         # Check if it was set as active
@@ -2696,6 +2707,10 @@ def llm_list() -> None:
         click.secho(f"{active_marker}{provider.name}", fg=color, bold=provider.is_active)
         click.echo(f"  Type: {provider.provider_type}")
         click.echo(f"  Model: {provider.model}")
+        if provider.quantization:
+            click.echo(f"  Quantization: {provider.quantization}")
+        if provider.model_path:
+            click.echo(f"  Model Path: {provider.model_path}")
         if provider.endpoint:
             click.echo(f"  Endpoint: {provider.endpoint}")
         click.echo()
@@ -2784,17 +2799,22 @@ def llm_show(name: str | None) -> None:
     click.echo()
     click.echo(f"Type: {provider.provider_type}")
     click.echo(f"Model: {provider.model}")
+    if provider.quantization:
+        click.echo(f"Quantization: {provider.quantization}")
+    if provider.model_path:
+        click.echo(f"Model Path: {provider.model_path}")
     if provider.endpoint:
         click.echo(f"Endpoint: {provider.endpoint}")
     click.echo()
 
-    # Show API key status (but not the actual key)
-    api_key = get_api_key(provider.name)
-    if api_key:
-        click.secho("API Key: Configured ✓", fg="green")
-    else:
-        click.secho("API Key: Not found ✗", fg="red")
-    click.echo()
+    # Show API key status (but not the actual key) - not relevant for local providers
+    if provider.provider_type != "local":
+        api_key = get_api_key(provider.name)
+        if api_key:
+            click.secho("API Key: Configured ✓", fg="green")
+        else:
+            click.secho("API Key: Not found ✗", fg="red")
+        click.echo()
 
 
 @llm.command(name="test")
@@ -2818,11 +2838,14 @@ def llm_test(name: str | None) -> None:
             click.echo("Run 'docman llm add' to add a provider.")
             return
 
-    click.echo(f"Testing connection to '{provider.name}'...")
+    if provider.provider_type == "local":
+        click.echo(f"Testing local model '{provider.name}'...")
+    else:
+        click.echo(f"Testing connection to '{provider.name}'...")
 
-    # Get API key
+    # Get API key (optional for local providers)
     api_key = get_api_key(provider.name)
-    if not api_key:
+    if not api_key and provider.provider_type != "local":
         click.secho("Error: API key not found for this provider.", fg="red")
         raise click.Abort()
 

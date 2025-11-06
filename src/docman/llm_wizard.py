@@ -38,36 +38,51 @@ def run_llm_wizard() -> bool:
         click.secho("\nSetup cancelled.", fg="yellow")
         return False
 
-    # Step 2: Get API key
+    # Step 2: Get API key (skip for local providers)
     api_key = _get_api_key(provider_type)
     if api_key is None:
         click.secho("\nSetup cancelled.", fg="yellow")
         return False
 
-    # Step 3: Test connection and fetch available models
-    click.echo()
-    click.echo("Verifying API key and fetching available models...")
-
-    try:
-        models = list_available_models(provider_type, api_key)
-        if not models:
-            click.secho("✗ No models available for this API key.", fg="red")
+    # Step 3: Model selection (different flow for local vs cloud providers)
+    if provider_type == "local":
+        # For local providers, prompt for model name and quantization
+        model = _get_local_model_name()
+        if model is None:
+            click.secho("\nSetup cancelled.", fg="yellow")
             return False
-        click.secho(f"✓ Found {len(models)} available model(s)", fg="green")
-    except ValueError as e:
-        # Unsupported provider type
-        click.secho(f"✗ {str(e)}", fg="red")
-        return False
-    except Exception as e:
-        click.secho("✗ Failed to verify API key:", fg="red")
-        click.secho(f"  {str(e)}", fg="red")
-        return False
 
-    # Step 4: Model selection
-    model = _select_model(provider_type, models)
-    if model is None:
-        click.secho("\nSetup cancelled.", fg="yellow")
-        return False
+        quantization = _select_quantization()
+        if quantization is None:
+            click.secho("\nSetup cancelled.", fg="yellow")
+            return False
+    else:
+        # For cloud providers, fetch and list available models
+        click.echo()
+        click.echo("Verifying API key and fetching available models...")
+
+        try:
+            models = list_available_models(provider_type, api_key)
+            if not models:
+                click.secho("✗ No models available for this API key.", fg="red")
+                return False
+            click.secho(f"✓ Found {len(models)} available model(s)", fg="green")
+        except ValueError as e:
+            # Unsupported provider type
+            click.secho(f"✗ {str(e)}", fg="red")
+            return False
+        except Exception as e:
+            click.secho("✗ Failed to verify API key:", fg="red")
+            click.secho(f"  {str(e)}", fg="red")
+            return False
+
+        # Step 4: Model selection
+        model = _select_model(provider_type, models)
+        if model is None:
+            click.secho("\nSetup cancelled.", fg="yellow")
+            return False
+
+        quantization = None  # Cloud providers don't use quantization
 
     # Step 5: Provider name
     provider_name = _get_provider_name(provider_type)
@@ -77,12 +92,18 @@ def run_llm_wizard() -> bool:
 
     # Step 6: Final connection test with selected model
     click.echo()
-    click.echo(f"Testing connection with model '{model}'...")
+    if provider_type == "local":
+        click.echo(f"Testing local model '{model}'...")
+        if quantization:
+            click.echo(f"  (using {quantization} quantization)")
+    else:
+        click.echo(f"Testing connection with model '{model}'...")
 
     provider_config = ProviderConfig(
         name=provider_name,
         provider_type=provider_type,
         model=model,
+        quantization=quantization,
         is_active=True,
     )
 
@@ -115,22 +136,25 @@ def _select_provider() -> str | None:
     """Prompt user to select an LLM provider.
 
     Returns:
-        Provider type string (e.g., "google"), or None if cancelled.
+        Provider type string (e.g., "google", "local"), or None if cancelled.
     """
     click.echo("Available LLM providers:")
-    click.echo("  1. Google Gemini")
+    click.echo("  1. Google Gemini (cloud API)")
+    click.echo("  2. Local Transformer (runs on your machine)")
     click.echo("  (More providers coming soon)")
     click.echo()
 
     choice = click.prompt(
         "Select a provider",
-        type=click.Choice(["1"], case_sensitive=False),
-        default="1",
+        type=click.Choice(["1", "2"], case_sensitive=False),
+        default="2",
         show_choices=False,
     )
 
     if choice == "1":
         return "google"
+    elif choice == "2":
+        return "local"
 
     return None
 
@@ -139,12 +163,17 @@ def _get_api_key(provider_type: str) -> str | None:
     """Prompt user for API key.
 
     Args:
-        provider_type: Type of provider (e.g., "google")
+        provider_type: Type of provider (e.g., "google", "local")
 
     Returns:
-        API key string, or None if cancelled.
+        API key string, or None if cancelled. Returns empty string for local providers.
     """
     click.echo()
+
+    if provider_type == "local":
+        # Local providers don't need API keys
+        click.echo("Local models don't require an API key.")
+        return ""
 
     if provider_type == "google":
         click.echo("You'll need a Google AI API key.")
@@ -247,3 +276,62 @@ def _get_provider_name(provider_type: str) -> str | None:
         return None
 
     return provider_name.strip()
+
+
+def _get_local_model_name() -> str | None:
+    """Prompt user for a local model name.
+
+    Returns:
+        Model name/path string, or None if cancelled.
+    """
+    click.echo()
+    click.echo("Enter the HuggingFace model identifier.")
+    click.echo("Example: google/gemma-3n-E4B")
+    click.echo()
+    click.echo("Note: The model must be downloaded first using:")
+    click.echo("  huggingface-cli download <model-name>")
+    click.echo()
+
+    model_name: str = click.prompt(
+        "Model identifier",
+        type=str,
+        default="google/gemma-3n-E4B",
+    )
+
+    if not model_name or not model_name.strip():
+        return None
+
+    return model_name.strip()
+
+
+def _select_quantization() -> str | None:
+    """Prompt user to select quantization level for local model.
+
+    Returns:
+        Quantization level ("4bit", "8bit", or None for full precision),
+        or None if cancelled.
+    """
+    click.echo()
+    click.echo("Select quantization level:")
+    click.echo("  1. 4-bit quantization (lowest memory, ~3-4GB VRAM)")
+    click.echo("  2. 8-bit quantization (medium memory, ~6-8GB VRAM)")
+    click.echo("  3. Full precision (highest memory, ~12-16GB VRAM)")
+    click.echo()
+    click.echo("Note: Quantization reduces memory usage but may slightly affect quality.")
+    click.echo()
+
+    choice = click.prompt(
+        "Select quantization",
+        type=click.Choice(["1", "2", "3"], case_sensitive=False),
+        default="1",
+        show_choices=False,
+    )
+
+    if choice == "1":
+        return "4bit"
+    elif choice == "2":
+        return "8bit"
+    elif choice == "3":
+        return None  # Full precision
+
+    return None

@@ -22,8 +22,10 @@ class ProviderConfig:
     Attributes:
         name: Unique identifier for this provider configuration (e.g., "my-gemini-api")
         provider_type: Type of provider (e.g., "google", "anthropic", "openai", "local")
-        model: Model identifier (e.g., "gemini-1.5-flash", "claude-3-5-sonnet")
-        endpoint: Optional custom API endpoint URL
+        model: Model identifier (e.g., "gemini-1.5-flash", "claude-3-5-sonnet", "google/gemma-3n-E4B")
+        endpoint: Optional custom API endpoint URL (for future vLLM/TGI support)
+        quantization: Optional quantization level for local models ("4bit", "8bit", or None for full precision)
+        model_path: Optional local path to model files (defaults to HuggingFace cache if None)
         is_active: Whether this is the currently active provider
     """
 
@@ -31,6 +33,8 @@ class ProviderConfig:
     provider_type: str
     model: str
     endpoint: str | None = None
+    quantization: str | None = None
+    model_path: str | None = None
     is_active: bool = False
 
     def to_dict(self) -> dict[str, Any]:
@@ -43,6 +47,10 @@ class ProviderConfig:
         }
         if self.endpoint:
             result["endpoint"] = self.endpoint
+        if self.quantization:
+            result["quantization"] = self.quantization
+        if self.model_path:
+            result["model_path"] = self.model_path
         return result
 
     @staticmethod
@@ -53,6 +61,8 @@ class ProviderConfig:
             provider_type=data["provider_type"],
             model=data["model"],
             endpoint=data.get("endpoint"),
+            quantization=data.get("quantization"),
+            model_path=data.get("model_path"),
             is_active=data.get("is_active", False),
         )
 
@@ -86,15 +96,15 @@ def get_provider(name: str) -> ProviderConfig | None:
     return None
 
 
-def add_provider(provider: ProviderConfig, api_key: str) -> None:
+def add_provider(provider: ProviderConfig, api_key: str | None = None) -> None:
     """Add a new LLM provider configuration.
 
     Stores the provider configuration in config.yaml and the API key
-    securely in the OS keychain.
+    securely in the OS keychain (if provided).
 
     Args:
         provider: ProviderConfig object with provider details.
-        api_key: The API key to store securely in the keychain.
+        api_key: The API key to store securely in the keychain. Optional for local providers.
 
     Raises:
         ValueError: If a provider with the same name already exists.
@@ -115,18 +125,20 @@ def add_provider(provider: ProviderConfig, api_key: str) -> None:
     # Add the new provider
     providers.append(provider)
 
-    # Store API key in keychain FIRST to ensure we fail before modifying config
-    # This prevents a broken state where config has provider but no API key
-    try:
-        keyring.set_password(KEYRING_SERVICE_NAME, provider.name, api_key)
-    except Exception as e:
-        # If keyring fails, don't save config - this keeps the system consistent
-        raise RuntimeError(
-            f"Failed to store API key securely. This often happens on headless systems "
-            f"without a keyring backend. Error: {e}"
-        ) from e
+    # Store API key in keychain if provided (local providers may not need one)
+    if api_key:
+        # Store API key in keychain FIRST to ensure we fail before modifying config
+        # This prevents a broken state where config has provider but no API key
+        try:
+            keyring.set_password(KEYRING_SERVICE_NAME, provider.name, api_key)
+        except Exception as e:
+            # If keyring fails, don't save config - this keeps the system consistent
+            raise RuntimeError(
+                f"Failed to store API key securely. This often happens on headless systems "
+                f"without a keyring backend. Error: {e}"
+            ) from e
 
-    # Save to config (only after API key is successfully stored)
+    # Save to config (only after API key is successfully stored, if applicable)
     _save_providers(providers)
 
 

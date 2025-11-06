@@ -10,10 +10,11 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 **Core Technologies**:
 - **docling** for document content extraction
-- **LLM models** (Google Gemini) for intelligent organization suggestions
+- **LLM models** (cloud: Google Gemini, local: HuggingFace transformers) for intelligent organization suggestions
 - **Pydantic** for structured output schemas and validation
 - **SQLite database** for tracking documents, copies, and pending operations
 - **OS-native credential managers** for secure API key storage
+- **Transformers + bitsandbytes** for quantized local LLM inference
 
 ## Development Commands
 
@@ -103,6 +104,134 @@ Three main tables model document tracking and operations:
    - **On accept**: Status set to `ACCEPTED`, `DocumentCopy.accepted_operation_id` links to this operation
    - **On reject**: Status set to `REJECTED`, operation preserved for historical record
 
+### Local LLM Setup
+
+**Overview**: docman supports both cloud LLM APIs (Google Gemini) and local transformer models via HuggingFace. Local models run entirely on your machine, requiring no API keys or internet connection.
+
+**Supported Local Models**:
+- Default recommendation: `google/gemma-3n-E4B` (efficient, good quality)
+- Any HuggingFace causal language model
+- Supports quantization: 4-bit, 8-bit, or full precision (FP16/BF16)
+
+**System Requirements**:
+- **GPU recommended**: NVIDIA GPU with CUDA support
+- **VRAM requirements**:
+  - 4-bit quantization: ~3-4GB VRAM (recommended for most users)
+  - 8-bit quantization: ~6-8GB VRAM
+  - Full precision: ~12-16GB VRAM
+- **CPU fallback**: Works but significantly slower (not recommended for production)
+
+**Setup Steps**:
+
+1. **Install dependencies** (already included in requirements):
+   ```bash
+   uv sync  # Installs transformers, torch, accelerate, bitsandbytes, safetensors
+   ```
+
+2. **Download a model** (must be done manually, no auto-download):
+   ```bash
+   # Install HuggingFace CLI
+   pip install huggingface-hub
+
+   # Download model (example: google/gemma-3n-E4B)
+   huggingface-cli download google/gemma-3n-E4B
+   ```
+
+3. **Add local provider**:
+   ```bash
+   # Interactive wizard (recommended)
+   docman llm add
+
+   # Or use command-line arguments
+   docman llm add \
+     --name my-local-model \
+     --provider local \
+     --model google/gemma-3n-E4B \
+     --quantization 4bit
+   ```
+
+4. **Test the provider**:
+   ```bash
+   docman llm test my-local-model
+   ```
+
+**Configuration Options**:
+- `model`: HuggingFace model identifier (e.g., `google/gemma-3n-E4B`)
+- `quantization`: `4bit`, `8bit`, or `None` (full precision)
+- `model_path`: Optional custom path to model files (defaults to HF cache)
+- `endpoint`: Reserved for future vLLM/TGI support (not used currently)
+
+**Quantization Trade-offs**:
+- **4-bit** (recommended): Lowest memory, minimal quality loss, fastest loading
+- **8-bit**: Balanced memory and quality
+- **Full precision**: Highest memory, best quality, slowest loading
+
+**Troubleshooting**:
+
+*Model not found*:
+```
+Error: Model 'google/gemma-3n-E4B' not found.
+```
+Solution: Download the model first:
+```bash
+huggingface-cli download google/gemma-3n-E4B
+```
+
+*Out of memory (OOM)*:
+```
+Error: Out of memory (OOM) error loading model. Try using 4-bit quantization.
+```
+Solution: Use more aggressive quantization or reduce model size:
+```bash
+# If using 8-bit, try 4-bit
+docman llm add --provider local --model google/gemma-3n-E4B --quantization 4bit
+
+# If using full precision, try 8-bit
+docman llm add --provider local --model google/gemma-3n-E4B --quantization 8bit
+```
+
+*No GPU detected*:
+Warning: CPU inference will be very slow (minutes per document). Consider:
+- Using a cloud LLM provider instead (Google Gemini)
+- Running on a machine with CUDA-enabled GPU
+- Using a smaller model
+
+*JSON parsing errors*:
+Local models sometimes produce malformed JSON. The system attempts to extract JSON from various formats:
+- Plain JSON: `{"key": "value"}`
+- Markdown code blocks: ` ```json ... ``` `
+- Embedded in text: Extracts largest valid JSON object
+
+If repeated JSON errors occur, consider:
+- Switching to a cloud provider (more reliable structured output)
+- Using a different local model
+- Checking model-specific prompt formatting requirements
+
+**Performance Considerations**:
+- **First inference**: Slow (model loading, ~30-60s for 4-bit)
+- **Subsequent inferences**: Fast (model cached in memory)
+- **Memory footprint**: Model stays loaded until process exits
+- **Batch processing**: Reuses loaded model across all documents in `plan` command
+
+**Migration from Cloud to Local**:
+
+Existing cloud provider users can add a local provider without disrupting current setup:
+```bash
+# Add local provider
+docman llm add --provider local --model google/gemma-3n-E4B --quantization 4bit --name local-model
+
+# Switch to local provider
+docman llm set-active local-model
+
+# Switch back to cloud if needed
+docman llm set-active google-default
+```
+
+**Default Behavior**:
+- **New installations**: Interactive wizard defaults to local provider
+- **Existing installations**: No changes; cloud providers continue to work
+- **Backward compatibility**: All existing commands and configs unchanged
+
 ### LLM Integration Architecture
 
 **Prompt Building** (`prompt_builder.py`):
@@ -118,12 +247,20 @@ Three main tables model document tracking and operations:
 **Provider Abstraction** (`llm_providers.py`):
 - `OrganizationSuggestion` Pydantic model: Defines response schema with field validation
 - `LLMProvider` abstract base class with `supports_structured_output` property
-- `GoogleGeminiProvider` implementation (currently supported)
-  - Uses native structured output via `generation_config` with `response_schema`
-  - `supports_structured_output = True`: API guarantees schema compliance
-  - Custom exceptions: `GeminiSafetyBlockError`, `GeminiEmptyResponseError`
-  - Response normalization checks `response.text` and `response.candidates`
-- Factory pattern via `get_provider(config, api_key)`
+- **Cloud Providers**:
+  - `GoogleGeminiProvider` implementation
+    - Uses native structured output via `generation_config` with `response_schema`
+    - `supports_structured_output = True`: API guarantees schema compliance
+    - Custom exceptions: `GeminiSafetyBlockError`, `GeminiEmptyResponseError`
+    - Response normalization checks `response.text` and `response.candidates`
+- **Local Providers**:
+  - `LocalTransformerProvider` implementation
+    - Lazy model loading (loads on first inference, not initialization)
+    - Supports quantization via `bitsandbytes` (4-bit, 8-bit)
+    - `supports_structured_output = False`: Requires manual JSON parsing
+    - Uses `extract_json_from_text()` utility to parse free-form model outputs
+    - Handles markdown code blocks, embedded JSON, and malformed responses
+- Factory pattern via `get_provider(config, api_key)` (api_key optional for local)
 - Output schema: `suggested_directory_path`, `suggested_filename`, `reason`, `confidence` (0.0-1.0)
 
 **Configuration** (`llm_config.py`):
