@@ -86,15 +86,16 @@ def get_provider(name: str) -> ProviderConfig | None:
     return None
 
 
-def add_provider(provider: ProviderConfig, api_key: str) -> None:
+def add_provider(provider: ProviderConfig, api_key: str = "") -> None:
     """Add a new LLM provider configuration.
 
     Stores the provider configuration in config.yaml and the API key
-    securely in the OS keychain.
+    securely in the OS keychain (if needed for the provider type).
 
     Args:
         provider: ProviderConfig object with provider details.
         api_key: The API key to store securely in the keychain.
+                 Not required for local models (provider_type="local").
 
     Raises:
         ValueError: If a provider with the same name already exists.
@@ -115,18 +116,20 @@ def add_provider(provider: ProviderConfig, api_key: str) -> None:
     # Add the new provider
     providers.append(provider)
 
-    # Store API key in keychain FIRST to ensure we fail before modifying config
+    # Store API key in keychain FIRST (if needed) to ensure we fail before modifying config
     # This prevents a broken state where config has provider but no API key
-    try:
-        keyring.set_password(KEYRING_SERVICE_NAME, provider.name, api_key)
-    except Exception as e:
-        # If keyring fails, don't save config - this keeps the system consistent
-        raise RuntimeError(
-            f"Failed to store API key securely. This often happens on headless systems "
-            f"without a keyring backend. Error: {e}"
-        ) from e
+    # Local models don't need API keys
+    if provider.provider_type != "local":
+        try:
+            keyring.set_password(KEYRING_SERVICE_NAME, provider.name, api_key)
+        except Exception as e:
+            # If keyring fails, don't save config - this keeps the system consistent
+            raise RuntimeError(
+                f"Failed to store API key securely. This often happens on headless systems "
+                f"without a keyring backend. Error: {e}"
+            ) from e
 
-    # Save to config (only after API key is successfully stored)
+    # Save to config (only after API key is successfully stored or not needed)
     _save_providers(providers)
 
 
@@ -220,7 +223,13 @@ def get_api_key(provider_name: str) -> str | None:
 
     Returns:
         The API key string if found, None otherwise.
+        For local models (provider_type="local"), returns empty string.
     """
+    # Check if this is a local provider
+    provider = get_provider(provider_name)
+    if provider and provider.provider_type == "local":
+        return ""
+
     try:
         return keyring.get_password(KEYRING_SERVICE_NAME, provider_name)
     except Exception:

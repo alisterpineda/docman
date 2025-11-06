@@ -10,10 +10,11 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 **Core Technologies**:
 - **docling** for document content extraction
-- **LLM models** (Google Gemini) for intelligent organization suggestions
+- **LLM models** (Google Gemini, Local models via Transformers) for intelligent organization suggestions
 - **Pydantic** for structured output schemas and validation
 - **SQLite database** for tracking documents, copies, and pending operations
-- **OS-native credential managers** for secure API key storage
+- **OS-native credential managers** for secure API key storage (for API-based providers)
+- **HuggingFace Transformers** for local LLM inference
 
 ## Development Commands
 
@@ -118,18 +119,29 @@ Three main tables model document tracking and operations:
 **Provider Abstraction** (`llm_providers.py`):
 - `OrganizationSuggestion` Pydantic model: Defines response schema with field validation
 - `LLMProvider` abstract base class with `supports_structured_output` property
-- `GoogleGeminiProvider` implementation (currently supported)
+- **`GoogleGeminiProvider`** implementation (API-based)
   - Uses native structured output via `generation_config` with `response_schema`
   - `supports_structured_output = True`: API guarantees schema compliance
   - Custom exceptions: `GeminiSafetyBlockError`, `GeminiEmptyResponseError`
   - Response normalization checks `response.text` and `response.candidates`
+  - Requires API key stored in OS keychain
+- **`TransformersProvider`** implementation (local LLM)
+  - Uses HuggingFace Transformers library for local inference
+  - `supports_structured_output = False`: Manual JSON parsing required
+  - Automatic GPU/CPU detection and model loading
+  - Lazy loading: Model loaded on first use (memory efficient)
+  - No API key required (provider_type="local")
+  - Supports models: Gemma 2 2B (default), Gemma 2 9B, Phi-3 Mini, Llama 3.2 3B
+  - JSON extraction from model output via regex patterns
+  - Custom error handling for OOM, model not found, network issues
 - Factory pattern via `get_provider(config, api_key)`
 - Output schema: `suggested_directory_path`, `suggested_filename`, `reason`, `confidence` (0.0-1.0)
 
 **Configuration** (`llm_config.py`):
 - Manages multiple provider configurations
 - One active provider at a time
-- API keys stored in OS keychain (never in plaintext config files)
+- API keys stored in OS keychain for API-based providers (never in plaintext config files)
+- Local providers (provider_type="local") don't require API keys
 
 ### Document Processing Flow
 

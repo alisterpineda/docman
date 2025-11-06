@@ -5,11 +5,14 @@ implementations for various LLM services (Google Gemini, Anthropic Claude, etc.)
 """
 
 import json
+import re
 from abc import ABC, abstractmethod
 from typing import Any
 
 import google.generativeai as genai
+import torch
 from pydantic import BaseModel, field_validator
+from transformers import AutoModelForCausalLM, AutoTokenizer
 
 from docman.llm_config import ProviderConfig
 
@@ -293,12 +296,244 @@ class GoogleGeminiProvider(LLMProvider):
                 raise Exception(f"Connection test failed: {str(e)}") from e
 
 
-def list_available_models(provider_type: str, api_key: str) -> list[dict[str, str]]:
+class TransformersProvider(LLMProvider):
+    """Local LLM provider using HuggingFace Transformers library."""
+
+    def __init__(self, config: ProviderConfig, api_key: str = ""):
+        """Initialize Transformers provider.
+
+        Args:
+            config: Provider configuration.
+            api_key: Not used for local models, but kept for interface compatibility.
+        """
+        super().__init__(config, api_key)
+        self.model = None
+        self.tokenizer = None
+        self.device = "cuda" if torch.cuda.is_available() else "cpu"
+
+    def _load_model(self) -> None:
+        """Load the model and tokenizer if not already loaded."""
+        if self.model is None or self.tokenizer is None:
+            # Load tokenizer
+            self.tokenizer = AutoTokenizer.from_pretrained(
+                self.config.model,
+                trust_remote_code=True,
+            )
+
+            # Load model
+            self.model = AutoModelForCausalLM.from_pretrained(
+                self.config.model,
+                torch_dtype=torch.float16 if self.device == "cuda" else torch.float32,
+                device_map="auto" if self.device == "cuda" else None,
+                trust_remote_code=True,
+            )
+
+            if self.device == "cpu":
+                self.model = self.model.to(self.device)
+
+    @property
+    def supports_structured_output(self) -> bool:
+        """Local models typically don't support native structured output."""
+        return False
+
+    @staticmethod
+    def list_models(api_key: str = "") -> list[dict[str, str]]:
+        """List recommended local models.
+
+        Args:
+            api_key: Not used for local models.
+
+        Returns:
+            List of recommended model configurations.
+        """
+        # Return a curated list of recommended local models
+        return [
+            {
+                "name": "google/gemma-2-2b-it",
+                "display_name": "Gemma 2 2B (Instruct)",
+                "description": "Small, efficient instruction-tuned model from Google",
+            },
+            {
+                "name": "google/gemma-2-9b-it",
+                "display_name": "Gemma 2 9B (Instruct)",
+                "description": "Larger instruction-tuned model with better performance",
+            },
+            {
+                "name": "microsoft/Phi-3-mini-4k-instruct",
+                "display_name": "Phi-3 Mini (4K context)",
+                "description": "Microsoft's efficient 3.8B parameter model",
+            },
+            {
+                "name": "meta-llama/Llama-3.2-3B-Instruct",
+                "display_name": "Llama 3.2 3B (Instruct)",
+                "description": "Meta's compact instruction-tuned model",
+            },
+        ]
+
+    def generate_suggestions(self, system_prompt: str, user_prompt: str) -> dict[str, Any]:
+        """Generate file organization suggestions using a local LLM.
+
+        Args:
+            system_prompt: Static system prompt defining the LLM's task.
+            user_prompt: Dynamic user prompt with document-specific information.
+
+        Returns:
+            Dictionary with organization suggestions.
+
+        Raises:
+            Exception: If model loading, generation, or parsing fails.
+        """
+        try:
+            # Load model if not already loaded
+            self._load_model()
+
+            # Combine prompts
+            combined_prompt = f"{system_prompt}\n\n{user_prompt}"
+
+            # Tokenize input
+            inputs = self.tokenizer(
+                combined_prompt,
+                return_tensors="pt",
+                truncation=True,
+                max_length=2048,
+            ).to(self.device)
+
+            # Generate response
+            with torch.no_grad():
+                outputs = self.model.generate(
+                    **inputs,
+                    max_new_tokens=512,
+                    temperature=0.7,
+                    top_p=0.9,
+                    do_sample=True,
+                    pad_token_id=self.tokenizer.eos_token_id,
+                )
+
+            # Decode response
+            response_text = self.tokenizer.decode(outputs[0], skip_special_tokens=True)
+
+            # Extract the generated part (remove the prompt)
+            if combined_prompt in response_text:
+                response_text = response_text[len(combined_prompt):].strip()
+
+            # Try to extract JSON from the response
+            json_data = self._extract_json(response_text)
+
+            if not json_data:
+                raise Exception("Failed to extract valid JSON from model response")
+
+            # Validate and return as dictionary
+            return {
+                "suggested_directory_path": str(json_data["suggested_directory_path"]),
+                "suggested_filename": str(json_data["suggested_filename"]),
+                "reason": str(json_data["reason"]),
+                "confidence": float(json_data["confidence"]),
+            }
+
+        except KeyError as e:
+            raise Exception(f"Missing required field in response: {str(e)}") from e
+        except (ValueError, TypeError) as e:
+            raise Exception(f"Invalid field type in response: {str(e)}") from e
+        except Exception as e:
+            raise Exception(f"Failed to generate suggestions: {str(e)}") from e
+
+    def _extract_json(self, text: str) -> dict[str, Any] | None:
+        """Extract JSON object from text that may contain markdown or other content.
+
+        Args:
+            text: Text that may contain JSON, possibly in markdown code blocks.
+
+        Returns:
+            Parsed JSON dictionary, or None if no valid JSON found.
+        """
+        # Try to find JSON in markdown code blocks first
+        json_block_pattern = r"```(?:json)?\s*(\{.*?\})\s*```"
+        matches = re.findall(json_block_pattern, text, re.DOTALL)
+
+        for match in matches:
+            try:
+                return json.loads(match)
+            except json.JSONDecodeError:
+                continue
+
+        # Try to find raw JSON object
+        json_pattern = r"\{[^{}]*(?:\{[^{}]*\}[^{}]*)*\}"
+        matches = re.findall(json_pattern, text, re.DOTALL)
+
+        for match in matches:
+            try:
+                data = json.loads(match)
+                # Verify it has the expected keys
+                if all(
+                    key in data
+                    for key in [
+                        "suggested_directory_path",
+                        "suggested_filename",
+                        "reason",
+                        "confidence",
+                    ]
+                ):
+                    return data
+            except json.JSONDecodeError:
+                continue
+
+        return None
+
+    def test_connection(self) -> bool:
+        """Test that the local model can be loaded and used.
+
+        Returns:
+            True if model loads successfully.
+
+        Raises:
+            Exception: If model loading fails, with detailed error message.
+        """
+        try:
+            # Try to load the model
+            self._load_model()
+
+            # Try a simple generation to verify it works
+            test_input = "Hello, this is a test."
+            inputs = self.tokenizer(test_input, return_tensors="pt").to(self.device)
+
+            with torch.no_grad():
+                outputs = self.model.generate(
+                    **inputs,
+                    max_new_tokens=10,
+                    pad_token_id=self.tokenizer.eos_token_id,
+                )
+
+            # If we got here, the model works
+            return True
+
+        except Exception as e:
+            error_msg = str(e).lower()
+
+            if "out of memory" in error_msg or "oom" in error_msg:
+                raise Exception(
+                    f"Model '{self.config.model}' is too large for available memory. "
+                    "Try a smaller model or ensure you have enough RAM/VRAM."
+                ) from e
+            elif "not found" in error_msg or "does not exist" in error_msg:
+                raise Exception(
+                    f"Model '{self.config.model}' not found. "
+                    "The model may need to be downloaded from HuggingFace first."
+                ) from e
+            elif "connection" in error_msg or "timeout" in error_msg:
+                raise Exception(
+                    "Network connection error. Please check your internet connection "
+                    "(required for first-time model download)."
+                ) from e
+            else:
+                raise Exception(f"Model loading test failed: {str(e)}") from e
+
+
+def list_available_models(provider_type: str, api_key: str = "") -> list[dict[str, str]]:
     """List available models for a given provider.
 
     Args:
-        provider_type: Type of provider (e.g., "google", "anthropic", "openai")
-        api_key: API key for the provider.
+        provider_type: Type of provider (e.g., "google", "local", "anthropic", "openai")
+        api_key: API key for the provider (not needed for local models).
 
     Returns:
         List of model dictionaries with 'name', 'display_name', and 'description' keys.
@@ -309,6 +544,8 @@ def list_available_models(provider_type: str, api_key: str) -> list[dict[str, st
     """
     if provider_type == "google":
         return GoogleGeminiProvider.list_models(api_key)
+    elif provider_type == "local":
+        return TransformersProvider.list_models(api_key)
     # Future providers can be added here:
     # elif provider_type == "anthropic":
     #     return AnthropicClaudeProvider.list_models(api_key)
@@ -318,12 +555,12 @@ def list_available_models(provider_type: str, api_key: str) -> list[dict[str, st
         raise ValueError(f"Unsupported provider type: {provider_type}")
 
 
-def get_provider(config: ProviderConfig, api_key: str) -> LLMProvider:
+def get_provider(config: ProviderConfig, api_key: str = "") -> LLMProvider:
     """Factory function to create an LLM provider instance.
 
     Args:
         config: Provider configuration.
-        api_key: API key for the provider.
+        api_key: API key for the provider (not needed for local models).
 
     Returns:
         Instance of the appropriate LLM provider.
@@ -333,6 +570,8 @@ def get_provider(config: ProviderConfig, api_key: str) -> LLMProvider:
     """
     if config.provider_type == "google":
         return GoogleGeminiProvider(config, api_key)
+    elif config.provider_type == "local":
+        return TransformersProvider(config, api_key)
     # Future providers can be added here:
     # elif config.provider_type == "anthropic":
     #     return AnthropicClaudeProvider(config, api_key)

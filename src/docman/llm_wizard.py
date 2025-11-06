@@ -38,20 +38,28 @@ def run_llm_wizard() -> bool:
         click.secho("\nSetup cancelled.", fg="yellow")
         return False
 
-    # Step 2: Get API key
-    api_key = _get_api_key(provider_type)
-    if api_key is None:
-        click.secho("\nSetup cancelled.", fg="yellow")
-        return False
+    # Step 2: Get API key (skip for local models)
+    api_key = ""
+    if provider_type != "local":
+        api_key = _get_api_key(provider_type)
+        if api_key is None:
+            click.secho("\nSetup cancelled.", fg="yellow")
+            return False
 
     # Step 3: Test connection and fetch available models
     click.echo()
-    click.echo("Verifying API key and fetching available models...")
+    if provider_type == "local":
+        click.echo("Fetching available local models...")
+    else:
+        click.echo("Verifying API key and fetching available models...")
 
     try:
         models = list_available_models(provider_type, api_key)
         if not models:
-            click.secho("✗ No models available for this API key.", fg="red")
+            if provider_type == "local":
+                click.secho("✗ No models available.", fg="red")
+            else:
+                click.secho("✗ No models available for this API key.", fg="red")
             return False
         click.secho(f"✓ Found {len(models)} available model(s)", fg="green")
     except ValueError as e:
@@ -115,22 +123,25 @@ def _select_provider() -> str | None:
     """Prompt user to select an LLM provider.
 
     Returns:
-        Provider type string (e.g., "google"), or None if cancelled.
+        Provider type string (e.g., "google", "local"), or None if cancelled.
     """
     click.echo("Available LLM providers:")
-    click.echo("  1. Google Gemini")
+    click.echo("  1. Google Gemini (API-based)")
+    click.echo("  2. Local LLM (via Transformers)")
     click.echo("  (More providers coming soon)")
     click.echo()
 
     choice = click.prompt(
         "Select a provider",
-        type=click.Choice(["1"], case_sensitive=False),
-        default="1",
+        type=click.Choice(["1", "2"], case_sensitive=False),
+        default="2",
         show_choices=False,
     )
 
     if choice == "1":
         return "google"
+    elif choice == "2":
+        return "local"
 
     return None
 
@@ -168,7 +179,7 @@ def _select_model(provider_type: str, models: list[dict[str, str]]) -> str | Non
     """Prompt user to select a model from available models.
 
     Args:
-        provider_type: Type of provider (e.g., "google")
+        provider_type: Type of provider (e.g., "google", "local")
         models: List of model dictionaries with 'name', 'display_name', and 'description'
 
     Returns:
@@ -220,6 +231,46 @@ def _select_model(provider_type: str, models: list[dict[str, str]]) -> str | Non
         # Return the selected model name
         idx = int(choice) - 1
         return sorted_models[idx]["name"]
+
+    elif provider_type == "local":
+        click.echo("Available local models:")
+        click.echo()
+
+        # Display models
+        for idx, model in enumerate(models, start=1):
+            model_name = model["name"]
+            display_name = model.get("display_name", model_name)
+
+            # Mark default model (Gemma 2 2B)
+            tag = " (default - recommended)" if "gemma-2-2b" in model_name.lower() else ""
+
+            click.echo(f"  {idx}. {display_name}{tag}")
+
+            # Show description if available (truncated)
+            description = model.get("description", "")
+            if description:
+                # Truncate long descriptions
+                if len(description) > 80:
+                    description = description[:77] + "..."
+                click.echo(f"     {description}")
+
+        click.echo()
+        click.secho("Note: The model will be downloaded from HuggingFace on first use.", fg="yellow")
+        click.echo()
+
+        # Create choice list
+        choices = [str(i) for i in range(1, len(models) + 1)]
+
+        choice = click.prompt(
+            "Select a model",
+            type=click.Choice(choices, case_sensitive=False),
+            default="1",
+            show_choices=False,
+        )
+
+        # Return the selected model name
+        idx = int(choice) - 1
+        return models[idx]["name"]
 
     return None
 

@@ -2615,29 +2615,40 @@ def llm() -> None:
 @click.option("--name", type=str, help="Name for this provider configuration")
 @click.option(
     "--provider",
-    type=click.Choice(["google"], case_sensitive=False),
-    help="Provider type (google, etc.)",
+    type=click.Choice(["google", "local"], case_sensitive=False),
+    help="Provider type (google, local, etc.)",
 )
-@click.option("--model", type=str, help="Model identifier (e.g., gemini-1.5-flash)")
-@click.option("--api-key", type=str, help="API key (will be prompted if not provided)")
+@click.option("--model", type=str, help="Model identifier (e.g., gemini-1.5-flash, google/gemma-2-2b-it)")
+@click.option("--api-key", type=str, help="API key (not needed for local models)")
 def llm_add(name: str | None, provider: str | None, model: str | None, api_key: str | None) -> None:
     """Add a new LLM provider configuration.
 
     If options are not provided, an interactive wizard will guide you through setup.
     """
-    # If any option is missing, use the wizard
-    if not all([name, provider, model, api_key]):
+    # Local providers don't need API keys
+    if provider == "local":
+        api_key = ""
+
+    # If any option is missing (except api_key for local), use the wizard
+    required_options = [name, provider, model]
+    if provider != "local":
+        required_options.append(api_key)
+
+    if not all(required_options):
         if not run_llm_wizard():
             click.secho("Setup failed or cancelled.", fg="yellow")
             raise click.Abort()
         return
 
-    # All options provided - add provider directly
+    # All required options provided - add provider directly
     # At this point we know all values are not None due to the check above
     assert name is not None
     assert provider is not None
     assert model is not None
-    assert api_key is not None
+    if provider != "local":
+        assert api_key is not None
+    else:
+        api_key = ""
 
     try:
         provider_config = ProviderConfig(
@@ -2788,12 +2799,15 @@ def llm_show(name: str | None) -> None:
         click.echo(f"Endpoint: {provider.endpoint}")
     click.echo()
 
-    # Show API key status (but not the actual key)
-    api_key = get_api_key(provider.name)
-    if api_key:
-        click.secho("API Key: Configured ✓", fg="green")
+    # Show API key status (but not the actual key) - local models don't need keys
+    if provider.provider_type != "local":
+        api_key = get_api_key(provider.name)
+        if api_key:
+            click.secho("API Key: Configured ✓", fg="green")
+        else:
+            click.secho("API Key: Not found ✗", fg="red")
     else:
-        click.secho("API Key: Not found ✗", fg="red")
+        click.secho("API Key: Not required (local model)", fg="cyan")
     click.echo()
 
 
@@ -2820,11 +2834,15 @@ def llm_test(name: str | None) -> None:
 
     click.echo(f"Testing connection to '{provider.name}'...")
 
-    # Get API key
+    # Get API key (not needed for local models)
     api_key = get_api_key(provider.name)
-    if not api_key:
+    if not api_key and provider.provider_type != "local":
         click.secho("Error: API key not found for this provider.", fg="red")
         raise click.Abort()
+
+    # For local models, use empty string
+    if provider.provider_type == "local":
+        api_key = ""
 
     # Test connection
     try:
