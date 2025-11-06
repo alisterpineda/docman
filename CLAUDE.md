@@ -106,10 +106,13 @@ Three main tables model document tracking and operations:
 
 ### Local LLM Setup
 
-**Overview**: docman supports both cloud LLM APIs (Google Gemini) and local transformer models via HuggingFace. Local models run entirely on your machine, requiring no API keys or internet connection.
+**Overview**: docman supports both cloud LLM APIs (Google Gemini) and local models via HuggingFace. Local models run entirely on your machine, requiring no API keys or internet connection. Two local provider types are available:
+- **Transformers**: Cross-platform, works on NVIDIA GPUs, AMD GPUs, and CPU
+- **MLX**: Optimized for Apple Silicon (M1/M2/M3/M4), best performance on macOS
 
 **Supported Local Models**:
-- **Compatible**: Any HuggingFace model using the `transformers` library
+
+**Transformers models** (cross-platform):
 - **Recommended models**:
   - `google/gemma-2b-it` (small, efficient, instruction-tuned)
   - `meta-llama/Llama-2-7b-chat-hf` (good quality, requires access approval)
@@ -117,32 +120,53 @@ Three main tables model document tracking and operations:
 - **Pre-quantized options** (smaller downloads):
   - `TheBloke/Llama-2-7B-GPTQ` (GPTQ quantized)
   - `TheBloke/Mistral-7B-Instruct-v0.2-AWQ` (AWQ quantized)
-- **NOT supported**:
-  - ❌ MLX models (e.g., `mlx-community/*`) - use Apple's MLX framework instead
-  - ❌ GGUF models (e.g., `*.gguf`) - use llama.cpp instead
-  - ✅ Use cloud provider (Google Gemini) for simplicity on macOS
+
+**MLX models** (Apple Silicon only):
+- **Recommended models**:
+  - `mlx-community/gemma-3n-E4B-it-4bit` (small, optimized for Apple Silicon)
+  - `mlx-community/Mistral-7B-Instruct-v0.2-4bit` (excellent quality)
+  - `mlx-community/Llama-2-7b-chat-hf-4bit` (good quality)
+- **Note**: MLX models are pre-quantized and optimized specifically for Apple Silicon
+
+**NOT supported**:
+- ❌ GGUF models (e.g., `*.gguf`) - use llama.cpp instead
+- ❌ ONNX models - use native frameworks
 
 **System Requirements**:
+
+**For Transformers models**:
 - **NVIDIA GPU recommended**: CUDA support for best performance
   - 4-bit quantization: ~3-4GB VRAM
   - 8-bit quantization: ~6-8GB VRAM
   - Full precision: ~12-16GB VRAM
-- **Apple Silicon (M1/M2/M3)**:
-  - Limited support - transformers models work but slower than MLX
-  - Consider using cloud provider (Google Gemini) instead
 - **CPU fallback**: Very slow (not recommended)
+
+**For MLX models** (Apple Silicon only):
+- **M1/M2/M3/M4 chips**: Optimized unified memory usage
+  - 4-bit models: ~3-4GB RAM
+  - 8-bit models: ~6-8GB RAM
+- **Best performance**: Native Apple Silicon optimization
+- **Note**: Only works on macOS with Apple Silicon
 
 **Setup Steps**:
 
-1. **Install dependencies** (already included in requirements):
+1. **Install dependencies**:
    ```bash
+   # For transformers models (cross-platform)
    uv sync  # Installs transformers, torch, accelerate, bitsandbytes, safetensors, huggingface-hub
+
+   # For MLX models (Apple Silicon only)
+   uv sync --extra mlx  # Additionally installs mlx and mlx-lm
    ```
 
 2. **Download a model** (automated or manual):
    ```bash
    # Recommended: Use docman's built-in downloader
+   # Transformers model:
    docman llm download-model google/gemma-3n-E4B
+
+   # MLX model (Apple Silicon):
+   docman llm download-model mlx-community/gemma-3n-E4B-it-4bit
 
    # Alternative: Manual download with HuggingFace CLI
    pip install huggingface-hub
@@ -155,13 +179,21 @@ Three main tables model document tracking and operations:
    docman llm add
 
    # Or use command-line arguments - also offers to download if not present
+
+   # Transformers model:
    docman llm add \
      --name my-local-model \
      --provider local \
      --model google/gemma-3n-E4B \
      --quantization 4bit
+
+   # MLX model (Apple Silicon - no quantization flag needed):
+   docman llm add \
+     --name my-mlx-model \
+     --provider local \
+     --model mlx-community/gemma-3n-E4B-it-4bit
    ```
-   Note: Both commands will automatically offer to download the model if it's not already available.
+   Note: docman automatically detects MLX models and routes them to the MLX provider.
 
 4. **Test the provider**:
    ```bash
@@ -170,26 +202,38 @@ Three main tables model document tracking and operations:
 
 **Understanding Quantization**:
 
-There are two types of quantization available:
+There are three types of quantization/model formats:
 
-1. **Pre-quantized models** (recommended for simplicity):
-   - Models already quantized and uploaded to HuggingFace
-   - Examples: `mlx-community/gemma-3n-E4B-it-4bit`, `TheBloke/Llama-2-7B-GPTQ`
+1. **MLX pre-quantized models** (Apple Silicon only):
+   - Models optimized for Apple Silicon using MLX framework
+   - Examples: `mlx-community/gemma-3n-E4B-it-4bit`, `mlx-community/Mistral-7B-Instruct-v0.2-4bit`
+   - **Advantage**: Best performance on Apple Silicon, smaller downloads, optimized by MLX community
+   - **Usage**: Download and use as-is, docman automatically detects and routes to MLX provider
+   - **Note**: Only works on macOS with M1/M2/M3/M4 chips
+
+2. **Transformers pre-quantized models** (cross-platform):
+   - Models already quantized and uploaded to HuggingFace (GPTQ, AWQ formats)
+   - Examples: `TheBloke/Llama-2-7B-GPTQ`, `TheBloke/Mistral-7B-Instruct-v0.2-AWQ`
    - **Advantage**: Smaller download size, faster to load, optimized by model creators
-   - **Usage**: Download and use as-is, no additional quantization needed
-   - docman automatically detects these and skips runtime quantization
+   - **Usage**: Download and use as-is, docman automatically detects and skips runtime quantization
 
-2. **Runtime quantization** (via bitsandbytes):
+3. **Runtime quantization** (via bitsandbytes, transformers only):
    - Quantization applied when loading a full-precision model
    - Example: Download `google/gemma-3n-E4B` → docman quantizes to 4-bit at runtime
-   - **Advantage**: More control, works with any model
+   - **Advantage**: More control, works with any transformers model
    - **Disadvantage**: Larger downloads, slower initial load
+   - **Note**: Only available for transformers models, not MLX
 
 **When to use each**:
-- **Pre-quantized**: Faster setup, recommended for most users
+- **MLX models (Apple Silicon)**: Best performance on macOS
   ```bash
   docman llm add --provider local --model mlx-community/gemma-3n-E4B-it-4bit
-  # No --quantization flag needed!
+  # No --quantization flag needed! Auto-detected as MLX.
+  ```
+- **Transformers pre-quantized**: Fast setup, works on all platforms
+  ```bash
+  docman llm add --provider local --model TheBloke/Mistral-7B-Instruct-v0.2-GPTQ
+  # No --quantization flag needed! Auto-detected as pre-quantized.
   ```
 - **Runtime quantization**: When pre-quantized version not available
   ```bash
@@ -252,20 +296,28 @@ If repeated JSON errors occur, consider:
 - Using a different local model
 - Checking model-specific prompt formatting requirements
 
-*Quantization config error*:
+*MLX dependencies not installed* (Apple Silicon):
 ```
-Error: The model's quantization config from the arguments has no `quant_method` attribute
+ImportError: MLX dependencies not installed.
 ```
-Cause: You're using a **pre-quantized model** (like `mlx-community/gemma-3n-E4B-it-4bit`) but selected runtime quantization.
-
-Solution: docman now automatically detects pre-quantized models and skips quantization. If you encounter this error with an older setup, remove and re-add the provider:
+Solution: Install MLX dependencies:
 ```bash
-# Remove old config
-docman llm remove my-provider
+uv sync --extra mlx
+# Or: pip install mlx mlx-lm
+```
 
-# Add again (docman will auto-detect pre-quantized model)
-docman llm add --provider local --model mlx-community/gemma-3n-E4B-it-4bit
-# No --quantization flag needed!
+*MLX on non-macOS platform*:
+```
+Error: MLX models are only supported on macOS with Apple Silicon.
+```
+Cause: Trying to use an MLX model on Linux or Windows.
+
+Solution: Use a transformers model instead:
+```bash
+# Replace MLX model with transformers equivalent
+docman llm add --provider local --model google/gemma-3n-E4B --quantization 4bit
+# Or use cloud provider
+docman llm add --provider google
 ```
 
 **Performance Considerations**:
@@ -315,13 +367,23 @@ docman llm set-active google-default
     - Custom exceptions: `GeminiSafetyBlockError`, `GeminiEmptyResponseError`
     - Response normalization checks `response.text` and `response.candidates`
 - **Local Providers**:
-  - `LocalTransformerProvider` implementation
+  - `LocalTransformerProvider` implementation (cross-platform)
     - Lazy model loading (loads on first inference, not initialization)
     - Supports quantization via `bitsandbytes` (4-bit, 8-bit)
     - `supports_structured_output = False`: Requires manual JSON parsing
     - Uses `extract_json_from_text()` utility to parse free-form model outputs
     - Handles markdown code blocks, embedded JSON, and malformed responses
+  - `LocalMLXProvider` implementation (Apple Silicon only)
+    - Lazy model loading (loads on first inference, not initialization)
+    - Uses Apple's MLX framework via `mlx_lm.load()` and `mlx_lm.generate()`
+    - `supports_structured_output = False`: Requires manual JSON parsing
+    - Platform check: Only works on macOS (Darwin) systems
+    - Optimized for Apple Silicon unified memory architecture
+    - No quantization config needed (models are pre-quantized)
+  - `is_mlx_model()` utility: Detects MLX models by name pattern (`mlx` or `mlx-community`)
 - Factory pattern via `get_provider(config, api_key)` (api_key optional for local)
+  - **Auto-routing**: MLX models automatically routed to `LocalMLXProvider`
+  - **Platform-aware**: MLX provider only instantiated on macOS
 - Output schema: `suggested_directory_path`, `suggested_filename`, `reason`, `confidence` (0.0-1.0)
 
 **Configuration** (`llm_config.py`):

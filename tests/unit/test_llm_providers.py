@@ -4,7 +4,7 @@ import json
 
 import pytest
 
-from docman.llm_providers import extract_json_from_text
+from docman.llm_providers import extract_json_from_text, is_mlx_model
 
 
 class TestExtractJsonFromText:
@@ -118,3 +118,35 @@ And here's another:
         result = extract_json_from_text(text)
 
         assert result["suggested_filename"] == "file.pdf"
+
+
+class TestIsMLXModel:
+    """Tests for is_mlx_model detection function."""
+
+    def test_detects_mlx_community_models(self) -> None:
+        """Test that MLX community models are detected."""
+        assert is_mlx_model("mlx-community/gemma-3n-E4B-it-4bit")
+        assert is_mlx_model("mlx-community/Mistral-7B-v0.1-4bit")
+
+    def test_detects_mlx_in_model_name(self) -> None:
+        """Test that models with 'mlx' in name are detected."""
+        assert is_mlx_model("some-org/model-mlx-4bit")
+        assert is_mlx_model("MLX-Models/test")
+
+    def test_case_insensitive_detection(self) -> None:
+        """Test that detection is case-insensitive."""
+        assert is_mlx_model("MLX-community/model")
+        assert is_mlx_model("org/model-MLX")
+
+    def test_does_not_detect_non_mlx_models(self) -> None:
+        """Test that non-MLX models are not detected."""
+        assert not is_mlx_model("google/gemma-3n-E4B")
+        assert not is_mlx_model("mistralai/Mistral-7B-Instruct-v0.2")
+        assert not is_mlx_model("TheBloke/Llama-2-7B-GPTQ")
+
+    def test_does_not_detect_similar_names(self) -> None:
+        """Test that models with similar but different names are not detected."""
+        # These models don't contain 'mlx' substring
+        assert not is_mlx_model("model-flux")
+        assert not is_mlx_model("org/max-model")
+        assert not is_mlx_model("example/model-v1")

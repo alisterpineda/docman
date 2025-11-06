@@ -2618,9 +2618,9 @@ def llm() -> None:
     type=click.Choice(["google", "local"], case_sensitive=False),
     help="Provider type (google, local, etc.)",
 )
-@click.option("--model", type=str, help="Model identifier (e.g., gemini-1.5-flash, google/gemma-3n-E4B)")
+@click.option("--model", type=str, help="Model identifier (e.g., gemini-1.5-flash, google/gemma-3n-E4B, mlx-community/gemma-3n-E4B-it-4bit)")
 @click.option("--api-key", type=str, help="API key (will be prompted if not provided, not required for local)")
-@click.option("--quantization", type=click.Choice(["4bit", "8bit"], case_sensitive=False), help="Quantization level for local models")
+@click.option("--quantization", type=click.Choice(["4bit", "8bit"], case_sensitive=False), help="Quantization level for local transformers models (not needed for MLX/pre-quantized models)")
 def llm_add(name: str | None, provider: str | None, model: str | None, api_key: str | None, quantization: str | None) -> None:
     """Add a new LLM provider configuration.
 

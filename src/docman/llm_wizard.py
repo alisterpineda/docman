@@ -157,7 +157,7 @@ def _select_provider() -> str | None:
     """
     click.echo("Available LLM providers:")
     click.echo("  1. Google Gemini (cloud API)")
-    click.echo("  2. Local Transformer (runs on your machine)")
+    click.echo("  2. Local Model (transformers or MLX, runs on your machine)")
     click.echo("  (More providers coming soon)")
     click.echo()
 
@@ -303,7 +303,10 @@ def _get_local_model_name() -> str | None:
     """
     click.echo()
     click.echo("Enter the HuggingFace model identifier.")
-    click.echo("Example: google/gemma-3n-E4B")
+    click.echo()
+    click.echo("Examples:")
+    click.echo("  - Transformers: google/gemma-3n-E4B, mistralai/Mistral-7B-Instruct-v0.2")
+    click.echo("  - MLX (Apple Silicon): mlx-community/gemma-3n-E4B-it-4bit")
     click.echo()
 
     model_name: str = click.prompt(

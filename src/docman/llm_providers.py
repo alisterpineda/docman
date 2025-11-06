@@ -406,18 +406,6 @@ class LocalTransformerProvider(LLMProvider):
             # Determine model path (use model_path if specified, otherwise use HF cache)
             model_name_or_path = self.config.model_path or self.config.model
 
-            # Check for MLX models (not compatible with transformers)
-            if "mlx" in model_name_or_path.lower():
-                raise Exception(
-                    f"MLX models (like '{model_name_or_path}') are designed for Apple Silicon "
-                    f"and use the MLX framework, not transformers. "
-                    f"They are not currently supported by docman's local provider. "
-                    f"\n\nAlternatives:"
-                    f"\n  1. Use a transformers-compatible model (e.g., google/gemma-2b-it)"
-                    f"\n  2. Use a cloud provider (e.g., Google Gemini)"
-                    f"\n\nFor a list of compatible models, visit: https://huggingface.co/models?library=transformers"
-                )
-
             # Load tokenizer
             self.tokenizer = AutoTokenizer.from_pretrained(
                 model_name_or_path,
@@ -590,6 +578,173 @@ class LocalTransformerProvider(LLMProvider):
             raise Exception(f"Model test failed: {str(e)}") from e
 
 
+class LocalMLXProvider(LLMProvider):
+    """Local MLX model provider for Apple Silicon (M1/M2/M3/M4) chips.
+
+    Uses Apple's MLX framework for optimized inference on Apple Silicon.
+    MLX models are quantized using Apple's MLX quantization, not bitsandbytes.
+    Models are loaded lazily on first inference call.
+    """
+
+    def __init__(self, config: ProviderConfig, api_key: str | None = None):
+        """Initialize local MLX provider.
+
+        Args:
+            config: Provider configuration with model and model_path.
+            api_key: Optional API key (unused for local models, but accepts for compatibility).
+        """
+        super().__init__(config, api_key or "")
+        self.model = None
+        self.tokenizer = None
+        self._model_loaded = False
+
+    @property
+    def supports_structured_output(self) -> bool:
+        """Local MLX models do not support native structured output."""
+        return False
+
+    def _load_model(self) -> None:
+        """Lazy load the MLX model and tokenizer on first inference call.
+
+        Raises:
+            ImportError: If MLX dependencies are not installed.
+            Exception: If platform is not macOS or model cannot be loaded.
+        """
+        if self._model_loaded:
+            return
+
+        # Check platform
+        import platform
+        if platform.system() != "Darwin":
+            raise Exception(
+                "MLX models are only supported on macOS with Apple Silicon. "
+                "For other platforms, use:\n"
+                "  1. Local transformers provider (--provider local with transformers models)\n"
+                "  2. Cloud provider (--provider google)"
+            )
+
+        try:
+            from mlx_lm import load, generate
+        except ImportError as e:
+            raise ImportError(
+                "MLX dependencies not installed. Install with: "
+                "pip install mlx mlx-lm  (or: uv sync --extra mlx)"
+            ) from e
+
+        try:
+            # Determine model path (use model_path if specified, otherwise use model ID)
+            model_name_or_path = self.config.model_path or self.config.model
+
+            # Load model and tokenizer
+            # MLX-LM handles quantized models automatically based on their config
+            self.model, self.tokenizer = load(model_name_or_path)
+            self._model_loaded = True
+
+        except OSError as e:
+            # Model not found
+            error_msg = str(e).lower()
+            if "not found" in error_msg or "does not exist" in error_msg:
+                raise Exception(
+                    f"Model '{self.config.model}' not found. "
+                    f"Download it first with: docman llm download-model {self.config.model}"
+                ) from e
+            else:
+                raise Exception(f"Failed to load model: {str(e)}") from e
+        except Exception as e:
+            raise Exception(f"Failed to load MLX model: {str(e)}") from e
+
+    def generate_suggestions(self, system_prompt: str, user_prompt: str) -> dict[str, Any]:
+        """Generate file organization suggestions using local MLX model.
+
+        Args:
+            system_prompt: Static system prompt defining the LLM's task.
+            user_prompt: Dynamic user prompt with document-specific information.
+
+        Returns:
+            Dictionary with organization suggestions.
+
+        Raises:
+            Exception: If model loading fails or response is invalid.
+        """
+        # Load model if not already loaded
+        self._load_model()
+
+        # Combine prompts
+        combined_prompt = f"{system_prompt}\n\n{user_prompt}"
+
+        try:
+            from mlx_lm import generate
+
+            # Generate response using MLX
+            response_text = generate(
+                self.model,
+                self.tokenizer,
+                prompt=combined_prompt,
+                max_tokens=512,
+                temp=0.7,
+                verbose=False,
+            )
+
+            # Remove the prompt from response if model echoed it
+            if response_text.startswith(combined_prompt):
+                response_text = response_text[len(combined_prompt):].strip()
+
+            # Extract JSON from response
+            data = extract_json_from_text(response_text)
+
+            # Validate against schema
+            suggestion = OrganizationSuggestion(**data)
+
+            # Return as dictionary
+            return {
+                "suggested_directory_path": suggestion.suggested_directory_path,
+                "suggested_filename": suggestion.suggested_filename,
+                "reason": suggestion.reason,
+                "confidence": suggestion.confidence,
+            }
+
+        except json.JSONDecodeError as e:
+            raise Exception(f"Failed to parse JSON from model output: {str(e)}") from e
+        except ValidationError as e:
+            raise Exception(f"Model output does not match expected schema: {str(e)}") from e
+        except Exception as e:
+            raise Exception(f"Failed to generate suggestions: {str(e)}") from e
+
+    def test_connection(self) -> bool:
+        """Test that the MLX model can be loaded and generates output.
+
+        Returns:
+            True if test successful.
+
+        Raises:
+            Exception: If model cannot be loaded or inference fails.
+        """
+        try:
+            # Load model if not already loaded
+            self._load_model()
+
+            # Run a simple test inference
+            from mlx_lm import generate
+
+            test_prompt = "Test: respond with 'OK'"
+            response = generate(
+                self.model,
+                self.tokenizer,
+                prompt=test_prompt,
+                max_tokens=10,
+                verbose=False,
+            )
+
+            if not response:
+                raise Exception("Model returned empty response")
+
+            return True
+
+        except Exception as e:
+            # Re-raise with context
+            raise Exception(f"MLX model test failed: {str(e)}") from e
+
+
 def list_available_models(provider_type: str, api_key: str) -> list[dict[str, str]]:
     """List available models for a given provider.
 
@@ -615,8 +770,23 @@ def list_available_models(provider_type: str, api_key: str) -> list[dict[str, st
         raise ValueError(f"Unsupported provider type: {provider_type}")
 
 
+def is_mlx_model(model_id: str) -> bool:
+    """Check if a model ID indicates an MLX model.
+
+    Args:
+        model_id: Model identifier from HuggingFace or local path.
+
+    Returns:
+        True if model appears to be an MLX model, False otherwise.
+    """
+    model_lower = model_id.lower()
+    return "mlx" in model_lower or "mlx-community" in model_lower
+
+
 def get_provider(config: ProviderConfig, api_key: str | None = None) -> LLMProvider:
     """Factory function to create an LLM provider instance.
+
+    For local providers, automatically detects MLX models and routes to MLXProvider.
 
     Args:
         config: Provider configuration.
@@ -633,7 +803,11 @@ def get_provider(config: ProviderConfig, api_key: str | None = None) -> LLMProvi
             raise ValueError("API key is required for Google provider")
         return GoogleGeminiProvider(config, api_key)
     elif config.provider_type == "local":
-        return LocalTransformerProvider(config, api_key)
+        # Auto-detect MLX models and route to appropriate provider
+        if is_mlx_model(config.model):
+            return LocalMLXProvider(config, api_key)
+        else:
+            return LocalTransformerProvider(config, api_key)
     # Future providers can be added here:
     # elif config.provider_type == "anthropic":
     #     return AnthropicClaudeProvider(config, api_key)
