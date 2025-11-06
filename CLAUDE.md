@@ -10,21 +10,31 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 **Core Technologies**:
 - **docling** for document content extraction
-- **LLM models** (cloud: Google Gemini, local: HuggingFace transformers) for intelligent organization suggestions
+- **LLM models**:
+  - Cloud: Google Gemini (cross-platform)
+  - Local: HuggingFace transformers (cross-platform) or MLX (Apple Silicon only)
 - **Pydantic** for structured output schemas and validation
 - **SQLite database** for tracking documents, copies, and pending operations
 - **OS-native credential managers** for secure API key storage
-- **Transformers + bitsandbytes** for quantized local LLM inference
+- **Quantization**:
+  - Transformers: bitsandbytes (Linux/Windows only)
+  - MLX: Native Apple Silicon optimization (macOS only)
 
 ## Development Commands
 
 ### Setup
 ```bash
-# Install dependencies (with dev extras)
+# Install all dependencies (dev + quantization + mlx)
 uv sync --all-extras
 
-# Install without dev dependencies
-uv sync
+# Install base + dev dependencies only (cross-platform)
+uv sync --extra dev
+
+# Install for macOS development (with MLX)
+uv sync --extra dev --extra mlx
+
+# Install for Linux/Windows development (with quantization)
+uv sync --extra dev --extra quantization
 ```
 
 ### Testing
@@ -150,14 +160,22 @@ Three main tables model document tracking and operations:
 
 **Setup Steps**:
 
-1. **Install dependencies**:
+1. **Install dependencies** (platform-specific):
    ```bash
-   # For transformers models (cross-platform)
-   uv sync  # Installs transformers, torch, accelerate, bitsandbytes, safetensors, huggingface-hub
+   # macOS (Apple Silicon) - Recommended: Use MLX models
+   uv sync --extra mlx  # Base + MLX support (no bitsandbytes)
 
-   # For MLX models (Apple Silicon only)
-   uv sync --extra mlx  # Additionally installs mlx and mlx-lm
+   # Linux/Windows (NVIDIA GPU) - Use transformers with quantization
+   uv sync --extra quantization  # Base + bitsandbytes for runtime quantization
+
+   # Any platform - Full precision or pre-quantized models only
+   uv sync  # Base dependencies (transformers, torch, no bitsandbytes/mlx)
    ```
+
+   **Platform Notes**:
+   - **macOS**: `bitsandbytes` (runtime quantization) not available → use MLX or pre-quantized models
+   - **Linux/Windows**: Best performance with NVIDIA GPU + `quantization` extra
+   - **All platforms**: Cloud providers (Google Gemini) work everywhere
 
 2. **Download a model** (automated or manual):
    ```bash
@@ -296,6 +314,28 @@ If repeated JSON errors occur, consider:
 - Using a different local model
 - Checking model-specific prompt formatting requirements
 
+*bitsandbytes not available on macOS*:
+```
+ImportError: Quantization requires bitsandbytes, which is not available on macOS.
+```
+Cause: Trying to use `--quantization 4bit` or `--quantization 8bit` on macOS.
+
+Solution: Use one of these alternatives:
+```bash
+# 1. MLX models (best for Apple Silicon)
+uv sync --extra mlx
+docman llm add --provider local --model mlx-community/gemma-3n-E4B-it-4bit
+
+# 2. Pre-quantized transformers models
+docman llm add --provider local --model TheBloke/Mistral-7B-Instruct-v0.2-GPTQ
+
+# 3. Full precision (no quantization flag)
+docman llm add --provider local --model google/gemma-3n-E4B
+
+# 4. Cloud provider (easiest)
+docman llm add --provider google
+```
+
 *MLX dependencies not installed* (Apple Silicon):
 ```
 ImportError: MLX dependencies not installed.
@@ -315,6 +355,7 @@ Cause: Trying to use an MLX model on Linux or Windows.
 Solution: Use a transformers model instead:
 ```bash
 # Replace MLX model with transformers equivalent
+uv sync --extra quantization
 docman llm add --provider local --model google/gemma-3n-E4B --quantization 4bit
 # Or use cloud provider
 docman llm add --provider google

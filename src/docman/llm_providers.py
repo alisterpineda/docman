@@ -395,11 +395,11 @@ class LocalTransformerProvider(LLMProvider):
 
         try:
             import torch
-            from transformers import AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig
+            from transformers import AutoModelForCausalLM, AutoTokenizer
         except ImportError as e:
             raise ImportError(
                 "Required dependencies not installed. Install with: "
-                "pip install transformers torch accelerate bitsandbytes safetensors"
+                "pip install transformers torch accelerate safetensors"
             ) from e
 
         try:
@@ -420,19 +420,33 @@ class LocalTransformerProvider(LLMProvider):
 
             # Only apply bitsandbytes quantization if explicitly requested
             # For pre-quantized models or full precision, let transformers handle it
-            if self.config.quantization == "4bit":
-                quantization_config = BitsAndBytesConfig(
-                    load_in_4bit=True,
-                    bnb_4bit_compute_dtype=torch.float16,
-                    bnb_4bit_use_double_quant=True,
-                    bnb_4bit_quant_type="nf4",
-                )
-                load_kwargs["quantization_config"] = quantization_config
-            elif self.config.quantization == "8bit":
-                quantization_config = BitsAndBytesConfig(
-                    load_in_8bit=True,
-                )
-                load_kwargs["quantization_config"] = quantization_config
+            if self.config.quantization in ("4bit", "8bit"):
+                # Try to import bitsandbytes (only available on Linux/Windows)
+                try:
+                    from transformers import BitsAndBytesConfig
+                except ImportError as e:
+                    raise ImportError(
+                        f"Quantization requires bitsandbytes, which is not available on macOS. "
+                        f"Options:\n"
+                        f"  1. Use MLX models for Apple Silicon: mlx-community/gemma-3n-E4B-it-4bit\n"
+                        f"  2. Use pre-quantized transformers models: TheBloke/Mistral-7B-Instruct-v0.2-GPTQ\n"
+                        f"  3. Use full precision (remove --quantization flag)\n"
+                        f"  4. On Linux/Windows: uv sync --extra quantization"
+                    ) from e
+
+                if self.config.quantization == "4bit":
+                    quantization_config = BitsAndBytesConfig(
+                        load_in_4bit=True,
+                        bnb_4bit_compute_dtype=torch.float16,
+                        bnb_4bit_use_double_quant=True,
+                        bnb_4bit_quant_type="nf4",
+                    )
+                    load_kwargs["quantization_config"] = quantization_config
+                elif self.config.quantization == "8bit":
+                    quantization_config = BitsAndBytesConfig(
+                        load_in_8bit=True,
+                    )
+                    load_kwargs["quantization_config"] = quantization_config
             # For None (pre-quantized or full precision), don't set quantization_config
             # Let transformers auto-detect and handle the model's native quantization
 

@@ -26,7 +26,6 @@ dependencies = [
     "transformers>=4.40.0",
     "torch>=2.0.0",
     "accelerate>=0.27.0",
-    "bitsandbytes>=0.42.0",
     "safetensors>=0.4.0",
     "huggingface-hub>=0.20.0",
 ]
@@ -43,6 +42,9 @@ dev = [
     "mypy>=1.11.0",
     "types-PyYAML>=6.0.0",
     "types-sqlalchemy",
+]
+quantization = [
+    "bitsandbytes>=0.42.0",
 ]
 mlx = [
     "mlx>=0.0.9",
