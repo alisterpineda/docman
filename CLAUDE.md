@@ -157,16 +157,44 @@ Three main tables model document tracking and operations:
    docman llm test my-local-model
    ```
 
+**Understanding Quantization**:
+
+There are two types of quantization available:
+
+1. **Pre-quantized models** (recommended for simplicity):
+   - Models already quantized and uploaded to HuggingFace
+   - Examples: `mlx-community/gemma-3n-E4B-it-4bit`, `TheBloke/Llama-2-7B-GPTQ`
+   - **Advantage**: Smaller download size, faster to load, optimized by model creators
+   - **Usage**: Download and use as-is, no additional quantization needed
+   - docman automatically detects these and skips runtime quantization
+
+2. **Runtime quantization** (via bitsandbytes):
+   - Quantization applied when loading a full-precision model
+   - Example: Download `google/gemma-3n-E4B` → docman quantizes to 4-bit at runtime
+   - **Advantage**: More control, works with any model
+   - **Disadvantage**: Larger downloads, slower initial load
+
+**When to use each**:
+- **Pre-quantized**: Faster setup, recommended for most users
+  ```bash
+  docman llm add --provider local --model mlx-community/gemma-3n-E4B-it-4bit
+  # No --quantization flag needed!
+  ```
+- **Runtime quantization**: When pre-quantized version not available
+  ```bash
+  docman llm add --provider local --model google/gemma-3n-E4B --quantization 4bit
+  ```
+
 **Configuration Options**:
 - `model`: HuggingFace model identifier (e.g., `google/gemma-3n-E4B`)
-- `quantization`: `4bit`, `8bit`, or `None` (full precision)
+- `quantization`: `4bit`, `8bit`, or `None` (auto-skipped for pre-quantized models)
 - `model_path`: Optional custom path to model files (defaults to HF cache)
 - `endpoint`: Reserved for future vLLM/TGI support (not used currently)
 
-**Quantization Trade-offs**:
-- **4-bit** (recommended): Lowest memory, minimal quality loss, fastest loading
-- **8-bit**: Balanced memory and quality
-- **Full precision**: Highest memory, best quality, slowest loading
+**Quantization Trade-offs** (for runtime quantization):
+- **4-bit**: Lowest memory (~3-4GB VRAM), minimal quality loss, fastest loading
+- **8-bit**: Balanced memory (~6-8GB VRAM) and quality
+- **Full precision**: Highest memory (~12-16GB VRAM), best quality, slowest loading
 
 **Troubleshooting**:
 
@@ -212,6 +240,22 @@ If repeated JSON errors occur, consider:
 - Switching to a cloud provider (more reliable structured output)
 - Using a different local model
 - Checking model-specific prompt formatting requirements
+
+*Quantization config error*:
+```
+Error: The model's quantization config from the arguments has no `quant_method` attribute
+```
+Cause: You're using a **pre-quantized model** (like `mlx-community/gemma-3n-E4B-it-4bit`) but selected runtime quantization.
+
+Solution: docman now automatically detects pre-quantized models and skips quantization. If you encounter this error with an older setup, remove and re-add the provider:
+```bash
+# Remove old config
+docman llm remove my-provider
+
+# Add again (docman will auto-detect pre-quantized model)
+docman llm add --provider local --model mlx-community/gemma-3n-E4B-it-4bit
+# No --quantization flag needed!
+```
 
 **Performance Considerations**:
 - **First inference**: Slow (model loading, ~30-60s for 4-bit)

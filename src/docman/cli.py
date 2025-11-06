@@ -2644,6 +2644,21 @@ def llm_add(name: str | None, provider: str | None, model: str | None, api_key: 
     assert model is not None
 
     try:
+        # For local providers, check for pre-quantization first
+        if provider == "local":
+            from docman.model_download import check_model_exists, download_model, get_model_info, is_pre_quantized_model
+
+            # Check if model is pre-quantized
+            if is_pre_quantized_model(model):
+                if quantization:
+                    click.echo()
+                    click.secho(
+                        f"ℹ️  Model '{model}' appears to be pre-quantized.",
+                        fg="cyan"
+                    )
+                    click.echo(f"Ignoring --quantization {quantization} flag (will use model as-is).")
+                quantization = None  # Override to prevent runtime quantization
+
         provider_config = ProviderConfig(
             name=name,
             provider_type=provider,

@@ -136,3 +136,36 @@ def get_model_info(model_id: str) -> dict[str, str] | None:
         }
     except Exception:
         return None
+
+
+def is_pre_quantized_model(model_id: str) -> bool:
+    """Check if a model is pre-quantized (already quantized at upload time).
+
+    Pre-quantized models should not have additional runtime quantization applied.
+
+    Args:
+        model_id: HuggingFace model identifier
+
+    Returns:
+        True if model appears to be pre-quantized, False otherwise.
+    """
+    model_lower = model_id.lower()
+
+    # Common patterns for pre-quantized models
+    pre_quant_patterns = [
+        "4bit",
+        "8bit",
+        "awq",
+        "gptq",
+        "gguf",
+        "ggml",
+        "int4",
+        "int8",
+        "mlx",  # MLX models are typically pre-quantized
+        "exl2",
+        "bnb-4bit",
+        "bnb-8bit",
+    ]
+
+    return any(pattern in model_lower for pattern in pre_quant_patterns)
+

@@ -57,10 +57,22 @@ def run_llm_wizard() -> bool:
             click.secho("\nSetup cancelled.", fg="yellow")
             return False
 
-        quantization = _select_quantization()
-        if quantization is None:
-            click.secho("\nSetup cancelled.", fg="yellow")
-            return False
+        # Check if model is pre-quantized (skip quantization selection if so)
+        from docman.model_download import is_pre_quantized_model
+
+        if is_pre_quantized_model(model):
+            click.echo()
+            click.secho(
+                f"ℹ️  Model '{model}' appears to be pre-quantized.",
+                fg="cyan"
+            )
+            click.echo("Skipping runtime quantization (will use model as-is).")
+            quantization = None
+        else:
+            quantization = _select_quantization()
+            if quantization is None:
+                click.secho("\nSetup cancelled.", fg="yellow")
+                return False
     else:
         # For cloud providers, fetch and list available models
         click.echo()
