@@ -221,7 +221,6 @@ def test_detect_target_conflicts_no_conflicts(session, test_repo: Path) -> None:
         suggested_directory_path="reports",
         suggested_filename="report1.pdf",
         reason="Test reason",
-        confidence=0.9,
         prompt_hash="hash1",
     )
     op2 = Operation(
@@ -229,7 +228,6 @@ def test_detect_target_conflicts_no_conflicts(session, test_repo: Path) -> None:
         suggested_directory_path="reports",
         suggested_filename="report2.pdf",
         reason="Test reason",
-        confidence=0.9,
         prompt_hash="hash2",
     )
     session.add_all([op1, op2])
@@ -266,7 +264,6 @@ def test_detect_target_conflicts_with_conflicts(session, test_repo: Path) -> Non
         suggested_directory_path="reports/2024",
         suggested_filename="annual-report.pdf",
         reason="Test reason",
-        confidence=0.95,
         prompt_hash="hash1",
     )
     op2 = Operation(
@@ -274,7 +271,6 @@ def test_detect_target_conflicts_with_conflicts(session, test_repo: Path) -> Non
         suggested_directory_path="reports/2024",
         suggested_filename="annual-report.pdf",
         reason="Test reason",
-        confidence=0.92,
         prompt_hash="hash2",
     )
     session.add_all([op1, op2])
@@ -314,7 +310,6 @@ def test_detect_target_conflicts_empty_directory_path(session, test_repo: Path) 
         suggested_directory_path="",
         suggested_filename="report.pdf",
         reason="Test reason",
-        confidence=0.9,
         prompt_hash="hash1",
     )
     op2 = Operation(
@@ -322,7 +317,6 @@ def test_detect_target_conflicts_empty_directory_path(session, test_repo: Path) 
         suggested_directory_path="",
         suggested_filename="report.pdf",
         reason="Test reason",
-        confidence=0.9,
         prompt_hash="hash2",
     )
     session.add_all([op1, op2])

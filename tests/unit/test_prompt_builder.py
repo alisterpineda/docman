@@ -138,7 +138,6 @@ class TestBuildSystemPrompt:
         assert "suggested_directory_path" in result
         assert "suggested_filename" in result
         assert "reason" in result
-        assert "confidence" in result
 
     def test_caching(self) -> None:
         """Test that system prompt is cached."""

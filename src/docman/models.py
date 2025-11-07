@@ -6,10 +6,8 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 from sqlalchemy import (
-    CheckConstraint,
     DateTime,
     Enum,
-    Float,
     ForeignKey,
     Integer,
     String,
@@ -211,7 +209,6 @@ class Operation(Base):
         suggested_directory_path: Suggested directory path for the file.
         suggested_filename: Suggested filename for the file.
         reason: Explanation for why this organization is suggested.
-        confidence: Confidence score between 0.0 and 1.0 (inclusive).
         prompt_hash: SHA256 hash of the prompt used to generate this suggestion.
         document_content_hash: Content hash when this suggestion was generated (for invalidation).
         model_name: LLM model name when this suggestion was generated (for invalidation).
@@ -220,9 +217,6 @@ class Operation(Base):
     """
 
     __tablename__ = "operations"
-    __table_args__ = (
-        CheckConstraint("confidence >= 0.0 AND confidence <= 1.0", name="ck_confidence_range"),
-    )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     document_copy_id: Mapped[int | None] = mapped_column(
@@ -237,7 +231,6 @@ class Operation(Base):
     suggested_directory_path: Mapped[str] = mapped_column(String(255), nullable=False)
     suggested_filename: Mapped[str] = mapped_column(String(255), nullable=False)
     reason: Mapped[str] = mapped_column(Text, nullable=False)
-    confidence: Mapped[float] = mapped_column(Float, nullable=False)
     prompt_hash: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
     document_content_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
     model_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
@@ -256,7 +249,7 @@ class Operation(Base):
         """Return string representation of Operation."""
         return (
             f"<Operation(id={self.id}, document_copy_id={self.document_copy_id}, "
-            f"status={self.status.value}, confidence={self.confidence})>"
+            f"status={self.status.value})>"
         )
 
 

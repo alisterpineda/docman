@@ -8,7 +8,7 @@ import json
 from abc import ABC, abstractmethod
 from typing import Any
 
-from pydantic import BaseModel, field_validator
+from pydantic import BaseModel
 
 from docman.llm_config import ProviderConfig
 
@@ -23,15 +23,6 @@ class OrganizationSuggestion(BaseModel):
     suggested_directory_path: str
     suggested_filename: str
     reason: str
-    confidence: float
-
-    @field_validator("confidence")
-    @classmethod
-    def validate_confidence(cls, v: float) -> float:
-        """Validate that confidence is between 0.0 and 1.0."""
-        if not 0.0 <= v <= 1.0:
-            raise ValueError(f"Confidence must be between 0.0 and 1.0, got {v}")
-        return v
 
 
 class GeminiSafetyBlockError(Exception):
@@ -94,7 +85,6 @@ class LLMProvider(ABC):
                 - suggested_directory_path: str - Suggested directory path
                 - suggested_filename: str - Suggested filename
                 - reason: str - Explanation for the suggestion
-                - confidence: float - Confidence score between 0.0 and 1.0
         """
         pass
 
@@ -251,7 +241,6 @@ class GoogleGeminiProvider(LLMProvider):
                 "suggested_directory_path": str(data["suggested_directory_path"]),
                 "suggested_filename": str(data["suggested_filename"]),
                 "reason": str(data["reason"]),
-                "confidence": float(data["confidence"]),
             }
 
         except (GeminiSafetyBlockError, GeminiEmptyResponseError):
@@ -482,7 +471,6 @@ class OpenAICompatibleProvider(LLMProvider):
                 "suggested_directory_path": str(data["suggested_directory_path"]),
                 "suggested_filename": str(data["suggested_filename"]),
                 "reason": str(data["reason"]),
-                "confidence": float(data["confidence"]),
             }
 
         except (OpenAIAPIError, OpenAIEmptyResponseError):

@@ -40,7 +40,6 @@ class TestDocmanStatus:
         suggested_dir: str,
         suggested_filename: str,
         reason: str = "Test reason",
-        confidence: float = 0.85,
     ) -> None:
         """Helper to create a pending operation in the database."""
         ensure_database()
@@ -67,7 +66,6 @@ class TestDocmanStatus:
                 suggested_directory_path=suggested_dir,
                 suggested_filename=suggested_filename,
                 reason=reason,
-                confidence=confidence,
                 prompt_hash="test_hash",
             )
             session.add(pending_op)
@@ -189,36 +187,6 @@ class TestDocmanStatus:
         assert "docs/doc1.pdf" in result.output
         assert "other/doc2.pdf" not in result.output
 
-    def test_status_confidence_colors(
-        self, cli_runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        """Test that confidence scores are displayed (color coding tested visually)."""
-        repo_dir = self.setup_isolated_env(tmp_path, monkeypatch)
-        monkeypatch.chdir(repo_dir)
-
-        # Create test files
-        (repo_dir / "high.pdf").touch()
-        (repo_dir / "medium.pdf").touch()
-        (repo_dir / "low.pdf").touch()
-
-        # Create pending operations with different confidence levels
-        self.create_pending_operation(
-            str(repo_dir), "high.pdf", "reports", "high.pdf", confidence=0.95
-        )
-        self.create_pending_operation(
-            str(repo_dir), "medium.pdf", "reports", "medium.pdf", confidence=0.7
-        )
-        self.create_pending_operation(
-            str(repo_dir), "low.pdf", "reports", "low.pdf", confidence=0.4
-        )
-
-        result = cli_runner.invoke(main, ["status"], catch_exceptions=False)
-
-        assert result.exit_code == 0
-        assert "95%" in result.output
-        assert "70%" in result.output
-        assert "40%" in result.output
-
     def test_status_no_change_operations(
         self, cli_runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
@@ -311,7 +279,6 @@ class TestDocmanStatus:
                 suggested_directory_path="reports",
                 suggested_filename="annual-report.pdf",
                 reason="Test reason",
-                confidence=0.95,
                 prompt_hash="hash1",
             )
             op2 = Operation(
@@ -319,7 +286,6 @@ class TestDocmanStatus:
                 suggested_directory_path="reports",
                 suggested_filename="annual-report.pdf",
                 reason="Test reason",
-                confidence=0.92,
                 prompt_hash="hash2",
             )
             session.add_all([op1, op2])
@@ -385,7 +351,6 @@ class TestDocmanStatus:
                 suggested_directory_path="reports",
                 suggested_filename="report.pdf",
                 reason="Test reason",
-                confidence=0.9,
                 prompt_hash="hash1",
             )
             op2 = Operation(
@@ -393,7 +358,6 @@ class TestDocmanStatus:
                 suggested_directory_path="reports",
                 suggested_filename="report.pdf",  # Same target!
                 reason="Test reason",
-                confidence=0.85,
                 prompt_hash="hash2",
             )
             session.add_all([op1, op2])
@@ -444,7 +408,6 @@ class TestDocmanStatus:
                     suggested_directory_path="reports",
                     suggested_filename=f"report{i}.pdf",
                     reason="Test",
-                    confidence=0.9,
                     prompt_hash=f"hash{i}",
                 )
                 session.add(op)
