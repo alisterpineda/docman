@@ -8,8 +8,6 @@ import json
 from abc import ABC, abstractmethod
 from typing import Any
 
-import google.generativeai as genai
-from openai import OpenAI
 from pydantic import BaseModel, field_validator
 
 from docman.llm_config import ProviderConfig
@@ -124,6 +122,10 @@ class GoogleGeminiProvider(LLMProvider):
             api_key: Google AI API key.
         """
         super().__init__(config, api_key)
+
+        # Lazy import Google Generative AI SDK
+        import google.generativeai as genai
+
         genai.configure(api_key=api_key)
 
         # Configure structured output using Pydantic model
@@ -156,6 +158,9 @@ class GoogleGeminiProvider(LLMProvider):
             Exception: If API call fails.
         """
         try:
+            # Lazy import Google Generative AI SDK
+            import google.generativeai as genai
+
             genai.configure(api_key=api_key)
             models = []
 
@@ -322,6 +327,9 @@ class OpenAICompatibleProvider(LLMProvider):
         """
         super().__init__(config, api_key)
 
+        # Lazy import OpenAI SDK
+        from openai import OpenAI
+
         # Configure OpenAI client with custom endpoint if provided
         client_kwargs: dict[str, Any] = {"api_key": api_key}
         if config.endpoint:
@@ -357,6 +365,9 @@ class OpenAICompatibleProvider(LLMProvider):
             Exception: If API call fails.
         """
         try:
+            # Lazy import OpenAI SDK
+            from openai import OpenAI
+
             client_kwargs: dict[str, Any] = {"api_key": api_key}
             if endpoint:
                 client_kwargs["base_url"] = endpoint
