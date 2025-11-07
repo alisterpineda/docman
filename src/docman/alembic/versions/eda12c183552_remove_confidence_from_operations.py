@@ -34,3 +34,4 @@ def downgrade() -> None:
     # Use batch mode for SQLite compatibility
     with op.batch_alter_table('operations', schema=None) as batch_op:
         batch_op.add_column(sa.Column('confidence', sa.FLOAT(), nullable=False, server_default='0.0'))
+        batch_op.create_check_constraint('ck_confidence_range', 'confidence >= 0.0 AND confidence <= 1.0')
