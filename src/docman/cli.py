@@ -2615,12 +2615,13 @@ def llm() -> None:
 @click.option("--name", type=str, help="Name for this provider configuration")
 @click.option(
     "--provider",
-    type=click.Choice(["google"], case_sensitive=False),
-    help="Provider type (google, etc.)",
+    type=click.Choice(["google", "openai"], case_sensitive=False),
+    help="Provider type (google, openai)",
 )
-@click.option("--model", type=str, help="Model identifier (e.g., gemini-1.5-flash)")
+@click.option("--model", type=str, help="Model identifier (e.g., gemini-1.5-flash, gpt-4)")
 @click.option("--api-key", type=str, help="API key (will be prompted if not provided)")
-def llm_add(name: str | None, provider: str | None, model: str | None, api_key: str | None) -> None:
+@click.option("--endpoint", type=str, help="Custom API endpoint URL (for OpenAI-compatible servers)")
+def llm_add(name: str | None, provider: str | None, model: str | None, api_key: str | None, endpoint: str | None) -> None:
     """Add a new LLM provider configuration.
 
     If options are not provided, an interactive wizard will guide you through setup.
@@ -2644,6 +2645,7 @@ def llm_add(name: str | None, provider: str | None, model: str | None, api_key: 
             name=name,
             provider_type=provider,
             model=model,
+            endpoint=endpoint,
             is_active=False,  # Will be set to True if it's the first provider
         )
 
