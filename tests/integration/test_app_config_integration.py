@@ -1,5 +1,6 @@
 """Integration tests for app config initialization."""
 
+import os
 from pathlib import Path
 
 import pytest
@@ -98,6 +99,7 @@ class TestAppConfigIntegration:
         # Verify original content was preserved
         assert config_path.read_text() == original_content
 
+    @pytest.mark.skipif(os.geteuid() == 0, reason="Permission tests don't work as root")
     def test_permission_error_shows_warning(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:

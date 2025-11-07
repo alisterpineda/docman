@@ -92,6 +92,7 @@ def main() -> None:
 
 @main.command()
 @click.argument("directory", default=".")
+@require_database
 def init(directory: str) -> None:
     """Initialize a new docman repository in the specified directory."""
     target_path = Path(directory).resolve()
