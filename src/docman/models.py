@@ -8,6 +8,7 @@ from pathlib import Path
 from sqlalchemy import (
     DateTime,
     Enum,
+    Float,
     ForeignKey,
     Integer,
     String,
