@@ -135,6 +135,74 @@ def run_migrations() -> None:
     command.upgrade(alembic_cfg, "head")
 
 
+def _is_database_current() -> bool:
+    """
+    Quick check if database exists and is at the current migration version.
+
+    This is a performance optimization to avoid running Alembic checks on every invocation.
+    We check for a version marker file that contains the current migration revision.
+
+    Returns:
+        True if database exists and is current, False otherwise.
+    """
+    db_path = get_database_path()
+    if not db_path.exists():
+        return False
+
+    # Version marker file stores the current migration revision
+    version_marker = get_app_config_dir() / ".db_version"
+    if not version_marker.exists():
+        return False
+
+    try:
+        # Read the stored version
+        stored_version = version_marker.read_text().strip()
+
+        # Get the current head revision from Alembic
+        # This is fast since it just reads from the migrations directory
+        with ExitStack() as exit_stack:
+            docman_pkg = resources.files("docman")
+            alembic_ini = exit_stack.enter_context(
+                resources.as_file(docman_pkg / "alembic.ini")
+            )
+            alembic_dir = exit_stack.enter_context(
+                resources.as_file(docman_pkg / "alembic")
+            )
+
+            from alembic.script import ScriptDirectory
+            script = ScriptDirectory(str(alembic_dir))
+            head_revision = script.get_current_head()
+
+            # Check if versions match
+            return stored_version == head_revision
+
+    except Exception:
+        # If anything goes wrong, assume we need to run migrations
+        return False
+
+
+def _update_version_marker() -> None:
+    """Update the version marker file with the current migration revision."""
+    try:
+        with ExitStack() as exit_stack:
+            docman_pkg = resources.files("docman")
+            alembic_dir = exit_stack.enter_context(
+                resources.as_file(docman_pkg / "alembic")
+            )
+
+            from alembic.script import ScriptDirectory
+            script = ScriptDirectory(str(alembic_dir))
+            head_revision = script.get_current_head()
+
+            # Write the current version to the marker file
+            version_marker = get_app_config_dir() / ".db_version"
+            version_marker.write_text(head_revision)
+
+    except Exception:
+        # If we can't update the marker, migrations will run next time
+        pass
+
+
 def ensure_database() -> None:
     """
     Ensure the database exists and is up to date with migrations.
@@ -142,14 +210,19 @@ def ensure_database() -> None:
     This function:
     1. Ensures the app config directory exists
     2. Creates the database file if it doesn't exist
-    3. Runs any pending migrations to update the schema
+    3. Runs any pending migrations to update the schema (cached for performance)
 
     This is idempotent and safe to call multiple times.
+    Performance optimization: checks version marker to skip migrations when not needed.
     """
     from docman.config import ensure_app_config
 
     # Ensure the app config directory exists
     ensure_app_config()
+
+    # Fast path: check if database is current without running Alembic
+    if _is_database_current():
+        return
 
     db_path = get_database_path()
 
@@ -164,3 +237,6 @@ def ensure_database() -> None:
 
     # Run migrations to ensure schema is up to date
     run_migrations()
+
+    # Update the version marker for next time
+    _update_version_marker()

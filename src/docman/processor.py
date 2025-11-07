@@ -1,11 +1,13 @@
 """Document processing utilities using docling."""
 
 from pathlib import Path
+from typing import TYPE_CHECKING
 
-from docling.document_converter import DocumentConverter
+if TYPE_CHECKING:
+    from docling.document_converter import DocumentConverter
 
 
-def extract_content(file_path: Path, converter: DocumentConverter | None = None) -> str | None:
+def extract_content(file_path: Path, converter: "DocumentConverter | None" = None) -> str | None:
     """
     Extract text content from a document using docling.
 
@@ -17,6 +19,9 @@ def extract_content(file_path: Path, converter: DocumentConverter | None = None)
         Extracted text content as a string, or None if extraction fails.
     """
     try:
+        # Lazy import DocumentConverter (heavy ML/CV dependencies)
+        from docling.document_converter import DocumentConverter
+
         # Initialize the document converter if not provided
         if converter is None:
             converter = DocumentConverter()

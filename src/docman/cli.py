@@ -10,8 +10,6 @@ from pathlib import Path
 
 import click
 
-from docling.document_converter import DocumentConverter
-
 from docman.config import ensure_app_config
 from docman.database import ensure_database, get_session
 from docman.llm_config import (
@@ -56,23 +54,40 @@ from docman.file_operations import (
 )
 
 
+def require_database(f):
+    """Decorator to ensure database and app config are initialized before command runs.
+
+    This decorator should be applied to commands that need database access.
+    Commands that don't touch the database (like --help, llm, config) skip this overhead.
+    """
+    def wrapper(*args, **kwargs):
+        try:
+            ensure_app_config()
+        except OSError as e:
+            click.secho(
+                f"Warning: Failed to initialize app config: {e}", fg="yellow", err=True
+            )
+
+        try:
+            ensure_database()
+        except Exception as e:
+            click.secho(
+                f"Warning: Failed to initialize database: {e}", fg="yellow", err=True
+            )
+
+        return f(*args, **kwargs)
+
+    # Preserve function metadata for Click
+    wrapper.__name__ = f.__name__
+    wrapper.__doc__ = f.__doc__
+    return wrapper
+
+
 @click.group()
 @click.version_option(version="0.1.0", prog_name="docman")
 def main() -> None:
     """docman - Organize documents using AI-powered tools."""
-    try:
-        ensure_app_config()
-    except OSError as e:
-        click.secho(
-            f"Warning: Failed to initialize app config: {e}", fg="yellow", err=True
-        )
-
-    try:
-        ensure_database()
-    except Exception as e:
-        click.secho(
-            f"Warning: Failed to initialize database: {e}", fg="yellow", err=True
-        )
+    pass
 
 
 @main.command()
@@ -350,6 +365,7 @@ def get_duplicate_summary(session, repo_root: Path) -> tuple[int, int]:
     default=False,
     help="Reprocess all files, including those already organized or ignored",
 )
+@require_database
 def plan(path: str | None, recursive: bool, reprocess: bool) -> None:
     """
     Process documents in the repository.
@@ -559,6 +575,9 @@ def plan(path: str | None, recursive: bool, reprocess: bool) -> None:
         skipped_count = 0  # Files skipped due to LLM or content extraction errors
         pending_ops_created = 0
         pending_ops_updated = 0
+
+        # Lazy import DocumentConverter only when needed (heavy import with ML/CV dependencies)
+        from docling.document_converter import DocumentConverter
 
         # Create a single DocumentConverter instance to reuse for all files
         converter = DocumentConverter()
@@ -875,6 +894,7 @@ def plan(path: str | None, recursive: bool, reprocess: bool) -> None:
 
 @main.command()
 @click.argument("path", default=None, required=False)
+@require_database
 def status(path: str | None) -> None:
     """
     Show pending organization operations for a repository.
@@ -1897,6 +1917,7 @@ def _handle_bulk_reject(
     default=False,
     help="Recursive directory processing (only with --reject-all)"
 )
+@require_database
 def review(
     path: str | None,
     apply_all: bool,
@@ -1973,6 +1994,7 @@ def review(
     default=False,
     help="Recursively unmark files in subdirectories",
 )
+@require_database
 def unmark(path: str | None, unmark_all: bool, yes: bool, recursive: bool) -> None:
     """
     Unmark files that were previously organized or ignored.
@@ -2167,6 +2189,7 @@ def unmark(path: str | None, unmark_all: bool, yes: bool, recursive: bool) -> No
     default=False,
     help="Recursively ignore files in subdirectories",
 )
+@require_database
 def ignore(path: str | None, yes: bool, recursive: bool) -> None:
     """
     Mark files to be ignored by docman.
@@ -2335,6 +2358,7 @@ def ignore(path: str | None, yes: bool, recursive: bool) -> None:
     default=False,
     help="Show what would be deleted without actually deleting files",
 )
+@require_database
 def dedupe(path: str | None, yes: bool, dry_run: bool) -> None:
     """
     Find and resolve duplicate files in the repository.
