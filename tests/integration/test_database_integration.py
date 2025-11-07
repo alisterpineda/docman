@@ -1,5 +1,6 @@
 """Integration tests for database initialization with CLI commands."""
 
+import os
 from pathlib import Path
 
 import pytest
@@ -92,6 +93,9 @@ def test_database_persists_across_multiple_cli_calls(
     assert db_path.stat().st_mtime >= initial_mtime
 
 
+@pytest.mark.skipif(
+    getattr(os, "geteuid", lambda: 1)() == 0, reason="Permission tests don't work as root"
+)
 def test_database_initialization_handles_permissions_gracefully(
     cli_runner: CliRunner, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
