@@ -396,8 +396,8 @@ class OpenAICompatibleProvider(LLMProvider):
         """Generate file organization suggestions using OpenAI-compatible API.
 
         For OpenAI's official API, uses JSON schema mode for guaranteed structure.
-        For custom endpoints (LM Studio, vLLM, etc.), uses regular JSON mode
-        and relies on the system prompt to guide JSON output.
+        For custom endpoints (LM Studio, vLLM, etc.), omits response_format entirely
+        and relies on the system prompt to guide JSON output (most compatible).
 
         Args:
             system_prompt: Static system prompt defining the LLM's task.
@@ -423,6 +423,7 @@ class OpenAICompatibleProvider(LLMProvider):
             }
 
             # Use JSON schema mode only for official OpenAI API
+            # Custom endpoints don't send response_format for maximum compatibility
             if self._use_json_schema:
                 # Convert Pydantic model to JSON schema for OpenAI
                 schema = OrganizationSuggestion.model_json_schema()
@@ -434,10 +435,8 @@ class OpenAICompatibleProvider(LLMProvider):
                         "strict": True,
                     },
                 }
-            else:
-                # For custom endpoints, use regular JSON mode
-                # The system prompt will guide the LLM to output valid JSON
-                request_params["response_format"] = {"type": "json_object"}
+            # For custom endpoints: no response_format parameter
+            # System prompt includes JSON format instructions
 
             # Make API request
             response = self.client.chat.completions.create(**request_params)
@@ -451,7 +450,21 @@ class OpenAICompatibleProvider(LLMProvider):
                 raise OpenAIEmptyResponseError("OpenAI returned empty message content")
 
             # Parse JSON response
-            data = json.loads(message.content)
+            # For custom endpoints, the response might include markdown code blocks
+            content = message.content.strip()
+
+            # Try to extract JSON from markdown code blocks if present
+            if content.startswith("```"):
+                # Remove markdown code block formatting
+                lines = content.split("\n")
+                # Remove first line (```json or ```)
+                lines = lines[1:]
+                # Remove last line if it's ```
+                if lines and lines[-1].strip() == "```":
+                    lines = lines[:-1]
+                content = "\n".join(lines).strip()
+
+            data = json.loads(content)
 
             # Validate and return as dictionary
             return {
