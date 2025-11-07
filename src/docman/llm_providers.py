@@ -329,10 +329,18 @@ class OpenAICompatibleProvider(LLMProvider):
 
         self.client = OpenAI(**client_kwargs)
 
+        # Only use JSON schema mode for official OpenAI API
+        # Custom endpoints (LM Studio, vLLM, etc.) don't support it
+        self._use_json_schema = config.endpoint is None
+
     @property
     def supports_structured_output(self) -> bool:
-        """OpenAI-compatible APIs support structured output via response_format."""
-        return True
+        """Only OpenAI's official API supports JSON schema structured output.
+
+        Custom endpoints (LM Studio, vLLM, etc.) fall back to regular JSON mode
+        where the system prompt guides the LLM to output valid JSON.
+        """
+        return self._use_json_schema
 
     @staticmethod
     def list_models(api_key: str, endpoint: str | None = None) -> list[dict[str, str]]:
@@ -387,8 +395,9 @@ class OpenAICompatibleProvider(LLMProvider):
     def generate_suggestions(self, system_prompt: str, user_prompt: str) -> dict[str, Any]:
         """Generate file organization suggestions using OpenAI-compatible API.
 
-        With structured output enabled, the API is configured to return JSON
-        matching the OrganizationSuggestion schema.
+        For OpenAI's official API, uses JSON schema mode for guaranteed structure.
+        For custom endpoints (LM Studio, vLLM, etc.), uses regular JSON mode
+        and relies on the system prompt to guide JSON output.
 
         Args:
             system_prompt: Static system prompt defining the LLM's task.
@@ -403,26 +412,35 @@ class OpenAICompatibleProvider(LLMProvider):
             Exception: If API call fails or response cannot be parsed.
         """
         try:
-            # Convert Pydantic model to JSON schema for OpenAI
-            schema = OrganizationSuggestion.model_json_schema()
-
-            # Make API request with structured output
-            response = self.client.chat.completions.create(
-                model=self.config.model,
-                messages=[
+            # Prepare request parameters
+            request_params: dict[str, Any] = {
+                "model": self.config.model,
+                "messages": [
                     {"role": "system", "content": system_prompt},
                     {"role": "user", "content": user_prompt},
                 ],
-                response_format={
+                "temperature": 0.7,
+            }
+
+            # Use JSON schema mode only for official OpenAI API
+            if self._use_json_schema:
+                # Convert Pydantic model to JSON schema for OpenAI
+                schema = OrganizationSuggestion.model_json_schema()
+                request_params["response_format"] = {
                     "type": "json_schema",
                     "json_schema": {
                         "name": "organization_suggestion",
                         "schema": schema,
                         "strict": True,
                     },
-                },
-                temperature=0.7,
-            )
+                }
+            else:
+                # For custom endpoints, use regular JSON mode
+                # The system prompt will guide the LLM to output valid JSON
+                request_params["response_format"] = {"type": "json_object"}
+
+            # Make API request
+            response = self.client.chat.completions.create(**request_params)
 
             # Extract response content
             if not response.choices:
