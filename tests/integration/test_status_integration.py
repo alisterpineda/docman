@@ -106,7 +106,6 @@ class TestDocmanStatus:
             "reports",
             "annual-report.pdf",
             "Financial report",
-            0.9,
         )
         self.create_pending_operation(
             str(repo_dir),
@@ -114,7 +113,6 @@ class TestDocmanStatus:
             "memos",
             "meeting-notes.docx",
             "Meeting minutes",
-            0.75,
         )
 
         result = cli_runner.invoke(main, ["status"], catch_exceptions=False)
@@ -124,11 +122,9 @@ class TestDocmanStatus:
         assert "doc1.pdf" in result.output
         assert "reports/annual-report.pdf" in result.output
         assert "Financial report" in result.output
-        assert "90%" in result.output
         assert "doc2.docx" in result.output
         assert "memos/meeting-notes.docx" in result.output
         assert "Meeting minutes" in result.output
-        assert "75%" in result.output
 
     def test_status_filter_by_file(
         self, cli_runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
