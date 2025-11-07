@@ -34,7 +34,6 @@ class TestDocmanPlan:
             "suggested_directory_path": "test/directory",
             "suggested_filename": "test_file.pdf",
             "reason": "Test reason",
-            "confidence": 0.85,
         }
 
         # Patch the LLM-related functions
@@ -1341,7 +1340,6 @@ class TestDocmanPlan:
             "suggested_directory_path": "flash/directory",
             "suggested_filename": "flash_file.pdf",
             "reason": "Flash model reason",
-            "confidence": 0.80,
         }
 
         monkeypatch.setattr("docman.cli.get_active_provider", Mock(return_value=mock_provider_config_flash))
@@ -1382,7 +1380,6 @@ class TestDocmanPlan:
             "suggested_directory_path": "pro/directory",
             "suggested_filename": "pro_file.pdf",
             "reason": "Pro model reason",
-            "confidence": 0.90,
         }
 
         monkeypatch.setattr("docman.cli.get_active_provider", Mock(return_value=mock_provider_config_pro))
@@ -1409,7 +1406,6 @@ class TestDocmanPlan:
             assert pending_ops[0].model_name == "gemini-1.5-pro"
             assert pending_ops[0].suggested_directory_path == "pro/directory"
             assert pending_ops[0].reason == "Pro model reason"
-            assert pending_ops[0].confidence == 0.90
         finally:
             try:
                 next(session_gen)
@@ -1447,7 +1443,6 @@ class TestDocmanPlan:
                 "suggested_directory_path": "test/directory",
                 "suggested_filename": "test_file.pdf",
                 "reason": "Test reason",
-                "confidence": 0.85,
             }
 
         mock_provider_instance.generate_suggestions.side_effect = generate_side_effect

@@ -360,7 +360,6 @@ class TestDocmanDedupe:
                     suggested_directory_path="organized",
                     suggested_filename=f"organized_{Path(copy.file_path).name}",
                     reason="Test organization",
-                    confidence=0.85,
                     prompt_hash="test_hash",
                 )
                 session.add(pending_op)

@@ -798,7 +798,6 @@ def plan(path: str | None, recursive: bool, reprocess: bool) -> None:
                             existing_pending_op.suggested_directory_path = suggestions["suggested_directory_path"]
                             existing_pending_op.suggested_filename = suggestions["suggested_filename"]
                             existing_pending_op.reason = suggestions["reason"]
-                            existing_pending_op.confidence = suggestions["confidence"]
                             existing_pending_op.prompt_hash = current_prompt_hash
                             existing_pending_op.document_content_hash = document.content_hash if document else None
                             existing_pending_op.model_name = model_name
@@ -810,7 +809,6 @@ def plan(path: str | None, recursive: bool, reprocess: bool) -> None:
                                 suggested_directory_path=suggestions["suggested_directory_path"],
                                 suggested_filename=suggestions["suggested_filename"],
                                 reason=suggestions["reason"],
-                                confidence=suggestions["confidence"],
                                 prompt_hash=current_prompt_hash,
                                 document_content_hash=document.content_hash if document else None,
                                 model_name=model_name,
@@ -900,7 +898,7 @@ def status(path: str | None) -> None:
     Show pending organization operations for a repository.
 
     Displays all pending operations with suggested file reorganizations,
-    including confidence scores and reasons for each suggestion.
+    including reasons for each suggestion.
 
     Arguments:
         PATH: Optional path to filter operations (default: show all in repository).
@@ -1033,15 +1031,6 @@ def status(path: str | None) -> None:
 
                 # Display each operation in the group
                 for sub_idx, (pending_op, doc_copy) in enumerate(group_ops, start=1):
-                    # Determine confidence color
-                    confidence = pending_op.confidence
-                    if confidence >= 0.8:
-                        confidence_color = "green"
-                    elif confidence >= 0.6:
-                        confidence_color = "yellow"
-                    else:
-                        confidence_color = "red"
-
                     # Current path
                     current_path = doc_copy.file_path
 
@@ -1092,7 +1081,6 @@ def status(path: str | None) -> None:
                         f"    → {suggested_path} {operation_type}{conflict_warning}",
                         fg=op_color,
                     )
-                    click.secho(f"    Confidence: {confidence:.0%}", fg=confidence_color)
                     click.echo(f"    Reason: {pending_op.reason}")
                     click.echo()
 
@@ -1100,15 +1088,6 @@ def status(path: str | None) -> None:
 
         # Display non-duplicate operations
         for idx, (pending_op, doc_copy) in enumerate(non_duplicate_ops, start=group_idx):
-            # Determine confidence color
-            confidence = pending_op.confidence
-            if confidence >= 0.8:
-                confidence_color = "green"
-            elif confidence >= 0.6:
-                confidence_color = "yellow"
-            else:
-                confidence_color = "red"
-
             # Current path
             current_path = doc_copy.file_path
 
@@ -1146,7 +1125,6 @@ def status(path: str | None) -> None:
             click.secho(f"  Status: {status_label}", fg=status_color)
 
             click.secho(f"  → {suggested_path} {operation_type}{conflict_warning}", fg=op_color)
-            click.secho(f"  Confidence: {confidence:.0%}", fg=confidence_color)
             click.echo(f"  Reason: {pending_op.reason}")
             click.echo()
 
@@ -1438,7 +1416,6 @@ def _handle_interactive_review(
             click.echo(f"  {current_path}")
             click.secho("  → (no change needed, already at target location)", fg="yellow")
             click.echo(f"  Reason: {pending_op.reason}")
-            click.secho(f"  Confidence: {pending_op.confidence:.0%}", fg="green" if pending_op.confidence >= 0.8 else "yellow")
             click.echo()
 
             if click.confirm("Remove this pending operation?", default=True):
@@ -1457,16 +1434,6 @@ def _handle_interactive_review(
         click.echo(f"  Current:  {current_path}")
         click.echo(f"  Suggested: {target.relative_to(repo_root)}")
         click.echo(f"  Reason: {pending_op.reason}")
-
-        # Color-code confidence
-        confidence = pending_op.confidence
-        if confidence >= 0.8:
-            confidence_color = "green"
-        elif confidence >= 0.6:
-            confidence_color = "yellow"
-        else:
-            confidence_color = "red"
-        click.secho(f"  Confidence: {confidence:.0%}", fg=confidence_color)
         click.echo()
 
         # Prompt user for action
@@ -1474,7 +1441,7 @@ def _handle_interactive_review(
             action = click.prompt(
                 "  [A]pply / [R]eject / [S]kip / [Q]uit / [H]elp",
                 type=str,
-                default="A" if confidence >= 0.85 else "S",
+                default="S",
                 show_default=True,
             ).strip().upper()
 

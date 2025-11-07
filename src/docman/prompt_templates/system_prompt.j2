@@ -12,8 +12,7 @@ Provide your suggestion in the following JSON format:
 {
     "suggested_directory_path": "path/to/directory",
     "suggested_filename": "filename.ext",
-    "reason": "Brief explanation for this organization",
-    "confidence": 0.85
+    "reason": "Brief explanation for this organization"
 }
 {% endif %}
 
@@ -21,15 +20,8 @@ Guidelines:
 1. suggested_directory_path should be a relative path with forward slashes (e.g., "finance/invoices/2024")
 2. suggested_filename should include the file extension from the original file
 3. reason should be a brief explanation (1-2 sentences) of why this makes sense
-4. confidence should be a float between 0.0 and 1.0 indicating how confident you are in this suggestion
-5. Base your suggestions on the document's content, file type (e.g., PDF, DOCX), date (if present), and any other relevant metadata you can extract
-6. Follow the document organization instructions provided
-
-Confidence Guidelines:
-- 0.9-1.0: Clear match with instructions, obvious categorization
-- 0.7-0.8: Good fit based on content analysis
-- 0.5-0.6: Reasonable guess but ambiguous
-- 0.0-0.4: Very uncertain, minimal information
+4. Base your suggestions on the document's content, file type (e.g., PDF, DOCX), date (if present), and any other relevant metadata you can extract
+5. Follow the document organization instructions provided
 {% if not use_structured_output %}
 
 Return ONLY the JSON object, no additional text or markdown formatting.

@@ -40,7 +40,6 @@ class TestDocmanReview:
         suggested_dir: str,
         suggested_filename: str,
         reason: str = "Test reason",
-        confidence: float = 0.85,
     ) -> None:
         """Helper to create a pending operation in the database."""
         ensure_database()
@@ -67,7 +66,6 @@ class TestDocmanReview:
                 suggested_directory_path=suggested_dir,
                 suggested_filename=suggested_filename,
                 reason=reason,
-                confidence=confidence,
                 prompt_hash="test_hash",
             )
             session.add(pending_op)
