@@ -7,22 +7,23 @@ from click.testing import CliRunner
 from pytest import MonkeyPatch
 
 
-@pytest.fixture(autouse=True)
-def isolate_app_config(tmp_path_factory: pytest.TempPathFactory, monkeypatch: MonkeyPatch) -> Path:
+@pytest.fixture(autouse=True, scope="function")
+def isolate_app_config(tmp_path: Path, monkeypatch: MonkeyPatch) -> Path:
     """Automatically isolate app config directory for all tests.
 
     This fixture runs automatically for every test and ensures that tests
     never touch the real user app config directory or database.
 
     Args:
-        tmp_path_factory: Pytest factory for creating temporary directories.
+        tmp_path: Pytest temporary directory for this test.
         monkeypatch: Pytest monkeypatch fixture for setting environment variables.
 
     Returns:
         Path: The isolated temporary app config directory for the test.
     """
-    # Create a unique temporary directory for this test's app config
-    isolated_config_dir = tmp_path_factory.mktemp("app_config")
+    # Create a subdirectory in tmp_path for app config
+    isolated_config_dir = tmp_path / "app_config"
+    isolated_config_dir.mkdir(exist_ok=True)
 
     # Set the environment variable to use the isolated directory
     monkeypatch.setenv("DOCMAN_APP_CONFIG_DIR", str(isolated_config_dir))
