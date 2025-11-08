@@ -33,13 +33,13 @@ class TestTruncateContentSmart:
         assert was_truncated is True
         assert "truncated" in result.lower()
 
-    def test_truncation_preserves_head_and_tail(self) -> None:
-        """Test that truncation preserves beginning and end."""
+    def test_truncation_preserves_head(self) -> None:
+        """Test that truncation preserves beginning of content."""
         content = "START" + ("x" * 10000) + "END"
         result, was_truncated = _truncate_content_smart(content, max_chars=4000)
 
         assert "START" in result
-        assert "END" in result
+        assert "END" not in result  # Tail is no longer preserved
         assert was_truncated is True
 
     def test_truncation_marker_format(self) -> None:
@@ -51,15 +51,20 @@ class TestTruncateContentSmart:
         assert "characters truncated" in result.lower()
         assert was_truncated is True
 
-    def test_custom_ratios(self) -> None:
-        """Test that custom head/tail ratios work."""
-        content = "x" * 10000
-        result, was_truncated = _truncate_content_smart(
-            content, max_chars=1000, head_ratio=0.8, tail_ratio=0.1
-        )
+    def test_truncation_respects_max_chars(self) -> None:
+        """Test that truncated result never exceeds max_chars."""
+        for content_len in [5000, 10000, 100000, 1000000]:
+            content = "x" * content_len
+            max_chars = 4000
 
-        assert len(result) < len(content)
-        assert was_truncated is True
+            result, was_truncated = _truncate_content_smart(content, max_chars=max_chars)
+
+            # Result should never exceed max_chars
+            assert len(result) <= max_chars, (
+                f"Result length {len(result)} exceeds max_chars {max_chars} "
+                f"for content length {content_len}"
+            )
+            assert was_truncated is True
 
 
 class TestLoadOrganizationInstructions:

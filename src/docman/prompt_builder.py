@@ -16,19 +16,15 @@ _template_env = Environment(loader=PackageLoader("docman", "prompt_templates"))
 def _truncate_content_smart(
     content: str,
     max_chars: int = 4000,
-    head_ratio: float = 0.6,
-    tail_ratio: float = 0.3,
 ) -> tuple[str, bool]:
-    """Intelligently truncate content while preserving structure.
+    """Truncate content to fit within character limit.
 
-    Keeps the beginning and end of the document, which typically contain
-    the most important information (title, headers, conclusion, signatures).
+    Keeps the beginning of the document up to max_chars, including the
+    truncation marker. The final result will not exceed max_chars.
 
     Args:
         content: The document content to truncate.
         max_chars: Maximum number of characters to keep.
-        head_ratio: Proportion of max_chars to keep from beginning (default 60%).
-        tail_ratio: Proportion of max_chars to keep from end (default 30%).
 
     Returns:
         Tuple of (truncated_content, was_truncated).
@@ -37,16 +33,20 @@ def _truncate_content_smart(
     if len(content) <= max_chars:
         return content, False
 
-    head_chars = int(max_chars * head_ratio)
-    tail_chars = int(max_chars * tail_ratio)
+    # Calculate approximate chars removed to determine marker length
+    # Use upper bound estimate to ensure we don't exceed max_chars
+    estimated_removed = len(content) - max_chars
+    marker = f"\n\n[... {estimated_removed:,} characters truncated ...]"
 
-    head = content[:head_chars].rstrip()
-    tail = content[-tail_chars:].lstrip()
+    # Reserve space for the marker
+    available_chars = max_chars - len(marker)
+    if available_chars < 0:
+        # Edge case: marker itself exceeds max_chars
+        available_chars = 0
 
-    chars_removed = len(content) - head_chars - tail_chars
-    marker = f"\n\n[... {chars_removed:,} characters truncated ...]\n\n"
+    truncated = content[:available_chars].rstrip()
 
-    return f"{head}{marker}{tail}", True
+    return f"{truncated}{marker}", True
 
 
 def load_organization_instructions(repo_root: Path) -> str | None:
