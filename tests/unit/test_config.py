@@ -22,8 +22,11 @@ class TestGetAppConfigDir:
         result = get_app_config_dir()
         assert isinstance(result, Path)
 
-    def test_default_path_contains_docman(self) -> None:
+    def test_default_path_contains_docman(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """Test that the default path contains 'docman' directory."""
+        # Clear the environment variable set by the autouse fixture to test default behavior
+        monkeypatch.delenv("DOCMAN_APP_CONFIG_DIR", raising=False)
+
         result = get_app_config_dir()
         assert "docman" in str(result).lower()
 
