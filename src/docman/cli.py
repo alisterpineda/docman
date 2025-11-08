@@ -5,6 +5,7 @@ This tool uses docling and LLM models (cloud or local) to help organize,
 move, and rename documents intelligently.
 """
 
+import signal
 from datetime import datetime
 from pathlib import Path
 
@@ -502,6 +503,24 @@ def scan(path: str | None, recursive: bool, rescan: bool) -> None:
     session_gen = get_session()
     session = next(session_gen)
 
+    # Set up graceful cancellation handler
+    cancellation_flag = {"cancelled": False}
+
+    def handle_sigint(signum: int, frame: object) -> None:
+        """Handle Ctrl+C gracefully by setting cancellation flag."""
+        if not cancellation_flag["cancelled"]:
+            cancellation_flag["cancelled"] = True
+            click.echo("\n")
+            click.secho(
+                "Cancellation requested, finishing current file...",
+                fg="yellow",
+                bold=True,
+            )
+            click.echo()
+
+    # Register the signal handler
+    original_handler = signal.signal(signal.SIGINT, handle_sigint)
+
     try:
         # Clean up orphaned copies (files that no longer exist)
         deleted_count, _ = cleanup_orphaned_copies(session, repo_root)
@@ -513,6 +532,8 @@ def scan(path: str | None, recursive: bool, rescan: bool) -> None:
         updated_count = 0
         skipped_count = 0
         failed_count = 0
+        batch_size = 10
+        files_since_commit = 0
 
         # Lazy import DocumentConverter only when needed
         from docling.document_converter import DocumentConverter
@@ -522,8 +543,12 @@ def scan(path: str | None, recursive: bool, rescan: bool) -> None:
 
         # Process each file
         for idx, file_path in enumerate(document_files, start=1):
+            # Calculate batch number for display
+            batch_num = ((idx - 1) // batch_size) + 1
             percentage = int((idx / len(document_files)) * 100)
-            click.echo(f"[{idx}/{len(document_files)}] {percentage}% Scanning: {file_path}")
+            click.echo(
+                f"[{idx}/{len(document_files)}] {percentage}% (Batch {batch_num}) Scanning: {file_path}"
+            )
 
             # Process the document file
             copy, result = process_document_file(
@@ -555,8 +580,62 @@ def scan(path: str | None, recursive: bool, rescan: bool) -> None:
                 click.echo("  Error: Failed to compute content hash")
                 failed_count += 1
 
-        # Commit all changes
-        session.commit()
+            files_since_commit += 1
+
+            # Commit every batch_size files
+            if files_since_commit >= batch_size:
+                try:
+                    session.commit()
+                    click.secho(
+                        f"✓ Batch {batch_num} committed ({idx} files processed)",
+                        fg="green",
+                    )
+                    files_since_commit = 0
+                except Exception as e:
+                    click.secho(
+                        f"Error: Failed to commit batch {batch_num}: {e}",
+                        fg="red",
+                        err=True,
+                    )
+                    raise
+
+            # Check for cancellation after processing each file
+            if cancellation_flag["cancelled"]:
+                click.echo()
+                click.secho("Saving progress...", fg="yellow", bold=True)
+                # Commit any remaining files in the current incomplete batch
+                if files_since_commit > 0:
+                    try:
+                        session.commit()
+                        click.secho(
+                            f"✓ Final batch committed ({idx} files processed)",
+                            fg="green",
+                        )
+                    except Exception as e:
+                        click.secho(
+                            f"Error: Failed to commit final batch: {e}",
+                            fg="red",
+                            err=True,
+                        )
+                        raise
+                break
+
+        # Commit any remaining files that haven't been committed yet
+        # (only if we didn't break due to cancellation, or if there were uncommitted files)
+        if not cancellation_flag["cancelled"] and files_since_commit > 0:
+            try:
+                session.commit()
+                click.secho(
+                    f"✓ Final batch committed ({idx} files processed)",
+                    fg="green",
+                )
+            except Exception as e:
+                click.secho(
+                    f"Error: Failed to commit final batch: {e}",
+                    fg="red",
+                    err=True,
+                )
+                raise
 
         # Display summary
         click.echo("\n" + "=" * 50)
@@ -570,6 +649,9 @@ def scan(path: str | None, recursive: bool, rescan: bool) -> None:
         click.echo()
 
     finally:
+        # Restore the original signal handler
+        signal.signal(signal.SIGINT, original_handler)
+
         # Close the session
         try:
             next(session_gen)

@@ -344,3 +344,103 @@ class TestDocmanScan:
 
         # Should show as already scanned
         assert "Skipped (already scanned): 1" in result.output
+
+    @patch("docman.processor.extract_content")
+    def test_scan_batch_commits(
+        self,
+        mock_extract: Mock,
+        cli_runner: CliRunner,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Test that scan commits in batches of 10 files."""
+        repo_dir = self.setup_isolated_env(tmp_path, monkeypatch)
+
+        # Create 25 test documents to span multiple batches
+        for i in range(25):
+            (repo_dir / f"test{i:02d}.pdf").write_text(f"content{i}")
+
+        # Mock content extraction
+        mock_extract.return_value = "Extracted content"
+
+        # Change to the repository directory
+        monkeypatch.chdir(repo_dir)
+
+        # Run scan command
+        result = cli_runner.invoke(main, ["scan", "-r"], catch_exceptions=False)
+
+        # Verify exit code
+        assert result.exit_code == 0
+
+        # Verify batch commit messages appear
+        assert "Batch 1 committed (10 files processed)" in result.output
+        assert "Batch 2 committed (20 files processed)" in result.output
+        assert "Final batch committed (25 files processed)" in result.output
+
+        # Verify batch information in progress display
+        assert "(Batch 1)" in result.output
+        assert "(Batch 2)" in result.output
+        assert "(Batch 3)" in result.output
+
+        # Verify all documents were committed to database
+        session_gen = get_session()
+        session = next(session_gen)
+        try:
+            docs = session.query(Document).all()
+            assert len(docs) == 25
+
+            copies = session.query(DocumentCopy).all()
+            assert len(copies) == 25
+        finally:
+            try:
+                next(session_gen)
+            except StopIteration:
+                pass
+
+    @patch("docman.processor.extract_content")
+    def test_scan_batch_commit_error_handling(
+        self,
+        mock_extract: Mock,
+        cli_runner: CliRunner,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Test that scan handles database commit errors gracefully."""
+        repo_dir = self.setup_isolated_env(tmp_path, monkeypatch)
+
+        # Create 15 test documents to trigger 2 batches
+        for i in range(15):
+            (repo_dir / f"test{i:02d}.pdf").write_text(f"content{i}")
+
+        # Mock content extraction
+        mock_extract.return_value = "Extracted content"
+
+        # Change to the repository directory
+        monkeypatch.chdir(repo_dir)
+
+        # Track commit calls and fail on the second batch commit
+        commit_count = {"count": 0}
+
+        def commit_with_error():
+            """Simulate commit error on second batch commit."""
+            commit_count["count"] += 1
+            # First commit is from cleanup_orphaned_copies, second is batch 1
+            # Third commit (batch 2) should fail
+            if commit_count["count"] == 3:
+                raise Exception("Database commit failed")
+            # For successful commits, just return (no-op is fine for testing error handling)
+
+        # Patch Session.commit to track calls and raise on the third one
+        with patch("sqlalchemy.orm.session.Session.commit", side_effect=commit_with_error):
+            # Run scan command - should fail on second batch commit
+            result = cli_runner.invoke(main, ["scan", "-r"])
+
+            # Should exit with error code
+            assert result.exit_code == 1
+
+            # Verify error message appears (can be batch or final batch)
+            assert "Error: Failed to commit" in result.output
+            assert "Database commit failed" in result.output
+
+            # Verify we got through the first batch successfully
+            assert "Batch 1 committed (10 files processed)" in result.output
