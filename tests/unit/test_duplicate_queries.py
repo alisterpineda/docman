@@ -222,6 +222,8 @@ def test_detect_target_conflicts_no_conflicts(session, test_repo: Path) -> None:
         suggested_filename="report1.pdf",
         reason="Test reason",
         prompt_hash="hash1",
+        original_file_path=copy1.file_path,
+        original_repository_path=copy1.repository_path,
     )
     op2 = Operation(
         document_copy_id=copy2.id,
@@ -229,6 +231,8 @@ def test_detect_target_conflicts_no_conflicts(session, test_repo: Path) -> None:
         suggested_filename="report2.pdf",
         reason="Test reason",
         prompt_hash="hash2",
+        original_file_path=copy2.file_path,
+        original_repository_path=copy2.repository_path,
     )
     session.add_all([op1, op2])
     session.commit()
@@ -265,6 +269,8 @@ def test_detect_target_conflicts_with_conflicts(session, test_repo: Path) -> Non
         suggested_filename="annual-report.pdf",
         reason="Test reason",
         prompt_hash="hash1",
+        original_file_path=copy1.file_path,
+        original_repository_path=copy1.repository_path,
     )
     op2 = Operation(
         document_copy_id=copy2.id,
@@ -272,6 +278,8 @@ def test_detect_target_conflicts_with_conflicts(session, test_repo: Path) -> Non
         suggested_filename="annual-report.pdf",
         reason="Test reason",
         prompt_hash="hash2",
+        original_file_path=copy2.file_path,
+        original_repository_path=copy2.repository_path,
     )
     session.add_all([op1, op2])
     session.commit()
@@ -311,6 +319,8 @@ def test_detect_target_conflicts_empty_directory_path(session, test_repo: Path) 
         suggested_filename="report.pdf",
         reason="Test reason",
         prompt_hash="hash1",
+        original_file_path=copy1.file_path,
+        original_repository_path=copy1.repository_path,
     )
     op2 = Operation(
         document_copy_id=copy2.id,
@@ -318,6 +328,8 @@ def test_detect_target_conflicts_empty_directory_path(session, test_repo: Path) 
         suggested_filename="report.pdf",
         reason="Test reason",
         prompt_hash="hash2",
+        original_file_path=copy2.file_path,
+        original_repository_path=copy2.repository_path,
     )
     session.add_all([op1, op2])
     session.commit()

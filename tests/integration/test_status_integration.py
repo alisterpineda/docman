@@ -67,6 +67,8 @@ class TestDocmanStatus:
                 suggested_filename=suggested_filename,
                 reason=reason,
                 prompt_hash="test_hash",
+                original_file_path=copy.file_path,
+                original_repository_path=copy.repository_path,
             )
             session.add(pending_op)
             session.commit()
@@ -276,6 +278,8 @@ class TestDocmanStatus:
                 suggested_filename="annual-report.pdf",
                 reason="Test reason",
                 prompt_hash="hash1",
+                original_file_path=copy1.file_path,
+                original_repository_path=copy1.repository_path,
             )
             op2 = Operation(
                 document_copy_id=copy2.id,
@@ -283,6 +287,8 @@ class TestDocmanStatus:
                 suggested_filename="annual-report.pdf",
                 reason="Test reason",
                 prompt_hash="hash2",
+                original_file_path=copy2.file_path,
+                original_repository_path=copy2.repository_path,
             )
             session.add_all([op1, op2])
             session.commit()
@@ -348,6 +354,8 @@ class TestDocmanStatus:
                 suggested_filename="report.pdf",
                 reason="Test reason",
                 prompt_hash="hash1",
+                original_file_path=copy1.file_path,
+                original_repository_path=copy1.repository_path,
             )
             op2 = Operation(
                 document_copy_id=copy2.id,
@@ -355,6 +363,8 @@ class TestDocmanStatus:
                 suggested_filename="report.pdf",  # Same target!
                 reason="Test reason",
                 prompt_hash="hash2",
+                original_file_path=copy2.file_path,
+                original_repository_path=copy2.repository_path,
             )
             session.add_all([op1, op2])
             session.commit()
@@ -405,6 +415,8 @@ class TestDocmanStatus:
                     suggested_filename=f"report{i}.pdf",
                     reason="Test",
                     prompt_hash=f"hash{i}",
+                    original_file_path=copy.file_path,
+                    original_repository_path=copy.repository_path,
                 )
                 session.add(op)
 

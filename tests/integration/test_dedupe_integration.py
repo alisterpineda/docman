@@ -361,6 +361,8 @@ class TestDocmanDedupe:
                     suggested_filename=f"organized_{Path(copy.file_path).name}",
                     reason="Test organization",
                     prompt_hash="test_hash",
+                    original_file_path=copy.file_path,
+                    original_repository_path=copy.repository_path,
                 )
                 session.add(pending_op)
             session.commit()

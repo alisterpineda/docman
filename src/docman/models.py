@@ -214,6 +214,8 @@ class Operation(Base):
         document_content_hash: Content hash when this suggestion was generated (for invalidation).
         model_name: LLM model name when this suggestion was generated (for invalidation).
         created_at: Timestamp when the suggestion was created.
+        original_file_path: Original file path when operation was created (denormalized for historical preservation).
+        original_repository_path: Original repository path when operation was created (denormalized for historical preservation).
         document_copy: Relationship to the document copy.
     """
 
@@ -235,6 +237,8 @@ class Operation(Base):
     prompt_hash: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
     document_content_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
     model_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    original_file_path: Mapped[str] = mapped_column(String(500), nullable=False)
+    original_repository_path: Mapped[str] = mapped_column(String(500), nullable=False)
     created_at: Mapped[datetime] = mapped_column(
         "createdAt", DateTime, nullable=False, default=get_utc_now
     )

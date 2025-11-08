@@ -1305,6 +1305,11 @@ class TestDocmanPlan:
             assert len(orphaned_ops) == 1
             assert len(active_ops) == 1
             assert active_ops[0].document_copy_id == copies[0].id
+
+            # Verify that orphaned operation preserves original path context
+            orphaned_op = orphaned_ops[0]
+            assert orphaned_op.original_file_path == "file1.pdf"
+            assert orphaned_op.original_repository_path == str(repo_dir)
         finally:
             try:
                 next(session_gen)

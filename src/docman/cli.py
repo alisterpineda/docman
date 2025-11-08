@@ -803,6 +803,9 @@ def plan(path: str | None, recursive: bool, reprocess: bool) -> None:
                             existing_pending_op.prompt_hash = current_prompt_hash
                             existing_pending_op.document_content_hash = document.content_hash if document else None
                             existing_pending_op.model_name = model_name
+                            # Update original paths to reflect current location (operation is still PENDING)
+                            existing_pending_op.original_file_path = copy.file_path
+                            existing_pending_op.original_repository_path = copy.repository_path
                             pending_ops_updated += 1
                         else:
                             # Create new pending operation
@@ -814,6 +817,8 @@ def plan(path: str | None, recursive: bool, reprocess: bool) -> None:
                                 prompt_hash=current_prompt_hash,
                                 document_content_hash=document.content_hash if document else None,
                                 model_name=model_name,
+                                original_file_path=copy.file_path,
+                                original_repository_path=copy.repository_path,
                             )
                             session.add(pending_op)
                             pending_ops_created += 1

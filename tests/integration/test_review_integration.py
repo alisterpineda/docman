@@ -67,6 +67,8 @@ class TestDocmanReview:
                 suggested_filename=suggested_filename,
                 reason=reason,
                 prompt_hash="test_hash",
+                original_file_path=copy.file_path,
+                original_repository_path=copy.repository_path,
             )
             session.add(pending_op)
             session.commit()
@@ -836,6 +838,8 @@ class TestReviewSecurityCleanup:
                 document_content_hash="test_hash",
                 model_name="test-model",
                 created_at=get_utc_now(),
+                original_file_path=doc_copy.file_path,
+                original_repository_path=doc_copy.repository_path,
             )
             session.add(malicious_op)
             session.commit()
@@ -926,6 +930,8 @@ class TestReviewSecurityCleanup:
                 document_content_hash="test_hash",
                 model_name="test-model",
                 created_at=get_utc_now(),
+                original_file_path=doc_copy.file_path,
+                original_repository_path=doc_copy.repository_path,
             )
             session.add(malicious_op)
             session.commit()
