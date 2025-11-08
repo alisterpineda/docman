@@ -931,12 +931,12 @@ class TestDocmanPlan:
         # Create test document
         (repo_dir / "test.pdf").touch()
 
-        # First run: create document and copy
+        # First run: create document and copy using --scan
         mock_hash.return_value = "hash_test"
         mock_extract.return_value = "Test content"
         monkeypatch.chdir(repo_dir)
 
-        result1 = cli_runner.invoke(main, ["plan"], catch_exceptions=False)
+        result1 = cli_runner.invoke(main, ["plan", "--scan"], catch_exceptions=False)
         assert result1.exit_code == 0
 
         # Verify document, copy, and pending operation were created
@@ -963,12 +963,12 @@ class TestDocmanPlan:
             except StopIteration:
                 pass
 
-        # Second run: should reuse copy and recreate pending operation
+        # Second run: should use pre-scanned copy and recreate pending operation
         result2 = cli_runner.invoke(main, ["plan"], catch_exceptions=False)
         assert result2.exit_code == 0
 
-        # Verify output shows reused copy
-        assert "Reusing existing copy: test.pdf" in result2.output
+        # Verify output shows it's using pre-scanned files
+        assert "Found 1 scanned document(s) to process" in result2.output
         assert "Generating LLM suggestions..." in result2.output
         assert "Pending operations created: 1" in result2.output
 
@@ -1010,12 +1010,12 @@ class TestDocmanPlan:
         (repo_dir / "file1.pdf").touch()
         (repo_dir / "file2.docx").touch()
 
-        mock_hash.side_effect = ["hash1", "hash2", "hash1", "hash2"]
+        mock_hash.side_effect = ["hash1", "hash2"]
         mock_extract.return_value = "Content"
         monkeypatch.chdir(repo_dir)
 
-        # Step 1: Initial plan - creates everything
-        result1 = cli_runner.invoke(main, ["plan"], catch_exceptions=False)
+        # Step 1: Initial plan with --scan - creates everything
+        result1 = cli_runner.invoke(main, ["plan", "--scan"], catch_exceptions=False)
         assert result1.exit_code == 0
         assert "New documents processed: 2" in result1.output
         assert "Pending operations created: 2" in result1.output
@@ -1053,11 +1053,11 @@ class TestDocmanPlan:
             except StopIteration:
                 pass
 
-        # Step 3: Plan again - reuses copies and recreates pending operations
+        # Step 3: Plan again - uses pre-scanned files and recreates pending operations
         result3 = cli_runner.invoke(main, ["plan"], catch_exceptions=False)
         assert result3.exit_code == 0
-        assert "Reusing existing copy: file1.pdf" in result3.output or "Reusing existing copy: file2.docx" in result3.output
-        assert "Reused copies (already in this repo): 2" in result3.output
+        assert "Found 2 scanned document(s) to process" in result3.output
+        assert "Generating LLM suggestions..." in result3.output
         assert "Pending operations created: 2" in result3.output
 
         # Verify final state: still 2 documents/copies, now with 4 operations total (2 REJECTED + 2 PENDING)
@@ -1097,17 +1097,17 @@ class TestDocmanPlan:
         mock_extract.return_value = "Test content"
         monkeypatch.chdir(repo_dir)
 
-        # First run: creates everything
-        result1 = cli_runner.invoke(main, ["plan"], catch_exceptions=False)
+        # First run: creates everything with --scan
+        result1 = cli_runner.invoke(main, ["plan", "--scan"], catch_exceptions=False)
         assert result1.exit_code == 0
         assert "Processing: test.pdf" in result1.output
         assert "Generating LLM suggestions..." in result1.output
         assert "Pending operations created: 1" in result1.output
 
-        # Second run: reuses copy but doesn't duplicate pending operation
+        # Second run: uses pre-scanned files but doesn't duplicate pending operation
         result2 = cli_runner.invoke(main, ["plan"], catch_exceptions=False)
         assert result2.exit_code == 0
-        assert "Reusing existing copy: test.pdf" in result2.output
+        assert "Found 1 scanned document(s) to process" in result2.output
         assert "Reusing existing suggestions (prompt unchanged)" in result2.output
         assert "Pending operations created: 0" in result2.output
 
@@ -1144,20 +1144,21 @@ class TestDocmanPlan:
         mock_extract.return_value = "Content"
         monkeypatch.chdir(repo_dir)
 
-        # First run: create one document
-        result1 = cli_runner.invoke(main, ["plan"], catch_exceptions=False)
+        # First run: create one document with --scan
+        result1 = cli_runner.invoke(main, ["plan", "--scan"], catch_exceptions=False)
         assert result1.exit_code == 0
 
         # Add a new document
         (repo_dir / "new.pdf").touch()
 
-        # Second run: mix of existing and new
-        result2 = cli_runner.invoke(main, ["plan"], catch_exceptions=False)
+        # Second run: mix of existing and new (needs --scan to scan new file)
+        result2 = cli_runner.invoke(main, ["plan", "--scan"], catch_exceptions=False)
         assert result2.exit_code == 0
 
         # Verify output shows both behaviors
         assert "Reusing existing copy: existing.pdf" in result2.output
         assert "Processing: new.pdf" in result2.output
+        assert "Scan Summary:" in result2.output
         assert "New documents processed: 1" in result2.output
         assert "Reused copies (already in this repo): 1" in result2.output
         assert "Pending operations created: 1" in result2.output  # Only new file creates pending op
@@ -1220,12 +1221,12 @@ class TestDocmanPlan:
         test_file = repo_dir / "test.pdf"
         test_file.write_text("Initial content")
 
-        # First run: create document with initial hash
+        # First run: create document with initial hash using --scan
         mock_hash.return_value = "hash_initial"
         mock_extract.return_value = "Initial extracted content"
         monkeypatch.chdir(repo_dir)
 
-        result1 = cli_runner.invoke(main, ["plan"], catch_exceptions=False)
+        result1 = cli_runner.invoke(main, ["plan", "--scan"], catch_exceptions=False)
         assert result1.exit_code == 0
         assert "Processing: test.pdf" in result1.output
 
@@ -1254,11 +1255,11 @@ class TestDocmanPlan:
         # Modify file content (same path, different content)
         test_file.write_text("Modified content - much longer to change size")
 
-        # Second run: should detect change, re-extract, and regenerate suggestions
+        # Second run: should detect change, re-extract, and regenerate suggestions (needs --scan)
         mock_hash.return_value = "hash_modified"
         mock_extract.return_value = "Modified extracted content"
 
-        result2 = cli_runner.invoke(main, ["plan"], catch_exceptions=False)
+        result2 = cli_runner.invoke(main, ["plan", "--scan"], catch_exceptions=False)
         assert result2.exit_code == 0
         assert "Checking for changes: test.pdf" in result2.output
         assert "Content changed, updating document..." in result2.output
@@ -1312,12 +1313,12 @@ class TestDocmanPlan:
         file1.touch()
         file2.touch()
 
-        # First run: create documents and copies
+        # First run: create documents and copies using --scan
         mock_hash.side_effect = ["hash1", "hash2"]
         mock_extract.return_value = "Content"
         monkeypatch.chdir(repo_dir)
 
-        result1 = cli_runner.invoke(main, ["plan"], catch_exceptions=False)
+        result1 = cli_runner.invoke(main, ["plan", "--scan"], catch_exceptions=False)
         assert result1.exit_code == 0
         assert "New documents processed: 2" in result1.output
 
@@ -1337,12 +1338,12 @@ class TestDocmanPlan:
         # Delete file1 outside docman (simulating user deletion)
         file1.unlink()
 
-        # Second run: should clean up file1's copy and pending operation
+        # Second run: should clean up file1's copy and pending operation (needs --scan)
         # Reset the mock and set up for only file2 to be processed
         mock_hash.reset_mock()
         mock_hash.return_value = "hash2"
 
-        result2 = cli_runner.invoke(main, ["plan"], catch_exceptions=False)
+        result2 = cli_runner.invoke(main, ["plan", "--scan"], catch_exceptions=False)
         assert result2.exit_code == 0
         assert "Cleaned up 1 orphaned file(s)" in result2.output
         assert "Reusing existing copy: file2.pdf" in result2.output
@@ -1412,7 +1413,7 @@ class TestDocmanPlan:
         mock_extract.return_value = "Test content"
         monkeypatch.chdir(repo_dir)
 
-        result1 = cli_runner.invoke(main, ["plan"], catch_exceptions=False)
+        result1 = cli_runner.invoke(main, ["plan", "--scan"], catch_exceptions=False)
         assert result1.exit_code == 0
         assert "Processing: test.pdf" in result1.output
 
@@ -1448,11 +1449,11 @@ class TestDocmanPlan:
         monkeypatch.setattr("docman.cli.get_active_provider", Mock(return_value=mock_provider_config_pro))
         monkeypatch.setattr("docman.cli.get_llm_provider", Mock(return_value=mock_provider_instance_pro))
 
-        # Second run with pro model
+        # Second run with pro model (using pre-scanned files)
         result2 = cli_runner.invoke(main, ["plan"], catch_exceptions=False)
         assert result2.exit_code == 0
-        assert "Reusing existing copy: test.pdf" in result2.output
-        assert "Prompt or model changed, regenerating suggestions..." in result2.output
+        assert "Found 1 scanned document(s) to process" in result2.output
+        assert "Model changed, regenerating suggestions..." in result2.output
         assert "Generating LLM suggestions..." in result2.output
 
         # Verify pending operation was regenerated with new model
