@@ -300,8 +300,8 @@ class TestDocmanPlan:
         # Change to the repository directory
         monkeypatch.chdir(repo_dir)
 
-        # Run plan command
-        result = cli_runner.invoke(main, ["plan"], catch_exceptions=False)
+        # Run plan command with --scan
+        result = cli_runner.invoke(main, ["plan", "--scan"], catch_exceptions=False)
 
         # Verify exit code
         assert result.exit_code == 0
@@ -309,6 +309,7 @@ class TestDocmanPlan:
         # Verify output
         assert "Processing: failure.pdf" in result.output
         assert "Processing: success.pdf" in result.output
+        assert "Scan Summary:" in result.output
         assert "New documents processed: 1" in result.output
         assert "Failed (hash or extraction errors): 1" in result.output
 
@@ -387,14 +388,14 @@ class TestDocmanPlan:
         # Change to the repository directory
         monkeypatch.chdir(repo_dir)
 
-        # Run plan command
-        result = cli_runner.invoke(main, ["plan"], catch_exceptions=False)
+        # Run plan command with --scan
+        result = cli_runner.invoke(main, ["plan", "--scan"], catch_exceptions=False)
 
         # Verify exit code
         assert result.exit_code == 0
 
         # Verify output
-        assert "No document files found in repository." in result.output
+        assert "No document files found" in result.output
 
         # Verify no documents were added to database
         session_gen = get_session()
@@ -441,7 +442,7 @@ class TestDocmanPlan:
         monkeypatch.chdir(repo_dir)
 
         # Run plan command
-        result = cli_runner.invoke(main, ["plan"], catch_exceptions=False)
+        result = cli_runner.invoke(main, ["plan", "--scan"], catch_exceptions=False)
 
         # Verify exit code
         assert result.exit_code == 0
@@ -488,7 +489,7 @@ class TestDocmanPlan:
         monkeypatch.chdir(repo_dir)
 
         # Run plan command
-        result = cli_runner.invoke(main, ["plan"], catch_exceptions=False)
+        result = cli_runner.invoke(main, ["plan", "--scan"], catch_exceptions=False)
 
         # Verify exit code
         assert result.exit_code == 0
@@ -533,7 +534,7 @@ class TestDocmanPlan:
         monkeypatch.chdir(tmp_path)
 
         # Run plan command
-        result = cli_runner.invoke(main, ["plan"], catch_exceptions=False)
+        result = cli_runner.invoke(main, ["plan", "--scan"], catch_exceptions=False)
 
         # Verify exit code
         assert result.exit_code == 0
@@ -565,7 +566,7 @@ class TestDocmanPlan:
         # Run plan command from subdirectory
         monkeypatch.chdir(subdir)
 
-        result = cli_runner.invoke(main, ["plan"], catch_exceptions=False)
+        result = cli_runner.invoke(main, ["plan", "--scan"], catch_exceptions=False)
 
         # Verify exit code
         assert result.exit_code == 0
@@ -602,7 +603,7 @@ class TestDocmanPlan:
         monkeypatch.chdir(repo_dir)
 
         # Run plan command with single file
-        result = cli_runner.invoke(main, ["plan", "target.pdf"], catch_exceptions=False)
+        result = cli_runner.invoke(main, ["plan", "--scan", "target.pdf"], catch_exceptions=False)
 
         # Verify exit code
         assert result.exit_code == 0
@@ -636,8 +637,8 @@ class TestDocmanPlan:
         # Change to the repository directory
         monkeypatch.chdir(repo_dir)
 
-        # Run plan command with unsupported file
-        result = cli_runner.invoke(main, ["plan", "test.py"])
+        # Run plan command with unsupported file (using --scan to trigger validation)
+        result = cli_runner.invoke(main, ["plan", "--scan", "test.py"])
 
         # Verify exit code
         assert result.exit_code == 1
@@ -679,7 +680,7 @@ class TestDocmanPlan:
         monkeypatch.chdir(repo_dir)
 
         # Run plan command with directory path (non-recursive by default)
-        result = cli_runner.invoke(main, ["plan", "docs"], catch_exceptions=False)
+        result = cli_runner.invoke(main, ["plan", "--scan", "docs"], catch_exceptions=False)
 
         # Verify exit code
         assert result.exit_code == 0
@@ -738,7 +739,7 @@ class TestDocmanPlan:
         monkeypatch.chdir(repo_dir)
 
         # Run plan command with directory path and recursive flag
-        result = cli_runner.invoke(main, ["plan", "docs", "-r"], catch_exceptions=False)
+        result = cli_runner.invoke(main, ["plan", "--scan", "docs", "-r"], catch_exceptions=False)
 
         # Verify exit code
         assert result.exit_code == 0
@@ -799,8 +800,8 @@ class TestDocmanPlan:
         # Change to the repository directory
         monkeypatch.chdir(repo_dir)
 
-        # Try to plan with nonexistent path
-        result = cli_runner.invoke(main, ["plan", "nonexistent.pdf"])
+        # Try to plan with nonexistent path (using --scan to trigger path validation)
+        result = cli_runner.invoke(main, ["plan", "--scan", "nonexistent.pdf"])
 
         # Verify exit code
         assert result.exit_code == 1
@@ -840,7 +841,7 @@ class TestDocmanPlan:
         monkeypatch.chdir(repo_dir)
 
         # Run plan command without any arguments (backward compatibility)
-        result = cli_runner.invoke(main, ["plan"], catch_exceptions=False)
+        result = cli_runner.invoke(main, ["plan", "--scan"], catch_exceptions=False)
 
         # Verify exit code
         assert result.exit_code == 0
@@ -891,7 +892,7 @@ class TestDocmanPlan:
         monkeypatch.chdir(repo_dir)
 
         # Run plan command with explicit "." argument
-        result = cli_runner.invoke(main, ["plan", "."], catch_exceptions=False)
+        result = cli_runner.invoke(main, ["plan", "--scan", "."], catch_exceptions=False)
 
         # Verify exit code
         assert result.exit_code == 0
@@ -1195,7 +1196,7 @@ class TestDocmanPlan:
         monkeypatch.chdir(repo_dir)
 
         # Run plan command
-        result = cli_runner.invoke(main, ["plan"], catch_exceptions=False)
+        result = cli_runner.invoke(main, ["plan", "--scan"], catch_exceptions=False)
 
         # Verify it fails with appropriate error
         assert result.exit_code == 1
@@ -1514,7 +1515,7 @@ class TestDocmanPlan:
         monkeypatch.chdir(repo_dir)
 
         # Run plan command
-        result = cli_runner.invoke(main, ["plan"], catch_exceptions=False)
+        result = cli_runner.invoke(main, ["plan", "--scan"], catch_exceptions=False)
 
         # Verify exit code
         assert result.exit_code == 0
@@ -1582,7 +1583,7 @@ class TestDocmanPlan:
         monkeypatch.chdir(repo_dir)
 
         # Run plan command
-        result = cli_runner.invoke(main, ["plan"], catch_exceptions=False)
+        result = cli_runner.invoke(main, ["plan", "--scan"], catch_exceptions=False)
 
         # Verify exit code
         assert result.exit_code == 0
@@ -1710,7 +1711,7 @@ class TestDocmanPlanPathSecurity:
         monkeypatch.chdir(repo_dir)
 
         # Run plan command - should fail gracefully
-        result = cli_runner.invoke(main, ["plan"], catch_exceptions=False)
+        result = cli_runner.invoke(main, ["plan", "--scan"], catch_exceptions=False)
 
         # Command should complete but skip the malicious file
         assert result.exit_code == 0
@@ -1772,7 +1773,7 @@ class TestDocmanPlanPathSecurity:
         monkeypatch.chdir(repo_dir)
 
         # Run plan command - should fail gracefully
-        result = cli_runner.invoke(main, ["plan"], catch_exceptions=False)
+        result = cli_runner.invoke(main, ["plan", "--scan"], catch_exceptions=False)
 
         # Command should complete but skip the malicious file
         assert result.exit_code == 0
@@ -1825,7 +1826,7 @@ class TestDocmanPlanPathSecurity:
         monkeypatch.chdir(repo_dir)
 
         # Run plan command
-        result = cli_runner.invoke(main, ["plan"], catch_exceptions=False)
+        result = cli_runner.invoke(main, ["plan", "--scan"], catch_exceptions=False)
 
         # Command should succeed
         assert result.exit_code == 0
