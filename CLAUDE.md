@@ -394,8 +394,9 @@ Your choice [1]:
 - Uses `CliRunner` from Click for CLI testing
 - Test fixtures in `conftest.py`
 - **Test isolation**: Global `autouse` fixture in `conftest.py` automatically isolates ALL tests from user app data
-  - The `isolate_app_config` fixture runs for every test automatically
-  - Sets `DOCMAN_APP_CONFIG_DIR` to a unique temporary directory per test
+  - The `isolate_app_config` fixture runs for every test automatically (function-scoped)
+  - Uses pytest's `tmp_path` to create isolated app config directory per test
+  - Sets `DOCMAN_APP_CONFIG_DIR` environment variable to the isolated directory
   - Ensures tests NEVER touch the real user config directory or database
   - No need to manually set the environment variable in individual tests
 
