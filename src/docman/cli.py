@@ -25,6 +25,7 @@ from docman.llm_config import (
 from docman.llm_providers import get_provider as get_llm_provider
 from docman.llm_wizard import run_llm_wizard
 from docman.models import Document, DocumentCopy, Operation, OperationStatus, OrganizationStatus, compute_content_hash, get_utc_now, file_needs_rehashing
+from docman.path_security import PathSecurityError, validate_target_path
 from docman.processor import extract_content
 from docman.prompt_builder import (
     build_system_prompt,
@@ -1399,13 +1400,31 @@ def _handle_interactive_review(
         current_path = doc_copy.file_path
         source = repo_root / current_path
 
-        # Suggested path
+        # Suggested path with security validation
         suggested_dir = pending_op.suggested_directory_path
         suggested_filename = pending_op.suggested_filename
-        if suggested_dir:
-            target = repo_root / suggested_dir / suggested_filename
-        else:
-            target = repo_root / suggested_filename
+        try:
+            target = validate_target_path(repo_root, suggested_dir, suggested_filename)
+        except PathSecurityError as e:
+            # Invalid path detected - prompt user to reject it to clean up the queue
+            click.echo()
+            click.secho(
+                f"  ⚠️  Security Error: Invalid path suggestion detected",
+                fg="red",
+            )
+            click.echo(f"  File: {current_path}")
+            click.echo(f"  Invalid suggestion: {suggested_dir}/{suggested_filename}")
+            click.echo(f"  Reason: {str(e)}")
+            click.echo()
+
+            if click.confirm("Reject this invalid operation to clean it up?", default=True):
+                pending_op.status = OperationStatus.REJECTED
+                click.secho("  ✗ Rejected (invalid path)", fg="red")
+                rejected_count += 1
+            else:
+                click.secho("  ○ Skipped (will appear again next time)", fg="yellow")
+                skipped_count += 1
+            continue
 
         # Show progress
         percentage = int((idx / len(pending_ops)) * 100)
@@ -1670,13 +1689,32 @@ def _handle_bulk_apply(
         current_path = doc_copy.file_path
         source = repo_root / current_path
 
-        # Suggested path
+        # Suggested path with security validation
         suggested_dir = pending_op.suggested_directory_path
         suggested_filename = pending_op.suggested_filename
-        if suggested_dir:
-            target = repo_root / suggested_dir / suggested_filename
-        else:
-            target = repo_root / suggested_filename
+        try:
+            target = validate_target_path(repo_root, suggested_dir, suggested_filename)
+        except PathSecurityError as e:
+            # Invalid path detected - automatically reject it to clean up the queue
+            click.echo()
+            click.secho(
+                f"  ⚠️  Security Error: Invalid path suggestion detected",
+                fg="red",
+            )
+            click.echo(f"  File: {current_path}")
+            click.echo(f"  Invalid suggestion: {suggested_dir}/{suggested_filename}")
+            click.echo(f"  Reason: {str(e)}")
+
+            # Auto-reject invalid operations in bulk mode (unless dry run)
+            if not dry_run:
+                pending_op.status = OperationStatus.REJECTED
+                click.secho("  ✗ Auto-rejected (invalid path)", fg="red")
+            else:
+                click.secho("  [DRY RUN] Would auto-reject this invalid operation", fg="cyan")
+
+            failed_count += 1
+            failed_operations.append((current_path, "Invalid path: " + str(e)))
+            continue
 
         # Show progress
         percentage = int((idx / len(pending_ops)) * 100)

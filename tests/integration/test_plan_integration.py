@@ -1562,3 +1562,225 @@ class TestDocmanPlan:
                 next(session_gen)
             except StopIteration:
                 pass
+
+
+class TestDocmanPlanPathSecurity:
+    """Integration tests for path security in plan command."""
+
+    def setup_repository(self, path: Path) -> None:
+        """Set up a docman repository for testing."""
+        docman_dir = path / ".docman"
+        docman_dir.mkdir()
+        config_file = docman_dir / "config.yaml"
+        config_file.touch()
+
+        # Create instructions file (required)
+        instructions_file = docman_dir / "instructions.md"
+        instructions_file.write_text("Test organization instructions")
+
+    def setup_isolated_env(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+        """Set up isolated environment with separate app config and repository."""
+        app_config_dir = tmp_path / "app_config"
+        repo_dir = tmp_path / "repo"
+        repo_dir.mkdir()
+        monkeypatch.setenv("DOCMAN_APP_CONFIG_DIR", str(app_config_dir))
+        self.setup_repository(repo_dir)
+        return repo_dir
+
+    @patch("docman.cli.extract_content")
+    @patch("docman.cli.compute_content_hash")
+    def test_plan_rejects_malicious_llm_parent_traversal(
+        self,
+        mock_hash: Mock,
+        mock_extract: Mock,
+        cli_runner: CliRunner,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Test that plan rejects LLM suggestions with parent directory traversal."""
+        repo_dir = self.setup_isolated_env(tmp_path, monkeypatch)
+
+        # Create a test document
+        (repo_dir / "test.pdf").touch()
+
+        # Mock content hash
+        mock_hash.return_value = "hash_test"
+        mock_extract.return_value = "Extracted content"
+
+        # Create a mock provider that returns malicious paths
+        mock_provider_config = ProviderConfig(
+            name="test-provider",
+            provider_type="google",
+            model="gemini-1.5-flash",
+            is_active=True,
+        )
+        mock_provider_instance = Mock()
+        mock_provider_instance.test_connection.return_value = True
+        mock_provider_instance.supports_structured_output = True
+
+        # Malicious LLM response with parent directory traversal
+        from docman.path_security import PathSecurityError
+        from pydantic import ValidationError
+
+        # When Pydantic validates the model, it should reject the malicious path
+        def generate_with_validation(*args, **kwargs):
+            # This simulates what happens when Pydantic's field_validator runs
+            from docman.llm_providers import OrganizationSuggestion
+            try:
+                # Try to create the model with malicious data
+                OrganizationSuggestion(
+                    suggested_directory_path="../../etc",
+                    suggested_filename="passwd",
+                    reason="Malicious suggestion"
+                )
+            except ValidationError as e:
+                # Pydantic validation should fail, which causes the LLM call to fail
+                raise Exception(f"LLM response validation failed: {str(e)}")
+
+        mock_provider_instance.generate_suggestions.side_effect = generate_with_validation
+
+        # Patch the LLM-related functions
+        monkeypatch.setattr("docman.cli.get_active_provider", Mock(return_value=mock_provider_config))
+        monkeypatch.setattr("docman.cli.get_api_key", Mock(return_value="test-api-key"))
+        monkeypatch.setattr("docman.cli.get_llm_provider", Mock(return_value=mock_provider_instance))
+
+        # Change to the repository directory
+        monkeypatch.chdir(repo_dir)
+
+        # Run plan command - should fail gracefully
+        result = cli_runner.invoke(main, ["plan"], catch_exceptions=False)
+
+        # Command should complete but skip the malicious file
+        assert result.exit_code == 0
+        assert "skipped: 1" in result.output.lower() or "failed" in result.output.lower()
+
+    @patch("docman.cli.extract_content")
+    @patch("docman.cli.compute_content_hash")
+    def test_plan_rejects_absolute_paths(
+        self,
+        mock_hash: Mock,
+        mock_extract: Mock,
+        cli_runner: CliRunner,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Test that plan rejects LLM suggestions with absolute paths."""
+        repo_dir = self.setup_isolated_env(tmp_path, monkeypatch)
+
+        # Create a test document
+        (repo_dir / "test.pdf").touch()
+
+        # Mock content hash
+        mock_hash.return_value = "hash_test"
+        mock_extract.return_value = "Extracted content"
+
+        # Create a mock provider that returns absolute paths
+        mock_provider_config = ProviderConfig(
+            name="test-provider",
+            provider_type="google",
+            model="gemini-1.5-flash",
+            is_active=True,
+        )
+        mock_provider_instance = Mock()
+        mock_provider_instance.test_connection.return_value = True
+        mock_provider_instance.supports_structured_output = True
+
+        # Malicious LLM response with absolute path
+        from pydantic import ValidationError
+
+        def generate_with_absolute_path(*args, **kwargs):
+            from docman.llm_providers import OrganizationSuggestion
+            try:
+                OrganizationSuggestion(
+                    suggested_directory_path="/etc",
+                    suggested_filename="hosts",
+                    reason="Malicious suggestion"
+                )
+            except ValidationError as e:
+                raise Exception(f"LLM response validation failed: {str(e)}")
+
+        mock_provider_instance.generate_suggestions.side_effect = generate_with_absolute_path
+
+        # Patch the LLM-related functions
+        monkeypatch.setattr("docman.cli.get_active_provider", Mock(return_value=mock_provider_config))
+        monkeypatch.setattr("docman.cli.get_api_key", Mock(return_value="test-api-key"))
+        monkeypatch.setattr("docman.cli.get_llm_provider", Mock(return_value=mock_provider_instance))
+
+        # Change to the repository directory
+        monkeypatch.chdir(repo_dir)
+
+        # Run plan command - should fail gracefully
+        result = cli_runner.invoke(main, ["plan"], catch_exceptions=False)
+
+        # Command should complete but skip the malicious file
+        assert result.exit_code == 0
+        assert "skipped: 1" in result.output.lower() or "failed" in result.output.lower()
+
+    @patch("docman.cli.extract_content")
+    @patch("docman.cli.compute_content_hash")
+    def test_plan_accepts_safe_llm_suggestions(
+        self,
+        mock_hash: Mock,
+        mock_extract: Mock,
+        cli_runner: CliRunner,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Test that plan accepts safe LLM suggestions."""
+        repo_dir = self.setup_isolated_env(tmp_path, monkeypatch)
+
+        # Create a test document
+        (repo_dir / "test.pdf").touch()
+
+        # Mock content hash
+        mock_hash.return_value = "hash_test"
+        mock_extract.return_value = "Extracted content"
+
+        # Create a mock provider that returns safe paths
+        mock_provider_config = ProviderConfig(
+            name="test-provider",
+            provider_type="google",
+            model="gemini-1.5-flash",
+            is_active=True,
+        )
+        mock_provider_instance = Mock()
+        mock_provider_instance.test_connection.return_value = True
+        mock_provider_instance.supports_structured_output = True
+
+        # Safe LLM response
+        mock_provider_instance.generate_suggestions.return_value = {
+            "suggested_directory_path": "documents/reports",
+            "suggested_filename": "annual_report.pdf",
+            "reason": "Valid organizational suggestion"
+        }
+
+        # Patch the LLM-related functions
+        monkeypatch.setattr("docman.cli.get_active_provider", Mock(return_value=mock_provider_config))
+        monkeypatch.setattr("docman.cli.get_api_key", Mock(return_value="test-api-key"))
+        monkeypatch.setattr("docman.cli.get_llm_provider", Mock(return_value=mock_provider_instance))
+
+        # Change to the repository directory
+        monkeypatch.chdir(repo_dir)
+
+        # Run plan command
+        result = cli_runner.invoke(main, ["plan"], catch_exceptions=False)
+
+        # Command should succeed
+        assert result.exit_code == 0
+        # Check for pending operations in the output
+        assert "pending operations created" in result.output.lower() or "pending: 1" in result.output.lower()
+
+        # Verify the operation was created in the database
+        session_gen = get_session()
+        session = next(session_gen)
+        try:
+            from docman.models import Operation
+            operations = session.query(Operation).all()
+            assert len(operations) == 1
+            assert operations[0].suggested_directory_path == "documents/reports"
+            assert operations[0].suggested_filename == "annual_report.pdf"
+        finally:
+            try:
+                next(session_gen)
+            except StopIteration:
+                pass

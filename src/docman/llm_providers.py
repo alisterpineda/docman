@@ -8,9 +8,10 @@ import json
 from abc import ABC, abstractmethod
 from typing import Any
 
-from pydantic import BaseModel
+from pydantic import BaseModel, field_validator
 
 from docman.llm_config import ProviderConfig
+from docman.path_security import validate_path_component
 
 
 class OrganizationSuggestion(BaseModel):
@@ -18,11 +19,47 @@ class OrganizationSuggestion(BaseModel):
 
     This model is used for structured output from LLM providers that support it.
     It ensures the response matches the expected schema.
+
+    Security: Path fields are validated to prevent path traversal attacks.
     """
 
     suggested_directory_path: str
     suggested_filename: str
     reason: str
+
+    @field_validator("suggested_directory_path")
+    @classmethod
+    def validate_directory_path(cls, v: str) -> str:
+        """Validate directory path for security.
+
+        Ensures the directory path:
+        - Does not contain parent directory traversal (..)
+        - Is not an absolute path
+        - Does not contain invalid characters
+        - Can be empty (for root directory placement)
+
+        Raises:
+            PathSecurityError: If validation fails
+        """
+        validate_path_component(v, allow_empty=True)
+        return v
+
+    @field_validator("suggested_filename")
+    @classmethod
+    def validate_filename(cls, v: str) -> str:
+        """Validate filename for security.
+
+        Ensures the filename:
+        - Does not contain parent directory traversal (..)
+        - Is not an absolute path
+        - Does not contain invalid characters
+        - Is not empty
+
+        Raises:
+            PathSecurityError: If validation fails
+        """
+        validate_path_component(v, allow_empty=False)
+        return v
 
 
 class GeminiSafetyBlockError(Exception):
@@ -236,11 +273,18 @@ class GoogleGeminiProvider(LLMProvider):
             # Parse JSON response (API enforces schema via structured output)
             data = json.loads(response.text)
 
-            # Validate and return as dictionary
+            # Validate using Pydantic model (triggers field validators for security)
+            try:
+                suggestion = OrganizationSuggestion.model_validate(data)
+            except Exception as e:
+                # Pydantic validation error (e.g., path security violations)
+                raise Exception(f"LLM response validation failed: {str(e)}") from e
+
+            # Return validated data as dictionary
             return {
-                "suggested_directory_path": str(data["suggested_directory_path"]),
-                "suggested_filename": str(data["suggested_filename"]),
-                "reason": str(data["reason"]),
+                "suggested_directory_path": suggestion.suggested_directory_path,
+                "suggested_filename": suggestion.suggested_filename,
+                "reason": suggestion.reason,
             }
 
         except (GeminiSafetyBlockError, GeminiEmptyResponseError):
@@ -248,10 +292,6 @@ class GoogleGeminiProvider(LLMProvider):
             raise
         except json.JSONDecodeError as e:
             raise Exception(f"Failed to parse JSON response: {str(e)}") from e
-        except KeyError as e:
-            raise Exception(f"Missing required field in response: {str(e)}") from e
-        except (ValueError, TypeError) as e:
-            raise Exception(f"Invalid field type in response: {str(e)}") from e
         except Exception as e:
             raise Exception(f"Failed to generate suggestions: {str(e)}") from e
 
@@ -466,11 +506,18 @@ class OpenAICompatibleProvider(LLMProvider):
 
             data = json.loads(content)
 
-            # Validate and return as dictionary
+            # Validate using Pydantic model (triggers field validators for security)
+            try:
+                suggestion = OrganizationSuggestion.model_validate(data)
+            except Exception as e:
+                # Pydantic validation error (e.g., path security violations)
+                raise Exception(f"LLM response validation failed: {str(e)}") from e
+
+            # Return validated data as dictionary
             return {
-                "suggested_directory_path": str(data["suggested_directory_path"]),
-                "suggested_filename": str(data["suggested_filename"]),
-                "reason": str(data["reason"]),
+                "suggested_directory_path": suggestion.suggested_directory_path,
+                "suggested_filename": suggestion.suggested_filename,
+                "reason": suggestion.reason,
             }
 
         except (OpenAIAPIError, OpenAIEmptyResponseError):
@@ -478,10 +525,6 @@ class OpenAICompatibleProvider(LLMProvider):
             raise
         except json.JSONDecodeError as e:
             raise Exception(f"Failed to parse JSON response: {str(e)}") from e
-        except KeyError as e:
-            raise Exception(f"Missing required field in response: {str(e)}") from e
-        except (ValueError, TypeError) as e:
-            raise Exception(f"Invalid field type in response: {str(e)}") from e
         except Exception as e:
             # Handle OpenAI-specific errors
             error_msg = str(e).lower()

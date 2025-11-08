@@ -7,7 +7,7 @@ from click.testing import CliRunner
 
 from docman.cli import main
 from docman.database import ensure_database, get_session
-from docman.models import Document, DocumentCopy, Operation, OperationStatus, OrganizationStatus
+from docman.models import Document, DocumentCopy, Operation, OperationStatus, OrganizationStatus, get_utc_now
 
 
 class TestDocmanReview:
@@ -757,3 +757,208 @@ class TestDocmanReview:
         assert result.exit_code == 0
         assert "Operations to review: 1" in result.output
         assert "Applied: 1" in result.output
+
+
+class TestReviewSecurityCleanup:
+    """Test cleanup of invalid operations with security issues."""
+
+    def setup_repository(self, path: Path) -> None:
+        """Set up a docman repository for testing."""
+        docman_dir = path / ".docman"
+        docman_dir.mkdir()
+        config_file = docman_dir / "config.yaml"
+        config_file.touch()
+        instructions_file = docman_dir / "instructions.md"
+        instructions_file.write_text("Test organization instructions")
+
+    def setup_isolated_env(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+        """Set up isolated environment."""
+        app_config_dir = tmp_path / "app_config"
+        repo_dir = tmp_path / "repo"
+        repo_dir.mkdir()
+        monkeypatch.setenv("DOCMAN_APP_CONFIG_DIR", str(app_config_dir))
+        self.setup_repository(repo_dir)
+        return repo_dir
+
+    def test_interactive_review_allows_rejecting_invalid_operations(
+        self,
+        cli_runner: CliRunner,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Test that invalid operations can be rejected in interactive mode."""
+        repo_dir = self.setup_isolated_env(tmp_path, monkeypatch)
+
+        # Create a test file
+        test_file = repo_dir / "test.pdf"
+        test_file.write_text("test content")
+
+        # Initialize database
+        monkeypatch.chdir(repo_dir)
+        result = cli_runner.invoke(main, ["init"], catch_exceptions=False)
+        assert result.exit_code == 0
+
+        # Manually insert an invalid operation into the database
+        # (simulating legacy data created before security fix)
+        session_gen = get_session()
+        session = next(session_gen)
+        try:
+            # Create document and copy
+            doc = Document(
+                content_hash="test_hash",
+                content="test content",
+                created_at=get_utc_now(),
+            )
+            session.add(doc)
+            session.flush()
+
+            doc_copy = DocumentCopy(
+                document_id=doc.id,
+                repository_path=str(repo_dir),
+                file_path="test.pdf",
+                stored_content_hash="test_hash",
+                stored_size=12,
+                stored_mtime=test_file.stat().st_mtime,
+                organization_status=OrganizationStatus.UNORGANIZED,
+                last_seen_at=get_utc_now(),
+            )
+            session.add(doc_copy)
+            session.flush()
+
+            # Create operation with malicious path (this bypasses Pydantic validation)
+            malicious_op = Operation(
+                document_copy_id=doc_copy.id,
+                suggested_directory_path="../../etc",  # Path traversal!
+                suggested_filename="passwd",
+                reason="Malicious suggestion",
+                status=OperationStatus.PENDING,
+                prompt_hash="test_hash",
+                document_content_hash="test_hash",
+                model_name="test-model",
+                created_at=get_utc_now(),
+            )
+            session.add(malicious_op)
+            session.commit()
+        finally:
+            try:
+                next(session_gen)
+            except StopIteration:
+                pass
+
+        # Run review in interactive mode, automatically answering "y" to reject
+        result = cli_runner.invoke(
+            main,
+            ["review"],
+            input="y\n",  # Confirm rejection
+            catch_exceptions=False,
+        )
+
+        assert result.exit_code == 0
+        assert "Security Error" in result.output
+        assert "Invalid path suggestion detected" in result.output
+        assert "Rejected (invalid path)" in result.output or "Rejected" in result.output
+
+        # Verify the operation was marked as rejected
+        session_gen = get_session()
+        session = next(session_gen)
+        try:
+            op = session.query(Operation).filter(
+                Operation.document_copy_id == doc_copy.id
+            ).first()
+            assert op is not None
+            assert op.status == OperationStatus.REJECTED
+        finally:
+            try:
+                next(session_gen)
+            except StopIteration:
+                pass
+
+    def test_bulk_apply_auto_rejects_invalid_operations(
+        self,
+        cli_runner: CliRunner,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Test that invalid operations are auto-rejected in bulk mode."""
+        repo_dir = self.setup_isolated_env(tmp_path, monkeypatch)
+
+        # Create a test file
+        test_file = repo_dir / "test.pdf"
+        test_file.write_text("test content")
+
+        # Initialize database
+        monkeypatch.chdir(repo_dir)
+        result = cli_runner.invoke(main, ["init"], catch_exceptions=False)
+        assert result.exit_code == 0
+
+        # Manually insert an invalid operation
+        session_gen = get_session()
+        session = next(session_gen)
+        try:
+            doc = Document(
+                content_hash="test_hash",
+                content="test content",
+                created_at=get_utc_now(),
+            )
+            session.add(doc)
+            session.flush()
+
+            doc_copy = DocumentCopy(
+                document_id=doc.id,
+                repository_path=str(repo_dir),
+                file_path="test.pdf",
+                stored_content_hash="test_hash",
+                stored_size=12,
+                stored_mtime=test_file.stat().st_mtime,
+                organization_status=OrganizationStatus.UNORGANIZED,
+                last_seen_at=get_utc_now(),
+            )
+            session.add(doc_copy)
+            session.flush()
+
+            malicious_op = Operation(
+                document_copy_id=doc_copy.id,
+                suggested_directory_path="/etc",  # Absolute path!
+                suggested_filename="hosts",
+                reason="Malicious suggestion",
+                status=OperationStatus.PENDING,
+                prompt_hash="test_hash",
+                document_content_hash="test_hash",
+                model_name="test-model",
+                created_at=get_utc_now(),
+            )
+            session.add(malicious_op)
+            session.commit()
+
+            copy_id = doc_copy.id
+        finally:
+            try:
+                next(session_gen)
+            except StopIteration:
+                pass
+
+        # Run review with --apply-all -y (bulk mode)
+        result = cli_runner.invoke(
+            main,
+            ["review", "--apply-all", "-y"],
+            catch_exceptions=False,
+        )
+
+        assert result.exit_code == 0
+        assert "Security Error" in result.output
+        assert "Auto-rejected (invalid path)" in result.output or "Auto-rejected" in result.output
+
+        # Verify the operation was marked as rejected
+        session_gen = get_session()
+        session = next(session_gen)
+        try:
+            op = session.query(Operation).filter(
+                Operation.document_copy_id == copy_id
+            ).first()
+            assert op is not None
+            assert op.status == OperationStatus.REJECTED
+        finally:
+            try:
+                next(session_gen)
+            except StopIteration:
+                pass
