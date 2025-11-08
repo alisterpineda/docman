@@ -9,7 +9,7 @@ from docman.processor import extract_content
 class TestExtractContent:
     """Tests for extract_content function."""
 
-    @patch("docman.processor.DocumentConverter")
+    @patch("docling.document_converter.DocumentConverter")
     def test_successful_extraction(self, mock_converter_class: Mock, tmp_path: Path) -> None:
         """Test successful content extraction from a document."""
         # Create a test file
@@ -34,7 +34,7 @@ class TestExtractContent:
         mock_converter.convert.assert_called_once_with(str(test_file))
         mock_result.document.export_to_markdown.assert_called_once()
 
-    @patch("docman.processor.DocumentConverter")
+    @patch("docling.document_converter.DocumentConverter")
     def test_returns_none_when_no_document(
         self, mock_converter_class: Mock, tmp_path: Path
     ) -> None:
@@ -54,7 +54,7 @@ class TestExtractContent:
 
         assert result is None
 
-    @patch("docman.processor.DocumentConverter")
+    @patch("docling.document_converter.DocumentConverter")
     def test_returns_none_when_no_result(
         self, mock_converter_class: Mock, tmp_path: Path
     ) -> None:
@@ -71,7 +71,7 @@ class TestExtractContent:
 
         assert result is None
 
-    @patch("docman.processor.DocumentConverter")
+    @patch("docling.document_converter.DocumentConverter")
     def test_handles_conversion_exception(
         self, mock_converter_class: Mock, tmp_path: Path
     ) -> None:
@@ -89,7 +89,7 @@ class TestExtractContent:
 
         assert result is None
 
-    @patch("docman.processor.DocumentConverter")
+    @patch("docling.document_converter.DocumentConverter")
     def test_handles_export_exception(
         self, mock_converter_class: Mock, tmp_path: Path
     ) -> None:
@@ -109,7 +109,7 @@ class TestExtractContent:
 
         assert result is None
 
-    @patch("docman.processor.DocumentConverter")
+    @patch("docling.document_converter.DocumentConverter")
     def test_converts_path_to_string(self, mock_converter_class: Mock, tmp_path: Path) -> None:
         """Test that Path object is converted to string for docling."""
         test_file = tmp_path / "test.pdf"
@@ -129,7 +129,7 @@ class TestExtractContent:
         assert isinstance(call_args, str)
         assert call_args == str(test_file)
 
-    @patch("docman.processor.DocumentConverter")
+    @patch("docling.document_converter.DocumentConverter")
     def test_handles_empty_content(self, mock_converter_class: Mock, tmp_path: Path) -> None:
         """Test handling of documents with empty content."""
         test_file = tmp_path / "empty.pdf"
@@ -147,7 +147,7 @@ class TestExtractContent:
         # Empty string is still valid content
         assert result == ""
 
-    @patch("docman.processor.DocumentConverter")
+    @patch("docling.document_converter.DocumentConverter")
     def test_handles_nonexistent_file(
         self, mock_converter_class: Mock, tmp_path: Path
     ) -> None:

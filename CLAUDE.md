@@ -6,7 +6,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 `docman` is a CLI tool for organizing documents using AI-powered analysis.
 
-**Workflow**: `plan` → `status` → `review`
+**Workflow**: `scan` → `plan` → `status` → `review`
 
 **Core Technologies**:
 - **docling** for document content extraction
@@ -254,11 +254,24 @@ This ensures organized files are re-analyzed when conditions change, but saves c
 
 **Example Workflows**:
 
-*Standard workflow (organize once)*:
+*Standard two-step workflow*:
 ```bash
-docman plan                    # Creates suggestions for all unorganized files
-docman review --apply-all -y   # Applies suggestions, marks as organized
+docman scan -r                  # Scan entire repository, extract content
+docman plan                     # Generate LLM suggestions for scanned files
+docman review --apply-all -y   # Apply suggestions, marks as organized
 docman plan                    # Skips organized files, no LLM calls
+```
+
+*Combined workflow (scan + plan in one step)*:
+```bash
+docman plan --scan -r          # Scan and generate suggestions in one command
+docman review --apply-all -y   # Apply suggestions
+```
+
+*Add new documents*:
+```bash
+docman scan new_folder/        # Scan only new documents
+docman plan                    # Generate suggestions for newly scanned files
 ```
 
 *Re-organize after instruction changes*:
@@ -270,7 +283,8 @@ docman plan              # Auto-resets organized files to unorganized (prompt ch
 
 *Force re-processing*:
 ```bash
-docman plan --reprocess  # Processes all files regardless of status
+docman scan --rescan -r        # Re-scan all files (if content changed)
+docman plan --reprocess        # Reprocess all files regardless of status
 ```
 
 *Ignore specific directories*:
@@ -282,11 +296,21 @@ docman unmark archives/ -r -y   # Reset to unorganized to re-process
 
 ### CLI Structure (`cli.py`)
 
+**Workflow**: `scan` → `plan` → `status` → `review`
+
 Main commands:
 - `docman init [directory]`: Initialize repository
-- `docman plan [path]`: Analyze documents and generate LLM organization suggestions
+- `docman scan [path]`: Scan and extract content from documents (prerequisite for plan)
+  - `-r, --recursive`: Recursively scan subdirectories
+  - `--rescan`: Force re-scan of already-scanned files
+  - Discovers document files and extracts content using docling
+  - Stores documents in database without generating LLM suggestions
+- `docman plan [path]`: Generate LLM organization suggestions for scanned documents
   - `--reprocess`: Reprocess all files, including those already organized or ignored
+  - `--scan`: Run scan first, then generate suggestions (combines both steps)
   - Shows warnings when duplicates detected to save LLM costs
+  - Shows warnings for unscanned files
+  - **Note**: Requires documents to be scanned first via `docman scan` (or use `--scan` flag)
 - `docman status [path]`: Review pending operations (shows paths, confidence, reasons, organization status)
   - Groups duplicate files together visually
   - Shows conflict warnings when multiple files target same destination
@@ -319,8 +343,8 @@ Main commands:
 **Workflow for Managing Duplicates**:
 ```bash
 # Standard workflow with deduplication
-docman plan                    # Shows duplicate warning with count
-docman status                  # Duplicates grouped with [1a], [1b] numbering
+docman scan -r                 # Scan repository
+docman status                  # Shows duplicate warning with count
 docman dedupe                  # Interactively resolve duplicates
 docman plan                    # Generate suggestions for remaining files
 docman review --apply-all -y   # Apply suggestions (no conflicts)
