@@ -59,8 +59,11 @@ class TestGetAppConfigPath:
         result = get_app_config_path()
         assert result.name == "config.yaml"
 
-    def test_path_contains_docman(self) -> None:
+    def test_path_contains_docman(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """Test that the path contains 'docman' directory."""
+        # Clear the environment variable set by the autouse fixture to test default behavior
+        monkeypatch.delenv("DOCMAN_APP_CONFIG_DIR", raising=False)
+
         result = get_app_config_path()
         assert "docman" in str(result).lower()
 
