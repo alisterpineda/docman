@@ -1091,13 +1091,6 @@ def plan(path: str | None, recursive: bool, reprocess: bool, scan: bool) -> None
 
             if not existing_pending_op:
                 needs_generation = True
-            elif existing_pending_op.prompt_hash != current_prompt_hash:
-                # Prompt or model has changed, need to regenerate
-                needs_generation = True
-                invalidation_reason = "Prompt or model changed"
-                # Reset organization status since conditions changed
-                if copy.organization_status == OrganizationStatus.ORGANIZED:
-                    copy.organization_status = OrganizationStatus.UNORGANIZED
             elif document and existing_pending_op.document_content_hash != document.content_hash:
                 # Document content has changed, need to regenerate
                 needs_generation = True
@@ -1106,10 +1099,17 @@ def plan(path: str | None, recursive: bool, reprocess: bool, scan: bool) -> None
                 if copy.organization_status == OrganizationStatus.ORGANIZED:
                     copy.organization_status = OrganizationStatus.UNORGANIZED
             elif model_name and existing_pending_op.model_name != model_name:
-                # Model changed (redundant with prompt hash, but explicit)
+                # Model changed - check this before prompt_hash since model is part of prompt_hash
                 needs_generation = True
                 invalidation_reason = "Model changed"
                 # Reset organization status since model changed
+                if copy.organization_status == OrganizationStatus.ORGANIZED:
+                    copy.organization_status = OrganizationStatus.UNORGANIZED
+            elif existing_pending_op.prompt_hash != current_prompt_hash:
+                # Prompt (instructions) changed, need to regenerate
+                needs_generation = True
+                invalidation_reason = "Prompt changed"
+                # Reset organization status since conditions changed
                 if copy.organization_status == OrganizationStatus.ORGANIZED:
                     copy.organization_status = OrganizationStatus.UNORGANIZED
 
