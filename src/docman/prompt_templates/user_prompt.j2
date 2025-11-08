@@ -1,16 +1,10 @@
 {% if organization_instructions %}
-## Document Organization Instructions
-
+<organizationInstructions>
 {{ organization_instructions }}
+</organizationInstructions>
 {% endif %}
 
-## Current File
-
-Path: {{ file_path }}
-
-## Document Content
-
-<documentContent>
+<documentContent filePath="{{ file_path }}">
 {{ content }}
 </documentContent>
 {% if was_truncated %}

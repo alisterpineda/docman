@@ -176,6 +176,17 @@ class TestBuildUserPrompt:
         assert file_path in result
         assert content in result
 
+    def test_document_content_tag_with_filepath(self) -> None:
+        """Test that documentContent tag includes filePath attribute."""
+        file_path = "documents/report.pdf"
+        content = "Test content"
+
+        result = build_user_prompt(file_path, content)
+
+        # Verify documentContent tag with filePath attribute
+        assert f'<documentContent filePath="{file_path}">' in result
+        assert "</documentContent>" in result
+
     def test_with_organization_instructions(self) -> None:
         """Test user prompt includes organization instructions."""
         file_path = "test.pdf"
@@ -185,7 +196,8 @@ class TestBuildUserPrompt:
         result = build_user_prompt(file_path, content, instructions)
 
         assert instructions in result
-        assert "Document Organization Instructions" in result
+        assert "<organizationInstructions>" in result
+        assert "</organizationInstructions>" in result
 
     def test_without_organization_instructions(self) -> None:
         """Test user prompt works without instructions."""
@@ -197,7 +209,7 @@ class TestBuildUserPrompt:
         assert file_path in result
         assert content in result
         # Should not have instructions section
-        assert "Document Organization Instructions" not in result
+        assert "<organizationInstructions>" not in result
 
     def test_content_truncation(self) -> None:
         """Test that long content is truncated."""
