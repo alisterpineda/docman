@@ -393,6 +393,11 @@ Your choice [1]:
     - `test_plan_extraction_failure_not_double_counted`: Confirms extraction failures counted only in `failed_count`
 - Uses `CliRunner` from Click for CLI testing
 - Test fixtures in `conftest.py`
+- **Test isolation**: Global `autouse` fixture in `conftest.py` automatically isolates ALL tests from user app data
+  - The `isolate_app_config` fixture runs for every test automatically
+  - Sets `DOCMAN_APP_CONFIG_DIR` to a unique temporary directory per test
+  - Ensures tests NEVER touch the real user config directory or database
+  - No need to manually set the environment variable in individual tests
 
 ## Key Patterns
 
