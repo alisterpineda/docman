@@ -352,6 +352,385 @@ def get_duplicate_summary(session, repo_root: Path) -> tuple[int, int]:
     return unique_duplicated_docs, total_duplicate_copies
 
 
+def _scan_documents(
+    repo_root: Path,
+    document_files: list[Path],
+    session,
+) -> dict:
+    """
+    Scan and extract content from document files.
+
+    This helper function handles:
+    - Garbage collection of orphaned copies
+    - Content extraction using docling
+    - Document and DocumentCopy creation/updates
+    - Stale content detection and rehashing
+
+    Args:
+        repo_root: Path to the repository root directory.
+        document_files: List of file paths (relative to repo_root) to scan.
+        session: SQLAlchemy database session.
+
+    Returns:
+        Dictionary with scanning statistics:
+        - processed_count: New documents extracted
+        - reused_count: Existing copies with unchanged content
+        - failed_count: Files that failed extraction or hashing
+        - duplicate_count: Documents with same content (different locations)
+        - deleted_count: Orphaned copies cleaned up
+    """
+    repository_path = str(repo_root)
+
+    # Clean up orphaned copies (files that no longer exist)
+    deleted_count, _ = cleanup_orphaned_copies(session, repo_root)
+    if deleted_count > 0:
+        click.echo(f"Cleaned up {deleted_count} orphaned file(s)\n")
+
+    # Query existing copies in this repository
+    existing_copies = (
+        session.query(DocumentCopy)
+        .filter(DocumentCopy.repository_path == repository_path)
+        .all()
+    )
+    existing_copy_paths = {copy.file_path for copy in existing_copies}
+
+    # Counters for summary
+    processed_count = 0
+    reused_count = 0
+    failed_count = 0
+    duplicate_count = 0  # Same document, different location
+
+    # Lazy import DocumentConverter only when needed (heavy import with ML/CV dependencies)
+    from docling.document_converter import DocumentConverter
+
+    # Create a single DocumentConverter instance to reuse for all files
+    converter = DocumentConverter()
+
+    # Process each file
+    for idx, file_path in enumerate(document_files, start=1):
+        file_path_str = str(file_path)
+        percentage = int((idx / len(document_files)) * 100)
+
+        # Check if copy already exists in this repository at this path
+        if file_path_str in existing_copy_paths:
+            # Retrieve existing copy
+            copy = (
+                session.query(DocumentCopy)
+                .filter(
+                    DocumentCopy.repository_path == repository_path,
+                    DocumentCopy.file_path == file_path_str,
+                )
+                .first()
+            )
+            if not copy:
+                click.echo("  Error: Expected copy not found in database")
+                failed_count += 1
+                continue
+
+            full_path = repo_root / file_path
+
+            # Check if file content has changed
+            if file_needs_rehashing(copy, full_path):
+                click.echo(
+                    f"[{idx}/{len(document_files)}] {percentage}% "
+                    f"Checking for changes: {file_path}"
+                )
+
+                # File metadata changed, rehash to check content
+                try:
+                    content_hash = compute_content_hash(full_path)
+                except Exception as e:
+                    click.echo(f"  Error computing hash: {e}")
+                    failed_count += 1
+                    continue
+
+                # Check if content actually changed
+                if content_hash != copy.document.content_hash:
+                    click.echo("  Content changed, updating document...")
+
+                    # Content changed - update or create new document
+                    new_document = (
+                        session.query(Document)
+                        .filter(Document.content_hash == content_hash)
+                        .first()
+                    )
+
+                    if new_document:
+                        # Document with this content already exists
+                        click.echo(f"  Found existing document (hash: {content_hash[:8]}...)")
+                        copy.document_id = new_document.id
+                        duplicate_count += 1
+                    else:
+                        # Extract new content
+                        content = extract_content(full_path, converter=converter)
+                        if content is None:
+                            click.echo("  Warning: Content extraction failed")
+                        else:
+                            click.echo(f"  Extracted {len(content)} characters")
+                            processed_count += 1
+
+                        # Create new document
+                        new_document = Document(content_hash=content_hash, content=content)
+                        session.add(new_document)
+                        session.flush()
+
+                        # Update copy to point to new document
+                        copy.document_id = new_document.id
+
+                    # Delete existing pending operation (will be regenerated by plan command)
+                    session.query(Operation).filter(
+                        Operation.document_copy_id == copy.id
+                    ).delete()
+
+                # Update stored metadata
+                stat = full_path.stat()
+                copy.stored_content_hash = content_hash
+                copy.stored_size = stat.st_size
+                copy.stored_mtime = stat.st_mtime
+                session.flush()
+            else:
+                click.echo(
+                    f"[{idx}/{len(document_files)}] {percentage}% "
+                    f"Reusing existing copy: {file_path}"
+                )
+                reused_count += 1
+        else:
+            # Show progress
+            click.echo(f"[{idx}/{len(document_files)}] {percentage}% Processing: {file_path}")
+
+            # Step 1: Create new document and copy
+            # Compute content hash
+            full_path = repo_root / file_path
+            try:
+                content_hash = compute_content_hash(full_path)
+            except Exception as e:
+                click.echo(f"  Error computing hash: {e}")
+                failed_count += 1
+                continue
+
+            # Find or create canonical document
+            document = (
+                session.query(Document)
+                .filter(Document.content_hash == content_hash)
+                .first()
+            )
+
+            if document:
+                # Document already exists (found in another repo or location)
+                click.echo(f"  Found existing document (hash: {content_hash[:8]}...)")
+                duplicate_count += 1
+            else:
+                # New document - extract content
+                content = extract_content(full_path, converter=converter)
+
+                if content is None:
+                    click.echo("  Warning: Content extraction failed")
+                    failed_count += 1
+                    # Still create the document with None content
+                else:
+                    click.echo(f"  Extracted {len(content)} characters")
+                    processed_count += 1
+
+                # Create new canonical document
+                document = Document(content_hash=content_hash, content=content)
+                session.add(document)
+                session.flush()  # Get the document.id for the copy
+
+            # Create document copy for this repository with stored metadata
+            stat = full_path.stat()
+            copy = DocumentCopy(
+                document_id=document.id,
+                repository_path=repository_path,
+                file_path=file_path_str,
+                stored_content_hash=content_hash,
+                stored_size=stat.st_size,
+                stored_mtime=stat.st_mtime,
+            )
+            session.add(copy)
+            session.flush()  # Get the copy.id
+
+    # Commit all changes
+    session.commit()
+
+    return {
+        "processed_count": processed_count,
+        "reused_count": reused_count,
+        "failed_count": failed_count,
+        "duplicate_count": duplicate_count,
+        "deleted_count": deleted_count,
+    }
+
+
+@main.command()
+@click.argument("path", default=None, required=False)
+@click.option(
+    "-r",
+    "--recursive",
+    is_flag=True,
+    default=False,
+    help="Recursively process subdirectories",
+)
+@require_database
+def scan(path: str | None, recursive: bool) -> None:
+    """
+    Scan and extract content from documents in the repository.
+
+    Discovers document files and extracts their content using docling,
+    storing them in the database. This command does NOT generate LLM
+    organization suggestions - use 'docman plan' for that.
+
+    Arguments:
+        PATH: Optional path to a file or directory (default: current directory).
+              Relative to current working directory.
+
+    Options:
+        -r, --recursive: Recursively process subdirectories when PATH is a directory.
+
+    Examples:
+        - 'docman scan': Scan entire repository recursively (backward compatible)
+        - 'docman scan .': Scan current directory only (non-recursive)
+        - 'docman scan docs/': Scan docs directory only (non-recursive)
+        - 'docman scan docs/ -r': Scan docs directory recursively
+        - 'docman scan file.pdf': Scan single file
+        - 'docman scan -r': Scan entire repository recursively (same as no args)
+    """
+    # Find the repository root
+    # Strategy: Try from the provided path first (if any), then fall back to cwd
+    repo_root = None
+
+    if path:
+        # Try to find repository from the provided path
+        search_start_path = Path(path).resolve()
+        try:
+            repo_root = get_repository_root(start_path=search_start_path)
+        except RepositoryError:
+            # Path doesn't lead to a repository, try from cwd
+            try:
+                repo_root = get_repository_root(start_path=Path.cwd())
+            except RepositoryError:
+                # Neither path nor cwd is in a repository
+                raise click.Abort()
+    else:
+        # No path provided, use current directory
+        try:
+            repo_root = get_repository_root(start_path=Path.cwd())
+        except RepositoryError:
+            raise click.Abort()
+
+    repository_path = str(repo_root)
+    click.echo(f"Scanning documents in repository: {repository_path}")
+
+    # For backward compatibility: if no path provided, process entire repository recursively
+    # This maintains the original behavior of 'docman scan' with no arguments
+    if path is None and not recursive:
+        # Default behavior - process entire repository recursively
+        document_files = discover_document_files(repo_root)
+        click.echo("Discovering documents recursively in entire repository...")
+    else:
+        # If path is None but recursive flag is set, treat as current directory
+        if path is None:
+            path = "."
+        # Explicit path provided - handle accordingly
+        # Convert path to absolute Path object
+        target_path = Path(path).resolve()
+
+        # Validate path exists
+        if not target_path.exists():
+            click.secho(f"Error: Path '{path}' does not exist", fg="red", err=True)
+            raise click.Abort()
+
+        # Validate path is within repository
+        try:
+            target_path.relative_to(repo_root)
+        except ValueError:
+            click.secho(
+                f"Error: Path '{path}' is outside the repository at {repo_root}",
+                fg="red",
+                err=True,
+            )
+            raise click.Abort()
+
+        # Determine what files to process
+        if target_path.is_file():
+            # Single file mode
+            if target_path.suffix.lower() not in SUPPORTED_EXTENSIONS:
+                click.secho(
+                    f"Error: Unsupported file type '{target_path.suffix}'. "
+                    f"Supported extensions: {', '.join(sorted(SUPPORTED_EXTENSIONS))}",
+                    fg="red",
+                    err=True,
+                )
+                raise click.Abort()
+
+            # Create list with single relative path
+            rel_path = target_path.relative_to(repo_root)
+            document_files = [rel_path]
+            click.echo(f"Processing single file: {rel_path}")
+        else:
+            # Directory mode
+            if recursive:
+                # Recursive discovery from the target directory
+                if target_path == repo_root:
+                    document_files = discover_document_files(repo_root)
+                    click.echo("Discovering documents recursively in entire repository...")
+                else:
+                    # Recursive discovery in subdirectory - pass target_path as root_path
+                    document_files = discover_document_files(repo_root, root_path=target_path)
+                    rel_target = target_path.relative_to(repo_root)
+                    click.echo(f"Discovering documents recursively in: {rel_target}")
+            else:
+                # Shallow discovery - only immediate files
+                document_files = discover_document_files_shallow(repo_root, target_path)
+                rel_target = target_path.relative_to(repo_root)
+                click.echo(f"Discovering documents in: {rel_target} (non-recursive)")
+
+    if not document_files:
+        click.echo("No document files found in repository.")
+        return
+
+    click.echo(f"Found {len(document_files)} document file(s)\n")
+
+    # Get database session
+    session_gen = get_session()
+    session = next(session_gen)
+
+    try:
+        # Scan documents using helper function
+        stats = _scan_documents(repo_root, document_files, session)
+
+        # Display summary
+        click.echo("\n" + "=" * 50)
+        click.echo("Scan Summary:")
+        click.echo(f"  New documents processed: {stats['processed_count']}")
+        click.echo(f"  Duplicate documents (already known): {stats['duplicate_count']}")
+        click.echo(f"  Reused copies (already in this repo): {stats['reused_count']}")
+        click.echo(f"  Failed (hash or extraction errors): {stats['failed_count']}")
+        if stats['deleted_count'] > 0:
+            click.echo(f"  Orphaned copies cleaned up: {stats['deleted_count']}")
+        click.echo(f"  Total files: {len(document_files)}")
+        click.echo("=" * 50)
+
+        # Check for duplicates and show warning
+        unique_dup_docs, total_dup_copies = get_duplicate_summary(session, repo_root)
+        if unique_dup_docs > 0:
+            click.echo()
+            click.secho(
+                f"⚠️  Found {unique_dup_docs} duplicate document(s) "
+                f"with {total_dup_copies} total copies",
+                fg="yellow",
+            )
+            click.echo()
+            click.echo("💡 Tip: Run 'docman dedupe' to resolve duplicate files.")
+        click.echo()
+
+    finally:
+        # Close the session
+        try:
+            next(session_gen)
+        except StopIteration:
+            pass
+
+
 @main.command()
 @click.argument("path", default=None, required=False)
 @click.option(
@@ -367,13 +746,19 @@ def get_duplicate_summary(session, repo_root: Path) -> tuple[int, int]:
     default=False,
     help="Reprocess all files, including those already organized or ignored",
 )
+@click.option(
+    "--scan",
+    is_flag=True,
+    default=False,
+    help="Scan files before planning (default: only process already scanned files)",
+)
 @require_database
-def plan(path: str | None, recursive: bool, reprocess: bool) -> None:
+def plan(path: str | None, recursive: bool, reprocess: bool, scan: bool) -> None:
     """
-    Process documents in the repository.
+    Generate LLM organization suggestions for documents in the repository.
 
-    Discovers document files and extracts their content using docling,
-    storing them in the database.
+    By default, only processes files that have already been scanned (using 'docman scan').
+    Use the --scan flag to scan files before generating suggestions in a single command.
 
     Arguments:
         PATH: Optional path to a file or directory (default: current directory).
@@ -382,15 +767,20 @@ def plan(path: str | None, recursive: bool, reprocess: bool) -> None:
     Options:
         -r, --recursive: Recursively process subdirectories when PATH is a directory.
         --reprocess: Reprocess all files, including those already organized or ignored.
+        --scan: Scan files before planning (scans + generates suggestions in one command).
 
     Examples:
-        - 'docman plan': Process entire repository recursively (backward compatible)
-        - 'docman plan .': Process current directory only (non-recursive)
-        - 'docman plan docs/': Process docs directory only (non-recursive)
-        - 'docman plan docs/ -r': Process docs directory recursively
-        - 'docman plan file.pdf': Process single file
-        - 'docman plan -r': Process entire repository recursively (same as no args)
-        - 'docman plan --reprocess': Reprocess all files, including organized ones
+        - 'docman plan': Generate suggestions for all scanned files in repository
+        - 'docman plan --scan': Scan entire repository and generate suggestions (old behavior)
+        - 'docman plan docs/': Generate suggestions for scanned files in docs/ (non-recursive)
+        - 'docman plan docs/ --scan -r': Scan docs/ recursively and generate suggestions
+        - 'docman plan file.pdf --scan': Scan single file and generate suggestions
+        - 'docman plan --reprocess': Reprocess all scanned files, including organized ones
+
+    Workflow:
+        1. Run 'docman scan' to extract document content (expensive, run once)
+        2. Run 'docman plan' to generate LLM suggestions (uses scanned content)
+        3. Run 'docman review' to review and apply suggestions
     """
     # Find the repository root
     # Strategy: Try from the provided path first (if any), then fall back to cwd
@@ -460,75 +850,81 @@ def plan(path: str | None, recursive: bool, reprocess: bool) -> None:
         click.secho(f"Error initializing LLM provider: {e}", fg="red")
         raise click.Abort()
 
-    # For backward compatibility: if no path provided, process entire repository recursively
-    # This maintains the original behavior of 'docman plan' with no arguments
-    if path is None and not recursive:
-        # Default behavior - process entire repository recursively
-        document_files = discover_document_files(repo_root)
-        click.echo("Discovering documents recursively in entire repository...")
-    else:
-        # If path is None but recursive flag is set, treat as current directory
-        if path is None:
-            path = "."
-        # Explicit path provided - handle accordingly
-        # Convert path to absolute Path object
-        target_path = Path(path).resolve()
+    # Determine if we should scan files or use pre-scanned files
+    document_files_to_scan = []
+    scan_stats = None
 
-        # Validate path exists
-        if not target_path.exists():
-            click.secho(f"Error: Path '{path}' does not exist", fg="red", err=True)
-            raise click.Abort()
+    if scan:
+        # Scan mode: discover files from filesystem
+        # For backward compatibility: if no path provided, process entire repository recursively
+        # This maintains the original behavior of 'docman plan' with no arguments
+        if path is None and not recursive:
+            # Default behavior - process entire repository recursively
+            document_files_to_scan = discover_document_files(repo_root)
+            click.echo("Discovering documents recursively in entire repository...")
+        else:
+            # If path is None but recursive flag is set, treat as current directory
+            if path is None:
+                path = "."
+            # Explicit path provided - handle accordingly
+            # Convert path to absolute Path object
+            target_path = Path(path).resolve()
 
-        # Validate path is within repository
-        try:
-            target_path.relative_to(repo_root)
-        except ValueError:
-            click.secho(
-                f"Error: Path '{path}' is outside the repository at {repo_root}",
-                fg="red",
-                err=True,
-            )
-            raise click.Abort()
+            # Validate path exists
+            if not target_path.exists():
+                click.secho(f"Error: Path '{path}' does not exist", fg="red", err=True)
+                raise click.Abort()
 
-        # Determine what files to process
-        if target_path.is_file():
-            # Single file mode
-            if target_path.suffix.lower() not in SUPPORTED_EXTENSIONS:
+            # Validate path is within repository
+            try:
+                target_path.relative_to(repo_root)
+            except ValueError:
                 click.secho(
-                    f"Error: Unsupported file type '{target_path.suffix}'. "
-                    f"Supported extensions: {', '.join(sorted(SUPPORTED_EXTENSIONS))}",
+                    f"Error: Path '{path}' is outside the repository at {repo_root}",
                     fg="red",
                     err=True,
                 )
                 raise click.Abort()
 
-            # Create list with single relative path
-            rel_path = target_path.relative_to(repo_root)
-            document_files = [rel_path]
-            click.echo(f"Processing single file: {rel_path}")
-        else:
-            # Directory mode
-            if recursive:
-                # Recursive discovery from the target directory
-                if target_path == repo_root:
-                    document_files = discover_document_files(repo_root)
-                    click.echo("Discovering documents recursively in entire repository...")
-                else:
-                    # Recursive discovery in subdirectory - pass target_path as root_path
-                    document_files = discover_document_files(repo_root, root_path=target_path)
-                    rel_target = target_path.relative_to(repo_root)
-                    click.echo(f"Discovering documents recursively in: {rel_target}")
+            # Determine what files to process
+            if target_path.is_file():
+                # Single file mode
+                if target_path.suffix.lower() not in SUPPORTED_EXTENSIONS:
+                    click.secho(
+                        f"Error: Unsupported file type '{target_path.suffix}'. "
+                        f"Supported extensions: {', '.join(sorted(SUPPORTED_EXTENSIONS))}",
+                        fg="red",
+                        err=True,
+                    )
+                    raise click.Abort()
+
+                # Create list with single relative path
+                rel_path = target_path.relative_to(repo_root)
+                document_files_to_scan = [rel_path]
+                click.echo(f"Processing single file: {rel_path}")
             else:
-                # Shallow discovery - only immediate files
-                document_files = discover_document_files_shallow(repo_root, target_path)
-                rel_target = target_path.relative_to(repo_root)
-                click.echo(f"Discovering documents in: {rel_target} (non-recursive)")
+                # Directory mode
+                if recursive:
+                    # Recursive discovery from the target directory
+                    if target_path == repo_root:
+                        document_files_to_scan = discover_document_files(repo_root)
+                        click.echo("Discovering documents recursively in entire repository...")
+                    else:
+                        # Recursive discovery in subdirectory - pass target_path as root_path
+                        document_files_to_scan = discover_document_files(repo_root, root_path=target_path)
+                        rel_target = target_path.relative_to(repo_root)
+                        click.echo(f"Discovering documents recursively in: {rel_target}")
+                else:
+                    # Shallow discovery - only immediate files
+                    document_files_to_scan = discover_document_files_shallow(repo_root, target_path)
+                    rel_target = target_path.relative_to(repo_root)
+                    click.echo(f"Discovering documents in: {rel_target} (non-recursive)")
 
-    if not document_files:
-        click.echo("No document files found in repository.")
-        return
+        if not document_files_to_scan:
+            click.echo("No document files found to scan.")
+            return
 
-    click.echo(f"Found {len(document_files)} document file(s)\n")
+        click.echo(f"Found {len(document_files_to_scan)} document file(s) to scan\n")
 
     # Check if document organization instructions exist (required)
     organization_instructions = load_organization_instructions(repo_root)
@@ -556,178 +952,122 @@ def plan(path: str | None, recursive: bool, reprocess: bool) -> None:
     session = next(session_gen)
 
     try:
-        # Clean up orphaned copies (files that no longer exist)
-        deleted_count, _ = cleanup_orphaned_copies(session, repo_root)
-        if deleted_count > 0:
-            click.echo(f"Cleaned up {deleted_count} orphaned file(s)\n")
-
-        # Query existing copies in this repository
-        existing_copies = (
-            session.query(DocumentCopy)
-            .filter(DocumentCopy.repository_path == repository_path)
-            .all()
-        )
-        existing_copy_paths = {copy.file_path for copy in existing_copies}
-
         # Counters for summary
-        processed_count = 0
-        reused_count = 0
-        failed_count = 0
-        duplicate_count = 0  # Same document, different location
         skipped_count = 0  # Files skipped due to LLM or content extraction errors
         pending_ops_created = 0
         pending_ops_updated = 0
 
-        # Lazy import DocumentConverter only when needed (heavy import with ML/CV dependencies)
-        from docling.document_converter import DocumentConverter
+        if scan:
+            # Scan mode: extract content from discovered files
+            click.echo("Scanning files...\n")
+            scan_stats = _scan_documents(repo_root, document_files_to_scan, session)
 
-        # Create a single DocumentConverter instance to reuse for all files
-        converter = DocumentConverter()
+            # Display scan summary
+            click.echo("\n" + "=" * 50)
+            click.echo("Scan Summary:")
+            click.echo(f"  New documents processed: {scan_stats['processed_count']}")
+            click.echo(f"  Duplicate documents (already known): {scan_stats['duplicate_count']}")
+            click.echo(f"  Reused copies (already in this repo): {scan_stats['reused_count']}")
+            click.echo(f"  Failed (hash or extraction errors): {scan_stats['failed_count']}")
+            if scan_stats['deleted_count'] > 0:
+                click.echo(f"  Orphaned copies cleaned up: {scan_stats['deleted_count']}")
+            click.echo("=" * 50)
+            click.echo()
 
-        # Process each file
-        for idx, file_path in enumerate(document_files, start=1):
-            file_path_str = str(file_path)
-            percentage = int((idx / len(document_files)) * 100)
+            # Query copies to process for LLM suggestions (the ones we just scanned)
+            # Use the file paths from document_files_to_scan to filter copies
+            scanned_file_paths = [str(f) for f in document_files_to_scan]
+            copies_to_process = (
+                session.query(DocumentCopy)
+                .filter(DocumentCopy.repository_path == repository_path)
+                .filter(DocumentCopy.file_path.in_(scanned_file_paths))
+                .all()
+            )
+        else:
+            # No-scan mode: query database for existing copies
+            # Build query based on path argument
+            query = session.query(DocumentCopy).filter(
+                DocumentCopy.repository_path == repository_path
+            )
 
-            # Check if copy already exists in this repository at this path
-            if file_path_str in existing_copy_paths:
-                # Retrieve existing copy
-                copy = (
-                    session.query(DocumentCopy)
-                    .filter(
-                        DocumentCopy.repository_path == repository_path,
-                        DocumentCopy.file_path == file_path_str,
-                    )
-                    .first()
-                )
-                if not copy:
-                    click.echo("  Error: Expected copy not found in database")
-                    failed_count += 1
-                    continue
+            if path:
+                # Filter by path
+                target_path = Path(path).resolve()
 
-                full_path = repo_root / file_path
-
-                # Check if file content has changed
-                if file_needs_rehashing(copy, full_path):
-                    click.echo(
-                        f"[{idx}/{len(document_files)}] {percentage}% "
-                        f"Checking for changes: {file_path}"
-                    )
-
-                    # File metadata changed, rehash to check content
+                # Validate path exists (if checking filesystem)
+                if target_path.exists():
+                    # Validate path is within repository
                     try:
-                        content_hash = compute_content_hash(full_path)
-                    except Exception as e:
-                        click.echo(f"  Error computing hash: {e}")
-                        failed_count += 1
-                        continue
-
-                    # Check if content actually changed
-                    if content_hash != copy.document.content_hash:
-                        click.echo("  Content changed, updating document...")
-
-                        # Content changed - update or create new document
-                        new_document = (
-                            session.query(Document)
-                            .filter(Document.content_hash == content_hash)
-                            .first()
+                        rel_path = target_path.relative_to(repo_root)
+                    except ValueError:
+                        click.secho(
+                            f"Error: Path '{path}' is outside the repository at {repo_root}",
+                            fg="red",
+                            err=True,
                         )
+                        raise click.Abort()
 
-                        if new_document:
-                            # Document with this content already exists
-                            click.echo(f"  Found existing document (hash: {content_hash[:8]}...)")
-                            copy.document_id = new_document.id
-                            duplicate_count += 1
-                        else:
-                            # Extract new content
-                            content = extract_content(full_path, converter=converter)
-                            if content is None:
-                                click.echo("  Warning: Content extraction failed")
-                            else:
-                                click.echo(f"  Extracted {len(content)} characters")
-                                processed_count += 1
-
-                            # Create new document
-                            new_document = Document(content_hash=content_hash, content=content)
-                            session.add(new_document)
-                            session.flush()
-
-                            # Update copy to point to new document
-                            copy.document_id = new_document.id
-
-                        # Delete existing pending operation (will be regenerated)
-                        session.query(Operation).filter(
-                            Operation.document_copy_id == copy.id
-                        ).delete()
-
-                    # Update stored metadata
-                    stat = full_path.stat()
-                    copy.stored_content_hash = content_hash
-                    copy.stored_size = stat.st_size
-                    copy.stored_mtime = stat.st_mtime
-                    session.flush()
-                else:
-                    click.echo(
-                        f"[{idx}/{len(document_files)}] {percentage}% "
-                        f"Reusing existing copy: {file_path}"
-                    )
-                    reused_count += 1
-            else:
-                # Show progress
-                click.echo(f"[{idx}/{len(document_files)}] {percentage}% Processing: {file_path}")
-
-                # Step 1: Create new document and copy
-                # Compute content hash
-                full_path = repo_root / file_path
-                try:
-                    content_hash = compute_content_hash(full_path)
-                except Exception as e:
-                    click.echo(f"  Error computing hash: {e}")
-                    failed_count += 1
-                    continue
-
-                # Find or create canonical document
-                document = (
-                    session.query(Document)
-                    .filter(Document.content_hash == content_hash)
-                    .first()
-                )
-
-                if document:
-                    # Document already exists (found in another repo or location)
-                    click.echo(f"  Found existing document (hash: {content_hash[:8]}...)")
-                    duplicate_count += 1
-                else:
-                    # New document - extract content
-                    content = extract_content(full_path, converter=converter)
-
-                    if content is None:
-                        click.echo("  Warning: Content extraction failed")
-                        failed_count += 1
-                        # Still create the document with None content
+                    if target_path.is_file():
+                        # Single file - exact match
+                        query = query.filter(DocumentCopy.file_path == str(rel_path))
                     else:
-                        click.echo(f"  Extracted {len(content)} characters")
-                        processed_count += 1
+                        # Directory - filter by prefix
+                        if recursive:
+                            # Recursive: match all files under directory
+                            prefix = str(rel_path) + "/"
+                            query = query.filter(DocumentCopy.file_path.startswith(prefix))
+                        else:
+                            # Non-recursive: match files directly in directory
+                            # This is a bit tricky with SQL, we'll filter in Python
+                            pass
+                else:
+                    # Path doesn't exist on filesystem, but might exist in database
+                    # Treat as a filter pattern
+                    rel_path_str = str(Path(path))
+                    if recursive:
+                        # Recursive pattern match
+                        prefix = rel_path_str.rstrip("/") + "/"
+                        query = query.filter(DocumentCopy.file_path.startswith(prefix))
+                    else:
+                        # Non-recursive: exact match
+                        query = query.filter(DocumentCopy.file_path == rel_path_str)
 
-                    # Create new canonical document
-                    document = Document(content_hash=content_hash, content=content)
-                    session.add(document)
-                    session.flush()  # Get the document.id for the copy
+            copies_to_process = query.all()
 
-                # Create document copy for this repository with stored metadata
-                stat = full_path.stat()
-                copy = DocumentCopy(
-                    document_id=document.id,
-                    repository_path=repository_path,
-                    file_path=file_path_str,
-                    stored_content_hash=content_hash,
-                    stored_size=stat.st_size,
-                    stored_mtime=stat.st_mtime,
-                )
-                session.add(copy)
-                session.flush()  # Get the copy.id for the pending operation
+            # Apply non-recursive directory filtering in Python if needed
+            if path and not recursive:
+                target_path = Path(path).resolve()
+                if target_path.exists() and target_path.is_dir():
+                    rel_path = target_path.relative_to(repo_root)
+                    prefix = str(rel_path) + "/" if str(rel_path) != "." else ""
+                    # Filter to only include files directly in this directory (no subdirs)
+                    copies_to_process = [
+                        copy for copy in copies_to_process
+                        if (Path(copy.file_path).parent == rel_path if str(rel_path) != "."
+                            else "/" not in copy.file_path)
+                    ]
 
-            # Step 2: Check organization status and skip if already organized/ignored
+            if not copies_to_process:
+                click.echo("No scanned documents found to process.")
+                click.echo("Run 'docman scan' first to scan documents, or use 'docman plan --scan' to scan and plan in one command.")
+                return
+
+            click.echo(f"Found {len(copies_to_process)} scanned document(s) to process\n")
+
+        # Now generate LLM suggestions for all copies_to_process
+        click.echo("Generating LLM suggestions...\n")
+
+        # Process each copy
+        for idx, copy in enumerate(copies_to_process, start=1):
+            file_path_str = copy.file_path
+            percentage = int((idx / len(copies_to_process)) * 100)
+
+            click.echo(
+                f"[{idx}/{len(copies_to_process)}] {percentage}% "
+                f"Processing: {file_path_str}"
+            )
+
+            # Step 1: Check organization status and skip if already organized/ignored
             # (unless --reprocess flag is set)
             if not reprocess and copy.organization_status in (OrganizationStatus.ORGANIZED, OrganizationStatus.IGNORED):
                 status_label = "organized" if copy.organization_status == OrganizationStatus.ORGANIZED else "ignored"
@@ -844,15 +1184,20 @@ def plan(path: str | None, recursive: bool, reprocess: bool) -> None:
 
         # Display summary
         click.echo("\n" + "=" * 50)
-        click.echo("Summary:")
-        click.echo(f"  New documents processed: {processed_count}")
-        click.echo(f"  Duplicate documents (already known): {duplicate_count}")
-        click.echo(f"  Reused copies (already in this repo): {reused_count}")
-        click.echo(f"  Failed (hash or extraction errors): {failed_count}")
+        click.echo("Plan Summary:")
+        if scan and scan_stats:
+            # Show scan stats if we scanned files
+            click.echo("Scan stats:")
+            click.echo(f"  New documents processed: {scan_stats['processed_count']}")
+            click.echo(f"  Duplicate documents (already known): {scan_stats['duplicate_count']}")
+            click.echo(f"  Reused copies (already in this repo): {scan_stats['reused_count']}")
+            click.echo(f"  Failed (hash or extraction errors): {scan_stats['failed_count']}")
+            click.echo()
+        click.echo("LLM suggestion stats:")
         click.echo(f"  Skipped (LLM or content errors): {skipped_count}")
         click.echo(f"  Pending operations created: {pending_ops_created}")
         click.echo(f"  Pending operations updated: {pending_ops_updated}")
-        click.echo(f"  Total files: {len(document_files)}")
+        click.echo(f"  Total documents processed: {len(copies_to_process)}")
         click.echo("=" * 50)
 
         # Check for duplicates and show warning

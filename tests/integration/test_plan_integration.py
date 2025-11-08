@@ -63,7 +63,7 @@ class TestDocmanPlan:
 
     @patch("docman.cli.extract_content")
     @patch("docman.cli.compute_content_hash")
-    def test_plan_success_with_documents(
+    def test_plan_with_scan_flag(
         self,
         mock_hash: Mock,
         mock_extract: Mock,
@@ -71,7 +71,7 @@ class TestDocmanPlan:
         tmp_path: Path,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        """Test successful plan execution with documents."""
+        """Test plan with --scan flag (scans and generates suggestions)."""
         repo_dir = self.setup_isolated_env(tmp_path, monkeypatch)
 
         # Create test documents
@@ -87,18 +87,19 @@ class TestDocmanPlan:
         # Change to the repository directory
         monkeypatch.chdir(repo_dir)
 
-        # Run plan command
-        result = cli_runner.invoke(main, ["plan"], catch_exceptions=False)
+        # Run plan command with --scan flag
+        result = cli_runner.invoke(main, ["plan", "--scan"], catch_exceptions=False)
 
         # Verify exit code
         assert result.exit_code == 0
 
         # Verify output
         assert "Processing documents in repository:" in result.output
-        assert "Found 2 document file(s)" in result.output
-        assert "Processing: test1.pdf" in result.output or "Processing: test2.docx" in result.output
-        assert "Summary:" in result.output
+        assert "Found 2 document file(s) to scan" in result.output
+        assert "Scanning files..." in result.output
+        assert "Scan Summary:" in result.output
         assert "New documents processed: 2" in result.output
+        assert "Plan Summary:" in result.output
 
         # Verify documents and copies were added to database
         session_gen = get_session()
@@ -118,6 +119,66 @@ class TestDocmanPlan:
                 next(session_gen)
             except StopIteration:
                 pass
+
+    @patch("docman.cli.extract_content")
+    @patch("docman.cli.compute_content_hash")
+    def test_plan_without_scan_uses_prescanned_files(
+        self,
+        mock_hash: Mock,
+        mock_extract: Mock,
+        cli_runner: CliRunner,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Test plan without --scan flag uses pre-scanned files."""
+        repo_dir = self.setup_isolated_env(tmp_path, monkeypatch)
+
+        # Create test document
+        (repo_dir / "test1.pdf").touch()
+        stat = (repo_dir / "test1.pdf").stat()
+
+        # Pre-populate database with scanned document
+        session_gen = get_session()
+        session = next(session_gen)
+        try:
+            doc = Document(content_hash="hash_test1", content="Extracted content")
+            session.add(doc)
+            session.flush()
+
+            copy = DocumentCopy(
+                document_id=doc.id,
+                repository_path=str(repo_dir),
+                file_path="test1.pdf",
+                stored_content_hash="hash_test1",
+                stored_size=stat.st_size,
+                stored_mtime=stat.st_mtime,
+            )
+            session.add(copy)
+            session.commit()
+        finally:
+            try:
+                next(session_gen)
+            except StopIteration:
+                pass
+
+        # Change to the repository directory
+        monkeypatch.chdir(repo_dir)
+
+        # Run plan command without --scan flag
+        result = cli_runner.invoke(main, ["plan"], catch_exceptions=False)
+
+        # Verify exit code
+        assert result.exit_code == 0
+
+        # Verify output shows it's using pre-scanned files
+        assert "Found 1 scanned document(s) to process" in result.output
+        assert "Generating LLM suggestions..." in result.output
+        assert "Plan Summary:" in result.output
+
+        # extract_content should NOT be called (files already scanned)
+        mock_extract.assert_not_called()
+        # compute_content_hash should NOT be called (files already scanned)
+        mock_hash.assert_not_called()
 
     @patch("docman.cli.extract_content")
     @patch("docman.cli.compute_content_hash")
@@ -175,8 +236,8 @@ class TestDocmanPlan:
         # Change to the repository directory
         monkeypatch.chdir(repo_dir)
 
-        # Run plan command
-        result = cli_runner.invoke(main, ["plan"], catch_exceptions=False)
+        # Run plan command with --scan flag
+        result = cli_runner.invoke(main, ["plan", "--scan"], catch_exceptions=False)
 
         # Verify exit code
         assert result.exit_code == 0
@@ -184,6 +245,7 @@ class TestDocmanPlan:
         # Verify output
         assert "Reusing existing copy: test1.pdf" in result.output
         assert "Processing: test2.pdf" in result.output
+        assert "Scan Summary:" in result.output
         assert "New documents processed: 1" in result.output
         assert "Reused copies (already in this repo): 1" in result.output
 
