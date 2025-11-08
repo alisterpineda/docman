@@ -6,7 +6,13 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 `docman` is a CLI tool for organizing documents using AI-powered analysis.
 
-**Workflow**: `plan` → `status` → `review`
+**Workflow**: `scan` → `plan` → `status` → `review`
+
+**Important**: The workflow has been refactored into two phases:
+- **`scan`**: Discovers files, extracts content, stores in database (no LLM calls)
+- **`plan`**: Generates LLM suggestions for already-scanned documents only
+
+This separation improves performance and allows deduplication before expensive LLM calls.
 
 **Core Technologies**:
 - **docling** for document content extraction
@@ -138,8 +144,14 @@ Three main tables model document tracking and operations:
 
 ### Document Processing Flow
 
+The document processing flow is split into two phases: **scan** (indexing) and **plan** (suggestion generation).
+
+#### Phase 1: Scan (`docman scan`)
+
+Indexes documents and extracts content without generating LLM suggestions.
+
 1. **Garbage Collection** (`cleanup_orphaned_copies()`):
-   - Runs at start of `plan` command
+   - Runs at start of `scan` command
    - Deletes `DocumentCopy` for files that no longer exist on disk
    - Updates `last_seen_at` for existing files
 
@@ -149,37 +161,53 @@ Three main tables model document tracking and operations:
    - `discover_document_files_shallow()`: Non-recursive
    - Filters by `SUPPORTED_EXTENSIONS` (PDF, DOCX, TXT, etc.)
 
-3. **Stale Content Detection** (`file_needs_rehashing()`):
-   - Checks `stored_size` and `stored_mtime` vs current file
-   - Only rehashes if metadata changed (performance optimization)
-   - If content changed: updates/creates `Document`, invalidates `Operation`
+3. **Document Processing** (`process_document_file()` in `processor.py`):
+   - **Stale Content Detection** (`file_needs_rehashing()`):
+     - Checks `stored_size` and `stored_mtime` vs current file
+     - Only rehashes if metadata changed (performance optimization)
+     - Skips processing if file hasn't changed (unless `--rescan` flag set)
+   - **Content Extraction**:
+     - Uses docling `DocumentConverter` to extract text content
+     - Accepts optional `converter` parameter for reuse (performance optimization)
+     - `scan` command creates single converter instance for all files
+     - Computes content hash for deduplication
+   - **Database Storage**:
+     - Find or create `Document` (by content hash)
+     - Create/update `DocumentCopy` with stored metadata
+     - Returns `(DocumentCopy, ProcessingResult)` tuple
 
-4. **Content Extraction** (`processor.py`):
-   - Uses docling `DocumentConverter` to extract text content
-   - Accepts optional `converter` parameter for reuse (performance optimization)
-   - `plan` command creates single converter instance for all files
-   - Computes content hash for deduplication
+**Error Handling**:
+- **Content extraction failures**: File counted in `failed_count`, document created with `content=None`
+- **Hash computation failures**: File skipped entirely
 
-5. **Database Storage** (`models.py`):
-   - Create/update `Document` (by content hash)
-   - Create/update `DocumentCopy` with stored metadata
+#### Phase 2: Plan (`docman plan`)
 
-6. **Invalidation Check** (multi-factor):
+Generates LLM organization suggestions for already-scanned documents.
+
+1. **Query Pre-Scanned Documents** (`query_documents_needing_suggestions()`):
+   - Filters by `organization_status` (UNORGANIZED by default)
+   - Filters by path if provided
+   - Returns `[(DocumentCopy, Document)]` tuples
+
+2. **Warn About Unscanned Files**:
+   - If no documents found, checks for unscanned files
+   - Suggests running `docman scan` or `docman plan --scan`
+
+3. **Invalidation Check** (`operation_needs_regeneration()`):
    - Compares: `prompt_hash`, `document_content_hash`, `model_name`
-   - Regenerates if any changed
+   - Returns `(needs_regeneration, reason)` tuple
+   - Resets `organization_status` to UNORGANIZED if invalidated
 
-7. **LLM Suggestion** (`cli.py` `plan` command):
+4. **LLM Suggestion Generation**:
    - Load organization instructions from `.docman/instructions.md`
    - Build prompts using `prompt_builder.py`
    - Call LLM provider for suggestions
    - Store in `Operation` with all tracking fields
 
 **Error Handling**:
-- **Content extraction failures**: File counted in `failed_count`, no `Operation` created
-- **LLM API failures**: File skipped, counted in `skipped_count`, no `Operation` created
-- **No double counting**: Extraction failures don't increment `skipped_count`
-- **Stale operations cleanup**: Existing `Operation` deleted if file now fails processing
-- **Summary statistics**: Shows distinct counts for failed (extraction) vs skipped (LLM) files
+- **No content available**: File skipped, existing `Operation` deleted
+- **LLM API failures**: File skipped, counted in `skipped_count`, existing `Operation` deleted
+- **Summary statistics**: Shows operations created/updated and files skipped
 
 ### Apply/Reject Workflow
 
@@ -256,9 +284,16 @@ This ensures organized files are re-analyzed when conditions change, but saves c
 
 *Standard workflow (organize once)*:
 ```bash
-docman plan                    # Creates suggestions for all unorganized files
-docman review --apply-all -y   # Applies suggestions, marks as organized
+docman scan                    # Scan and index all documents
+docman plan                    # Generate suggestions for all unorganized files
+docman review --apply-all -y   # Apply suggestions, mark as organized
 docman plan                    # Skips organized files, no LLM calls
+```
+
+*Quick workflow (scan + plan in one step)*:
+```bash
+docman plan --scan             # Scan first, then generate suggestions
+docman review --apply-all -y   # Apply suggestions
 ```
 
 *Re-organize after instruction changes*:
@@ -284,9 +319,15 @@ docman unmark archives/ -r -y   # Reset to unorganized to re-process
 
 Main commands:
 - `docman init [directory]`: Initialize repository
-- `docman plan [path]`: Analyze documents and generate LLM organization suggestions
+- `docman scan [path]`: Scan and index documents (extract content, compute hashes, store in database)
+  - `-r/--recursive`: Recursively scan subdirectories
+  - `--rescan`: Force re-scan of already-scanned files
+  - Does NOT generate LLM suggestions or create Operation records
+- `docman plan [path]`: Generate LLM organization suggestions for scanned documents
+  - `--scan`: Run scan first before generating suggestions
   - `--reprocess`: Reprocess all files, including those already organized or ignored
-  - Shows warnings when duplicates detected to save LLM costs
+  - Queries pre-scanned documents from database
+  - Warns when unscanned files detected
 - `docman status [path]`: Review pending operations (shows paths, confidence, reasons, organization status)
   - Groups duplicate files together visually
   - Shows conflict warnings when multiple files target same destination
@@ -319,10 +360,9 @@ Main commands:
 **Workflow for Managing Duplicates**:
 ```bash
 # Standard workflow with deduplication
-docman plan                    # Shows duplicate warning with count
-docman status                  # Duplicates grouped with [1a], [1b] numbering
-docman dedupe                  # Interactively resolve duplicates
-docman plan                    # Generate suggestions for remaining files
+docman scan                    # Scan and index all documents
+docman dedupe                  # Interactively resolve duplicates before planning
+docman plan                    # Generate suggestions for remaining unique files
 docman review --apply-all -y   # Apply suggestions (no conflicts)
 
 # Quick bulk deduplication

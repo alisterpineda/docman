@@ -18,6 +18,7 @@ from sqlalchemy import (
 from sqlalchemy.orm import (  # type: ignore[attr-defined]
     DeclarativeBase,
     Mapped,
+    Session,
     mapped_column,
     relationship,
 )
@@ -288,3 +289,82 @@ def file_needs_rehashing(copy: DocumentCopy, file_path: Path) -> bool:
 
     # Metadata matches, no need to rehash
     return False
+
+
+def operation_needs_regeneration(
+    operation: Operation | None,
+    current_prompt_hash: str,
+    document_content_hash: str,
+    model_name: str | None,
+) -> tuple[bool, str | None]:
+    """Check if an operation needs to be regenerated based on invalidation criteria.
+
+    Args:
+        operation: Existing pending operation, or None if no operation exists.
+        current_prompt_hash: Current hash of the system prompt + instructions.
+        document_content_hash: Current hash of the document content.
+        model_name: Current model name being used.
+
+    Returns:
+        Tuple of (needs_regeneration, reason):
+            - needs_regeneration: True if the operation should be regenerated.
+            - reason: Human-readable string explaining why, or None if no regeneration needed.
+    """
+    if not operation:
+        return True, None
+
+    if operation.prompt_hash != current_prompt_hash:
+        return True, "Prompt or model changed"
+
+    if operation.document_content_hash != document_content_hash:
+        return True, "Document content changed"
+
+    if model_name and operation.model_name != model_name:
+        return True, "Model changed"
+
+    return False, None
+
+
+def query_documents_needing_suggestions(
+    session: Session,
+    repository_path: str,
+    path_filter: str | None = None,
+    include_organized: bool = False,
+) -> list[tuple[DocumentCopy, Document]]:
+    """Query DocumentCopy records that need LLM processing.
+
+    Args:
+        session: SQLAlchemy session.
+        repository_path: Absolute path to the repository root.
+        path_filter: Optional path filter (file or directory).
+        include_organized: If True, include documents with ORGANIZED or IGNORED status.
+
+    Returns:
+        List of (DocumentCopy, Document) tuples that need LLM suggestions.
+    """
+    # Build base query
+    query = (
+        session.query(DocumentCopy, Document)
+        .join(Document, DocumentCopy.document_id == Document.id)
+        .filter(DocumentCopy.repository_path == repository_path)
+    )
+
+    # Filter by organization status (unless include_organized is True)
+    if not include_organized:
+        query = query.filter(
+            DocumentCopy.organization_status.in_(
+                [OrganizationStatus.UNORGANIZED]
+            )
+        )
+
+    # Filter by path if provided
+    if path_filter:
+        # Normalize path filter to use as prefix
+        if not path_filter.endswith("/"):
+            # Check if it's a file or directory
+            # For now, we'll check if it starts with the path
+            query = query.filter(DocumentCopy.file_path.like(f"{path_filter}%"))
+        else:
+            query = query.filter(DocumentCopy.file_path.like(f"{path_filter}%"))
+
+    return query.all()
