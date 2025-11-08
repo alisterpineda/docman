@@ -112,6 +112,7 @@ Three main tables model document tracking and operations:
   - When structured output enabled: API enforces schema, prompt omits format details
   - When disabled: Includes explicit JSON format instructions for compatibility
 - `user_prompt.j2`: Per-document prompt with file path, content, and organization instructions
+  - Document content wrapped in `<documentContent>` XML tags for clear boundary marking
 - Smart content truncation: Keeps beginning (60%) and end (30%) of long documents
 - Prompt hash caching: Avoids redundant LLM calls when prompts haven't changed
 
