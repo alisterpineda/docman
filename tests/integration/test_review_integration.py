@@ -1303,3 +1303,553 @@ class TestReviewSecurityCleanup:
                 next(session_gen)
             except StopIteration:
                 pass
+
+
+class TestReprocessConversationHistory:
+    """Tests for conversational re-process feature with prompt history tracking."""
+
+    def setup_repository(self, path: Path) -> None:
+        """Set up a docman repository for testing."""
+        docman_dir = path / ".docman"
+        docman_dir.mkdir()
+        config_file = docman_dir / "config.yaml"
+        config_file.touch()
+
+        # Create instructions file (required)
+        instructions_file = docman_dir / "instructions.md"
+        instructions_file.write_text("Organize documents by category and date.")
+
+    def setup_isolated_env(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+        """Set up isolated environment with separate app config and repository."""
+        app_config_dir = tmp_path / "app_config"
+        repo_dir = tmp_path / "repo"
+        repo_dir.mkdir()
+        monkeypatch.setenv("DOCMAN_APP_CONFIG_DIR", str(app_config_dir))
+        self.setup_repository(repo_dir)
+        return repo_dir
+
+    def create_pending_operation(
+        self,
+        repo_path: str,
+        file_path: str,
+        suggested_dir: str,
+        suggested_filename: str,
+        reason: str = "Test reason",
+    ) -> None:
+        """Helper to create a pending operation in the database."""
+        ensure_database()
+        session_gen = get_session()
+        session = next(session_gen)
+        try:
+            # Create document
+            doc = Document(
+                content="Invoice #123\nDate: 2024-01-15\nVendor: ACME Corp",
+                content_hash="test_hash_123",
+            )
+            session.add(doc)
+            session.flush()
+
+            # Create document copy
+            doc_copy = DocumentCopy(
+                repository_path=repo_path,
+                file_path=file_path,
+                document_id=doc.id,
+                stored_content_hash="test_hash_123",
+                stored_size=100,
+                stored_mtime=123456.0,
+                organization_status=OrganizationStatus.UNORGANIZED,
+            )
+            session.add(doc_copy)
+            session.flush()
+
+            # Create pending operation
+            op = Operation(
+                document_copy_id=doc_copy.id,
+                suggested_directory_path=suggested_dir,
+                suggested_filename=suggested_filename,
+                reason=reason,
+                status=OperationStatus.PENDING,
+                prompt_hash="test_hash",
+                document_content_hash="test_hash_123",
+                model_name="test-model",
+                created_at=get_utc_now(),
+            )
+            session.add(op)
+            session.commit()
+        finally:
+            try:
+                next(session_gen)
+            except StopIteration:
+                pass
+
+    def test_prompt_includes_first_iteration_history(
+        self, cli_runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Test that prompt includes first suggestion and user feedback after first re-process."""
+        repo_dir = self.setup_isolated_env(tmp_path, monkeypatch)
+        monkeypatch.chdir(repo_dir)
+
+        # Create source file
+        source_file = repo_dir / "inbox" / "invoice.pdf"
+        source_file.parent.mkdir(parents=True)
+        source_file.write_text("Invoice #123\nDate: 2024-01-15\nVendor: ACME Corp")
+
+        # Create pending operation with initial suggestion
+        self.create_pending_operation(
+            repo_path=str(repo_dir),
+            file_path="inbox/invoice.pdf",
+            suggested_dir="invoices/2024",
+            suggested_filename="invoice.pdf",
+            reason="Organizing by year",
+        )
+
+        # Mock LLM provider
+        mock_provider_config = ProviderConfig(
+            name="test-provider",
+            provider_type="google",
+            model="gemini-1.5-flash",
+            is_active=True,
+        )
+        mock_provider_instance = Mock()
+        mock_provider_instance.supports_structured_output = True
+        mock_provider_instance.generate_suggestions.return_value = {
+            "suggested_directory_path": "invoices/2024/acme-corp",
+            "suggested_filename": "invoice.pdf",
+            "reason": "Added vendor directory",
+        }
+
+        monkeypatch.setattr("docman.cli.get_active_provider", Mock(return_value=mock_provider_config))
+        monkeypatch.setattr("docman.cli.get_api_key", Mock(return_value="test-api-key"))
+        monkeypatch.setattr("docman.cli.get_llm_provider", Mock(return_value=mock_provider_instance))
+
+        # Simulate: Process -> user feedback -> Skip
+        result = cli_runner.invoke(
+            main,
+            ["review"],
+            input="P\nInclude vendor name in directory\nS\n",
+            catch_exceptions=False,
+        )
+
+        assert result.exit_code == 0
+        assert "New suggestion generated!" in result.output
+
+        # Verify generate_suggestions was called once
+        assert mock_provider_instance.generate_suggestions.call_count == 1
+
+        # Get the actual prompt that was passed
+        call_args = mock_provider_instance.generate_suggestions.call_args
+        system_prompt = call_args[0][0]
+        user_prompt = call_args[0][1]
+
+        # Verify base prompt structure
+        assert "<organizationInstructions>" in user_prompt
+        assert "Organize documents by category and date" in user_prompt
+        assert "<documentContent" in user_prompt
+        assert 'filePath="inbox/invoice.pdf"' in user_prompt
+
+        # Verify conversation history is included
+        # Should have: original suggestion in JSON format
+        assert '"suggested_directory_path": "invoices/2024"' in user_prompt
+        assert '"suggested_filename": "invoice.pdf"' in user_prompt
+        assert '"reason": "Organizing by year"' in user_prompt
+
+        # Should have: user feedback in XML tags
+        assert "<userFeedback>" in user_prompt
+        assert "Include vendor name in directory" in user_prompt
+        assert "</userFeedback>" in user_prompt
+
+    def test_prompt_includes_multiple_iteration_history(
+        self, cli_runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Test that prompt grows to include all iterations in conversation."""
+        repo_dir = self.setup_isolated_env(tmp_path, monkeypatch)
+        monkeypatch.chdir(repo_dir)
+
+        # Create source file
+        source_file = repo_dir / "inbox" / "invoice.pdf"
+        source_file.parent.mkdir(parents=True)
+        source_file.write_text("Invoice #123\nDate: 2024-01-15\nVendor: ACME Corp")
+
+        # Create pending operation with initial suggestion
+        self.create_pending_operation(
+            repo_path=str(repo_dir),
+            file_path="inbox/invoice.pdf",
+            suggested_dir="invoices/2024",
+            suggested_filename="invoice.pdf",
+            reason="Organizing by year",
+        )
+
+        # Mock LLM provider with different responses for each call
+        mock_provider_config = ProviderConfig(
+            name="test-provider",
+            provider_type="google",
+            model="gemini-1.5-flash",
+            is_active=True,
+        )
+        mock_provider_instance = Mock()
+        mock_provider_instance.supports_structured_output = True
+        mock_provider_instance.generate_suggestions.side_effect = [
+            # First re-process response
+            {
+                "suggested_directory_path": "invoices/2024/acme-corp",
+                "suggested_filename": "invoice.pdf",
+                "reason": "Added vendor directory",
+            },
+            # Second re-process response
+            {
+                "suggested_directory_path": "invoices/2024/acme-corp",
+                "suggested_filename": "invoice_123.pdf",
+                "reason": "Added invoice number to filename",
+            },
+        ]
+
+        monkeypatch.setattr("docman.cli.get_active_provider", Mock(return_value=mock_provider_config))
+        monkeypatch.setattr("docman.cli.get_api_key", Mock(return_value="test-api-key"))
+        monkeypatch.setattr("docman.cli.get_llm_provider", Mock(return_value=mock_provider_instance))
+
+        # Simulate: Process -> feedback 1 -> Process -> feedback 2 -> Skip
+        result = cli_runner.invoke(
+            main,
+            ["review"],
+            input="P\nInclude vendor name\nP\nInclude invoice number in filename\nS\n",
+            catch_exceptions=False,
+        )
+
+        assert result.exit_code == 0
+        assert result.output.count("New suggestion generated!") == 2
+
+        # Verify generate_suggestions was called twice
+        assert mock_provider_instance.generate_suggestions.call_count == 2
+
+        # Check the SECOND call to verify it has full conversation history
+        second_call_args = mock_provider_instance.generate_suggestions.call_args_list[1]
+        user_prompt_iter2 = second_call_args[0][1]
+
+        # Should have base document content
+        assert "<documentContent" in user_prompt_iter2
+        assert 'filePath="inbox/invoice.pdf"' in user_prompt_iter2
+
+        # Should have FIRST iteration (original suggestion + feedback)
+        assert '"suggested_directory_path": "invoices/2024"' in user_prompt_iter2
+        assert '"reason": "Organizing by year"' in user_prompt_iter2
+        assert "Include vendor name" in user_prompt_iter2
+
+        # Should have SECOND iteration (first regenerated suggestion + feedback)
+        assert '"suggested_directory_path": "invoices/2024/acme-corp"' in user_prompt_iter2
+        assert '"reason": "Added vendor directory"' in user_prompt_iter2
+        assert "Include invoice number in filename" in user_prompt_iter2
+
+        # Count occurrences of userFeedback tags - should have 2 sets
+        assert user_prompt_iter2.count("<userFeedback>") == 2
+        assert user_prompt_iter2.count("</userFeedback>") == 2
+
+    def test_conversation_resets_between_operations(
+        self, cli_runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Test that conversation history resets when moving to next operation."""
+        repo_dir = self.setup_isolated_env(tmp_path, monkeypatch)
+        monkeypatch.chdir(repo_dir)
+
+        # Create two source files
+        file1 = repo_dir / "inbox" / "doc1.pdf"
+        file2 = repo_dir / "inbox" / "doc2.pdf"
+        file1.parent.mkdir(parents=True)
+        file1.write_text("Document 1 content")
+        file2.write_text("Document 2 content")
+
+        # Create two pending operations
+        # First operation
+        ensure_database()
+        session_gen = get_session()
+        session = next(session_gen)
+        try:
+            doc1 = Document(content="Document 1 content", content_hash="hash1")
+            session.add(doc1)
+            session.flush()
+
+            copy1 = DocumentCopy(
+                repository_path=str(repo_dir),
+                file_path="inbox/doc1.pdf",
+                document_id=doc1.id,
+                stored_content_hash="hash1",
+                stored_size=100,
+                stored_mtime=123456.0,
+                organization_status=OrganizationStatus.UNORGANIZED,
+            )
+            session.add(copy1)
+            session.flush()
+
+            op1 = Operation(
+                document_copy_id=copy1.id,
+                suggested_directory_path="docs",
+                suggested_filename="doc1.pdf",
+                reason="First doc",
+                status=OperationStatus.PENDING,
+                prompt_hash="hash1",
+                document_content_hash="hash1",
+                model_name="test-model",
+                created_at=get_utc_now(),
+            )
+            session.add(op1)
+
+            # Second operation
+            doc2 = Document(content="Document 2 content", content_hash="hash2")
+            session.add(doc2)
+            session.flush()
+
+            copy2 = DocumentCopy(
+                repository_path=str(repo_dir),
+                file_path="inbox/doc2.pdf",
+                document_id=doc2.id,
+                stored_content_hash="hash2",
+                stored_size=100,
+                stored_mtime=123456.0,
+                organization_status=OrganizationStatus.UNORGANIZED,
+            )
+            session.add(copy2)
+            session.flush()
+
+            op2 = Operation(
+                document_copy_id=copy2.id,
+                suggested_directory_path="docs",
+                suggested_filename="doc2.pdf",
+                reason="Second doc",
+                status=OperationStatus.PENDING,
+                prompt_hash="hash2",
+                document_content_hash="hash2",
+                model_name="test-model",
+                created_at=get_utc_now(),
+            )
+            session.add(op2)
+            session.commit()
+        finally:
+            try:
+                next(session_gen)
+            except StopIteration:
+                pass
+
+        # Mock LLM provider
+        mock_provider_config = ProviderConfig(
+            name="test-provider",
+            provider_type="google",
+            model="gemini-1.5-flash",
+            is_active=True,
+        )
+        mock_provider_instance = Mock()
+        mock_provider_instance.supports_structured_output = True
+        mock_provider_instance.generate_suggestions.side_effect = [
+            # First re-process on doc1
+            {"suggested_directory_path": "new1", "suggested_filename": "new1.pdf", "reason": "Updated 1"},
+            # Re-process on doc2 (should NOT have doc1's history)
+            {"suggested_directory_path": "new2", "suggested_filename": "new2.pdf", "reason": "Updated 2"},
+        ]
+
+        monkeypatch.setattr("docman.cli.get_active_provider", Mock(return_value=mock_provider_config))
+        monkeypatch.setattr("docman.cli.get_api_key", Mock(return_value="test-api-key"))
+        monkeypatch.setattr("docman.cli.get_llm_provider", Mock(return_value=mock_provider_instance))
+
+        # Simulate: Process doc1 -> feedback -> Skip -> Process doc2 -> feedback -> Skip
+        result = cli_runner.invoke(
+            main,
+            ["review"],
+            input="P\nFeedback for doc1\nS\nP\nFeedback for doc2\nS\n",
+            catch_exceptions=False,
+        )
+
+        assert result.exit_code == 0
+        assert mock_provider_instance.generate_suggestions.call_count == 2
+
+        # Check first call - should have doc1 info
+        first_call_prompt = mock_provider_instance.generate_suggestions.call_args_list[0][0][1]
+        assert 'filePath="inbox/doc1.pdf"' in first_call_prompt
+        assert "Feedback for doc1" in first_call_prompt
+        assert "Feedback for doc2" not in first_call_prompt
+
+        # Check second call - should have doc2 info, NOT doc1 history
+        second_call_prompt = mock_provider_instance.generate_suggestions.call_args_list[1][0][1]
+        assert 'filePath="inbox/doc2.pdf"' in second_call_prompt
+        assert "Feedback for doc2" in second_call_prompt
+        # Should NOT contain doc1's feedback
+        assert "Feedback for doc1" not in second_call_prompt
+        assert 'filePath="inbox/doc1.pdf"' not in second_call_prompt
+
+    def test_special_characters_in_feedback(
+        self, cli_runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Test that special characters in feedback are properly handled in prompt."""
+        repo_dir = self.setup_isolated_env(tmp_path, monkeypatch)
+        monkeypatch.chdir(repo_dir)
+
+        # Create source file
+        source_file = repo_dir / "inbox" / "test.pdf"
+        source_file.parent.mkdir(parents=True)
+        source_file.write_text("Test content")
+
+        # Create pending operation
+        self.create_pending_operation(
+            repo_path=str(repo_dir),
+            file_path="inbox/test.pdf",
+            suggested_dir="docs",
+            suggested_filename="test.pdf",
+            reason="Initial",
+        )
+
+        # Mock LLM provider
+        mock_provider_config = ProviderConfig(
+            name="test-provider",
+            provider_type="google",
+            model="gemini-1.5-flash",
+            is_active=True,
+        )
+        mock_provider_instance = Mock()
+        mock_provider_instance.supports_structured_output = True
+        mock_provider_instance.generate_suggestions.return_value = {
+            "suggested_directory_path": "updated",
+            "suggested_filename": "updated.pdf",
+            "reason": "Updated",
+        }
+
+        monkeypatch.setattr("docman.cli.get_active_provider", Mock(return_value=mock_provider_config))
+        monkeypatch.setattr("docman.cli.get_api_key", Mock(return_value="test-api-key"))
+        monkeypatch.setattr("docman.cli.get_llm_provider", Mock(return_value=mock_provider_instance))
+
+        # Feedback with special XML/JSON characters
+        special_feedback = 'Use <tag> & "quotes" and \\slashes\\ in path'
+
+        # Simulate: Process -> special feedback -> Skip
+        result = cli_runner.invoke(
+            main,
+            ["review"],
+            input=f"P\n{special_feedback}\nS\n",
+            catch_exceptions=False,
+        )
+
+        assert result.exit_code == 0
+
+        # Verify the feedback was included in the prompt
+        call_args = mock_provider_instance.generate_suggestions.call_args
+        user_prompt = call_args[0][1]
+
+        # Feedback should be in XML tags
+        assert "<userFeedback>" in user_prompt
+        assert special_feedback in user_prompt
+        assert "</userFeedback>" in user_prompt
+
+    def test_very_long_feedback(
+        self, cli_runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Test handling of very long user feedback in conversation."""
+        repo_dir = self.setup_isolated_env(tmp_path, monkeypatch)
+        monkeypatch.chdir(repo_dir)
+
+        # Create source file
+        source_file = repo_dir / "inbox" / "test.pdf"
+        source_file.parent.mkdir(parents=True)
+        source_file.write_text("Test content")
+
+        # Create pending operation
+        self.create_pending_operation(
+            repo_path=str(repo_dir),
+            file_path="inbox/test.pdf",
+            suggested_dir="docs",
+            suggested_filename="test.pdf",
+            reason="Initial",
+        )
+
+        # Mock LLM provider
+        mock_provider_config = ProviderConfig(
+            name="test-provider",
+            provider_type="google",
+            model="gemini-1.5-flash",
+            is_active=True,
+        )
+        mock_provider_instance = Mock()
+        mock_provider_instance.supports_structured_output = True
+        mock_provider_instance.generate_suggestions.return_value = {
+            "suggested_directory_path": "updated",
+            "suggested_filename": "updated.pdf",
+            "reason": "Updated",
+        }
+
+        monkeypatch.setattr("docman.cli.get_active_provider", Mock(return_value=mock_provider_config))
+        monkeypatch.setattr("docman.cli.get_api_key", Mock(return_value="test-api-key"))
+        monkeypatch.setattr("docman.cli.get_llm_provider", Mock(return_value=mock_provider_instance))
+
+        # Very long feedback (2000+ characters)
+        long_feedback = ("Please organize this document carefully. " * 50).strip()
+
+        # Simulate: Process -> long feedback -> Skip
+        result = cli_runner.invoke(
+            main,
+            ["review"],
+            input=f"P\n{long_feedback}\nS\n",
+            catch_exceptions=False,
+        )
+
+        assert result.exit_code == 0
+
+        # Verify the full feedback was included
+        call_args = mock_provider_instance.generate_suggestions.call_args
+        user_prompt = call_args[0][1]
+
+        assert long_feedback in user_prompt
+        assert len(user_prompt) > 2000
+
+    def test_prompt_structure_with_no_organization_instructions(
+        self, cli_runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Test prompt structure when organization instructions are missing."""
+        repo_dir = tmp_path / "repo"
+        repo_dir.mkdir()
+        app_config_dir = tmp_path / "app_config"
+        monkeypatch.setenv("DOCMAN_APP_CONFIG_DIR", str(app_config_dir))
+        
+        # Setup repo WITHOUT instructions file
+        docman_dir = repo_dir / ".docman"
+        docman_dir.mkdir()
+        config_file = docman_dir / "config.yaml"
+        config_file.touch()
+        # Note: NOT creating instructions.md file
+
+        monkeypatch.chdir(repo_dir)
+
+        # Create source file
+        source_file = repo_dir / "inbox" / "test.pdf"
+        source_file.parent.mkdir(parents=True)
+        source_file.write_text("Test content")
+
+        # Create pending operation
+        self.create_pending_operation(
+            repo_path=str(repo_dir),
+            file_path="inbox/test.pdf",
+            suggested_dir="docs",
+            suggested_filename="test.pdf",
+            reason="Initial",
+        )
+
+        # Mock LLM provider
+        mock_provider_config = ProviderConfig(
+            name="test-provider",
+            provider_type="google",
+            model="gemini-1.5-flash",
+            is_active=True,
+        )
+        mock_provider_instance = Mock()
+        mock_provider_instance.supports_structured_output = True
+
+        monkeypatch.setattr("docman.cli.get_active_provider", Mock(return_value=mock_provider_config))
+        monkeypatch.setattr("docman.cli.get_api_key", Mock(return_value="test-api-key"))
+        monkeypatch.setattr("docman.cli.get_llm_provider", Mock(return_value=mock_provider_instance))
+
+        # Simulate: Process -> feedback
+        result = cli_runner.invoke(
+            main,
+            ["review"],
+            input="P\nSome feedback\nS\n",
+            catch_exceptions=False,
+        )
+
+        # Should show error about missing instructions
+        assert "Error: Organization instructions not found" in result.output
+        # Should NOT call generate_suggestions since instructions are required
+        assert mock_provider_instance.generate_suggestions.call_count == 0

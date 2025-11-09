@@ -5,6 +5,7 @@ This tool uses docling and LLM models (cloud or local) to help organize,
 move, and rename documents intelligently.
 """
 
+import json
 import signal
 from datetime import datetime
 from pathlib import Path
@@ -1476,15 +1477,34 @@ def _query_pending_operations(
     return query.all()
 
 
+def _format_suggestion_as_json(suggestion: dict[str, str]) -> str:
+    """Format an LLM suggestion as pretty-printed JSON.
+
+    Args:
+        suggestion: Dictionary with suggested_directory_path, suggested_filename, reason.
+
+    Returns:
+        Pretty-printed JSON string.
+    """
+    return json.dumps(
+        {
+            "suggested_directory_path": suggestion["suggested_directory_path"],
+            "suggested_filename": suggestion["suggested_filename"],
+            "reason": suggestion["reason"]
+        },
+        indent=2
+    )
+
+
 def _regenerate_suggestion(
     session,
     pending_op: Operation,
     doc_copy: DocumentCopy,
     document: Document,
     repo_root: Path,
-    additional_instructions: str,
+    user_prompt: str,
 ) -> bool:
-    """Regenerate LLM suggestion with additional instructions.
+    """Regenerate LLM suggestion with a pre-built user prompt.
 
     Args:
         session: Database session
@@ -1492,7 +1512,7 @@ def _regenerate_suggestion(
         doc_copy: The document copy being processed
         document: The canonical document with content
         repo_root: Repository root path
-        additional_instructions: User-provided steering instructions
+        user_prompt: Pre-built user prompt (includes base prompt + conversation history)
 
     Returns:
         True if successful, False if failed.
@@ -1509,17 +1529,9 @@ def _regenerate_suggestion(
             click.secho("  Error: Organization instructions not found", fg="red")
             return False
 
-        # Build prompts
+        # Build system prompt (user prompt is already provided)
         system_prompt = build_system_prompt(
             use_structured_output=llm_provider_instance.supports_structured_output
-        )
-
-        file_path_str = str(doc_copy.file_path)
-        user_prompt = build_user_prompt(
-            file_path_str,
-            document.content,
-            organization_instructions,
-            additional_instructions=additional_instructions,
         )
 
         # Generate new suggestion
@@ -1625,6 +1637,10 @@ def _handle_interactive_review(
 
         # Track which operation we're processing
         last_processed_idx = idx
+
+        # Track conversation state for re-processing iterations
+        # Will be initialized on first [P]rocess action
+        current_user_prompt = None
 
         # Current path
         current_path = doc_copy.file_path
@@ -1804,25 +1820,52 @@ def _handle_interactive_review(
                 click.secho("Re-process this suggestion with additional instructions", fg="cyan")
                 click.echo()
 
-                additional_instructions = click.prompt(
-                    "  Additional instructions for the LLM (or press Enter to cancel)",
+                user_feedback = click.prompt(
+                    "  Your feedback for the LLM (or press Enter to cancel)",
                     type=str,
                     default="",
                     show_default=False,
                 ).strip()
 
-                if not additional_instructions:
+                if not user_feedback:
                     click.echo("  Cancelled re-processing")
                     continue  # Don't increment idx, stay in while loop to re-prompt
 
-                # Regenerate suggestion
+                # Initialize base user prompt on first re-process
+                if current_user_prompt is None:
+                    # Load organization instructions
+                    organization_instructions = load_organization_instructions(repo_root)
+                    if not organization_instructions:
+                        click.secho("  Error: Organization instructions not found", fg="red")
+                        continue
+
+                    # Build base user prompt
+                    file_path_str = str(doc_copy.file_path)
+                    current_user_prompt = build_user_prompt(
+                        file_path_str,
+                        doc_copy.document.content,
+                        organization_instructions,
+                    )
+
+                # Capture current suggestion before regeneration
+                current_suggestion = {
+                    "suggested_directory_path": pending_op.suggested_directory_path,
+                    "suggested_filename": pending_op.suggested_filename,
+                    "reason": pending_op.reason,
+                }
+
+                # Append current suggestion and user feedback to prompt
+                current_user_prompt += "\n\n" + _format_suggestion_as_json(current_suggestion)
+                current_user_prompt += f"\n\n<userFeedback>\n{user_feedback}\n</userFeedback>"
+
+                # Regenerate suggestion with growing prompt
                 success = _regenerate_suggestion(
                     session,
                     pending_op,
                     doc_copy,
                     doc_copy.document,
                     repo_root,
-                    additional_instructions,
+                    current_user_prompt,
                 )
 
                 if success:
