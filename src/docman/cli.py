@@ -1476,6 +1476,93 @@ def _query_pending_operations(
     return query.all()
 
 
+def _regenerate_suggestion(
+    session,
+    pending_op: Operation,
+    doc_copy: DocumentCopy,
+    document: Document,
+    repo_root: Path,
+    additional_instructions: str,
+) -> bool:
+    """Regenerate LLM suggestion with additional instructions.
+
+    Args:
+        session: Database session
+        pending_op: The operation to regenerate
+        doc_copy: The document copy being processed
+        document: The canonical document with content
+        repo_root: Repository root path
+        additional_instructions: User-provided steering instructions
+
+    Returns:
+        True if successful, False if failed.
+    """
+    try:
+        # Get LLM provider
+        active_provider = get_active_provider()
+        api_key = get_api_key(active_provider.name)
+        llm_provider_instance = get_llm_provider(active_provider, api_key)
+
+        # Load organization instructions
+        organization_instructions = load_organization_instructions(repo_root)
+        if not organization_instructions:
+            click.secho("  Error: Organization instructions not found", fg="red")
+            return False
+
+        # Build prompts
+        system_prompt = build_system_prompt(
+            use_structured_output=llm_provider_instance.supports_structured_output
+        )
+
+        file_path_str = str(doc_copy.file_path)
+        user_prompt = build_user_prompt(
+            file_path_str,
+            document.content,
+            organization_instructions,
+            additional_instructions=additional_instructions,
+        )
+
+        # Generate new suggestion
+        click.echo("  Generating new suggestion...")
+        suggestions = llm_provider_instance.generate_suggestions(
+            system_prompt,
+            user_prompt
+        )
+
+        # Validate the new suggestion before saving it
+        try:
+            validate_target_path(
+                repo_root,
+                suggestions["suggested_directory_path"],
+                suggestions["suggested_filename"]
+            )
+        except PathSecurityError as e:
+            click.secho(f"  Error: LLM generated invalid path: {e}", fg="red")
+            return False
+
+        # Update existing operation (only after validation succeeds)
+        pending_op.suggested_directory_path = suggestions["suggested_directory_path"]
+        pending_op.suggested_filename = suggestions["suggested_filename"]
+        pending_op.reason = suggestions["reason"]
+
+        # Update hashes (but keep as PENDING status)
+        model_name = active_provider.model
+        current_prompt_hash = compute_prompt_hash(
+            system_prompt, organization_instructions, model_name
+        )
+        pending_op.prompt_hash = current_prompt_hash
+        pending_op.document_content_hash = document.content_hash
+        pending_op.model_name = model_name
+
+        session.commit()
+        return True
+
+    except Exception as e:
+        session.rollback()
+        click.secho(f"  Error regenerating suggestion: {e}", fg="red")
+        return False
+
+
 def _handle_interactive_review(
     session,
     repo_root: Path,
@@ -1602,7 +1689,7 @@ def _handle_interactive_review(
         # Prompt user for action
         while True:
             action = click.prompt(
-                "  [A]pply / [R]eject / [S]kip / [Q]uit / [H]elp",
+                "  [A]pply / [R]eject / [S]kip / [P]rocess / [Q]uit / [H]elp",
                 type=str,
                 default="S",
                 show_default=True,
@@ -1711,6 +1798,56 @@ def _handle_interactive_review(
                 skipped_count += 1
                 break
 
+            elif action in ["P", "PROCESS"]:
+                # Process: regenerate suggestion with additional instructions
+                click.echo()
+                click.secho("Re-process this suggestion with additional instructions", fg="cyan")
+                click.echo()
+
+                additional_instructions = click.prompt(
+                    "  Additional instructions for the LLM (or press Enter to cancel)",
+                    type=str,
+                    default="",
+                    show_default=False,
+                ).strip()
+
+                if not additional_instructions:
+                    click.echo("  Cancelled re-processing")
+                    continue  # Don't increment idx, stay in while loop to re-prompt
+
+                # Regenerate suggestion
+                success = _regenerate_suggestion(
+                    session,
+                    pending_op,
+                    doc_copy,
+                    doc_copy.document,
+                    repo_root,
+                    additional_instructions,
+                )
+
+                if success:
+                    click.echo()
+                    click.secho("✓ New suggestion generated!", fg="green")
+                    click.echo()
+
+                    # Re-compute target path with updated suggestion (already validated in _regenerate_suggestion)
+                    suggested_dir = pending_op.suggested_directory_path
+                    suggested_filename = pending_op.suggested_filename
+                    target = validate_target_path(repo_root, suggested_dir, suggested_filename)
+
+                    # Re-display operation details with new suggestion
+                    click.echo(f"  Current:  {current_path}")
+                    click.echo(f"  Suggested: {target.relative_to(repo_root)}")
+                    click.echo(f"  Reason: {pending_op.reason}")
+                    click.echo()
+                    # Continue in while loop to prompt for next action
+                    continue
+                else:
+                    click.echo()
+                    click.secho("Failed to regenerate suggestion. Keeping current suggestion.", fg="yellow")
+                    # Continue in while loop to allow user to choose another action
+                    continue
+
             elif action in ["Q", "QUIT"]:
                 # Quit: stop processing
                 click.echo()
@@ -1725,6 +1862,7 @@ def _handle_interactive_review(
                 click.echo("    [A]pply  - Move this file to the suggested location")
                 click.echo("    [R]eject - Reject this suggestion (marks as rejected, won't show again)")
                 click.echo("    [S]kip   - Skip this operation (keeps as pending for later review)")
+                click.echo("    [P]rocess - Re-generate suggestion with additional instructions")
                 click.echo("    [Q]uit   - Stop processing and exit")
                 click.echo("    [H]elp   - Show this help message")
                 click.echo()

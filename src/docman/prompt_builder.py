@@ -93,6 +93,7 @@ def build_user_prompt(
     file_path: str,
     document_content: str,
     organization_instructions: str | None = None,
+    additional_instructions: str | None = None,
 ) -> str:
     """Build the dynamic user prompt for a specific document.
 
@@ -100,6 +101,8 @@ def build_user_prompt(
         file_path: Current path of the file being analyzed.
         document_content: Extracted text content from the document.
         organization_instructions: Document organization instructions.
+        additional_instructions: Optional additional steering instructions for
+            re-processing a specific document.
 
     Returns:
         User prompt string with document-specific information.
@@ -114,6 +117,7 @@ def build_user_prompt(
         content=content,
         was_truncated=was_truncated,
         organization_instructions=organization_instructions,
+        additional_instructions=additional_instructions,
     )
 
 

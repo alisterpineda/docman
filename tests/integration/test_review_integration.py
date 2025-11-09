@@ -1,12 +1,14 @@
 """Integration tests for the 'docman review' command."""
 
 from pathlib import Path
+from unittest.mock import Mock
 
 import pytest
 from click.testing import CliRunner
 
 from docman.cli import main
 from docman.database import ensure_database, get_session
+from docman.llm_config import ProviderConfig
 from docman.models import Document, DocumentCopy, Operation, OperationStatus, OrganizationStatus, get_utc_now
 
 
@@ -757,6 +759,345 @@ class TestDocmanReview:
         assert result.exit_code == 0
         assert "Operations to review: 1" in result.output
         assert "Applied: 1" in result.output
+
+    # === RE-PROCESS TESTS ===
+
+    def test_review_interactive_reprocess_basic(
+        self, cli_runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Test re-processing a suggestion with additional instructions."""
+        repo_dir = self.setup_isolated_env(tmp_path, monkeypatch)
+        monkeypatch.chdir(repo_dir)
+
+        # Create source file
+        source_file = repo_dir / "inbox" / "test.pdf"
+        source_file.parent.mkdir(parents=True)
+        source_file.write_text("test content")
+
+        # Create pending operation
+        self.create_pending_operation(
+            repo_path=str(repo_dir),
+            file_path="inbox/test.pdf",
+            suggested_dir="documents",
+            suggested_filename="test.pdf",
+            reason="Initial reason",
+        )
+
+        # Mock LLM provider to return a new suggestion
+        mock_provider_config = ProviderConfig(
+            name="test-provider",
+            provider_type="google",
+            model="gemini-1.5-flash",
+            is_active=True,
+        )
+        mock_provider_instance = Mock()
+        mock_provider_instance.supports_structured_output = True
+        mock_provider_instance.generate_suggestions.return_value = {
+            "suggested_directory_path": "archived",
+            "suggested_filename": "archived_test.pdf",
+            "reason": "New reason with additional context",
+        }
+
+        monkeypatch.setattr("docman.cli.get_active_provider", Mock(return_value=mock_provider_config))
+        monkeypatch.setattr("docman.cli.get_api_key", Mock(return_value="test-api-key"))
+        monkeypatch.setattr("docman.cli.get_llm_provider", Mock(return_value=mock_provider_instance))
+
+        # Simulate user input: Process -> additional instructions -> Apply
+        result = cli_runner.invoke(
+            main,
+            ["review"],
+            input="P\nUse archived directory\nA\n",
+            catch_exceptions=False
+        )
+
+        assert result.exit_code == 0
+        assert "Re-process this suggestion" in result.output
+        assert "New suggestion generated!" in result.output
+        assert "archived/archived_test.pdf" in result.output
+        assert "New reason with additional context" in result.output
+        assert "Applied: 1" in result.output
+
+        # Verify file was moved to new location
+        assert (repo_dir / "archived" / "archived_test.pdf").exists()
+        assert not source_file.exists()
+
+        # Verify operation was updated and accepted
+        session_gen = get_session()
+        session = next(session_gen)
+        try:
+            op = session.query(Operation).first()
+            assert op.status == OperationStatus.ACCEPTED
+            assert op.suggested_directory_path == "archived"
+            assert op.suggested_filename == "archived_test.pdf"
+            assert op.reason == "New reason with additional context"
+        finally:
+            try:
+                next(session_gen)
+            except StopIteration:
+                pass
+
+    def test_review_interactive_reprocess_multiple_iterations(
+        self, cli_runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Test re-processing multiple times before applying."""
+        repo_dir = self.setup_isolated_env(tmp_path, monkeypatch)
+        monkeypatch.chdir(repo_dir)
+
+        # Create source file
+        source_file = repo_dir / "inbox" / "test.pdf"
+        source_file.parent.mkdir(parents=True)
+        source_file.write_text("test content")
+
+        # Create pending operation
+        self.create_pending_operation(
+            repo_path=str(repo_dir),
+            file_path="inbox/test.pdf",
+            suggested_dir="documents",
+            suggested_filename="test.pdf",
+            reason="Initial reason",
+        )
+
+        # Mock LLM provider to return different suggestions each time
+        mock_provider_config = ProviderConfig(
+            name="test-provider",
+            provider_type="google",
+            model="gemini-1.5-flash",
+            is_active=True,
+        )
+        mock_provider_instance = Mock()
+        mock_provider_instance.supports_structured_output = True
+
+        # First call returns one suggestion, second call returns another
+        mock_provider_instance.generate_suggestions.side_effect = [
+            {
+                "suggested_directory_path": "temp",
+                "suggested_filename": "temp_test.pdf",
+                "reason": "First attempt",
+            },
+            {
+                "suggested_directory_path": "final",
+                "suggested_filename": "final_test.pdf",
+                "reason": "Second attempt - better",
+            },
+        ]
+
+        monkeypatch.setattr("docman.cli.get_active_provider", Mock(return_value=mock_provider_config))
+        monkeypatch.setattr("docman.cli.get_api_key", Mock(return_value="test-api-key"))
+        monkeypatch.setattr("docman.cli.get_llm_provider", Mock(return_value=mock_provider_instance))
+
+        # Simulate user input: Process -> instructions -> Process again -> different instructions -> Apply
+        result = cli_runner.invoke(
+            main,
+            ["review"],
+            input="P\nFirst instructions\nP\nSecond instructions\nA\n",
+            catch_exceptions=False
+        )
+
+        assert result.exit_code == 0
+        assert result.output.count("New suggestion generated!") == 2
+        assert "final/final_test.pdf" in result.output
+        assert "Second attempt - better" in result.output
+        assert "Applied: 1" in result.output
+
+        # Verify file was moved to final location
+        assert (repo_dir / "final" / "final_test.pdf").exists()
+        assert not source_file.exists()
+
+    def test_review_interactive_reprocess_then_reject(
+        self, cli_runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Test re-processing and then rejecting the new suggestion."""
+        repo_dir = self.setup_isolated_env(tmp_path, monkeypatch)
+        monkeypatch.chdir(repo_dir)
+
+        # Create source file
+        source_file = repo_dir / "inbox" / "test.pdf"
+        source_file.parent.mkdir(parents=True)
+        source_file.write_text("test content")
+
+        # Create pending operation
+        self.create_pending_operation(
+            repo_path=str(repo_dir),
+            file_path="inbox/test.pdf",
+            suggested_dir="documents",
+            suggested_filename="test.pdf",
+        )
+
+        # Mock LLM provider
+        mock_provider_config = ProviderConfig(
+            name="test-provider",
+            provider_type="google",
+            model="gemini-1.5-flash",
+            is_active=True,
+        )
+        mock_provider_instance = Mock()
+        mock_provider_instance.supports_structured_output = True
+        mock_provider_instance.generate_suggestions.return_value = {
+            "suggested_directory_path": "bad_location",
+            "suggested_filename": "bad_name.pdf",
+            "reason": "Not a good suggestion",
+        }
+
+        monkeypatch.setattr("docman.cli.get_active_provider", Mock(return_value=mock_provider_config))
+        monkeypatch.setattr("docman.cli.get_api_key", Mock(return_value="test-api-key"))
+        monkeypatch.setattr("docman.cli.get_llm_provider", Mock(return_value=mock_provider_instance))
+
+        # Simulate user input: Process -> instructions -> Reject
+        result = cli_runner.invoke(
+            main,
+            ["review"],
+            input="P\nTry something different\nR\n",
+            catch_exceptions=False
+        )
+
+        assert result.exit_code == 0
+        assert "New suggestion generated!" in result.output
+        assert "Rejected: 1" in result.output
+
+        # Verify file was NOT moved
+        assert source_file.exists()
+        assert not (repo_dir / "bad_location" / "bad_name.pdf").exists()
+
+        # Verify operation was rejected
+        session_gen = get_session()
+        session = next(session_gen)
+        try:
+            op = session.query(Operation).first()
+            assert op.status == OperationStatus.REJECTED
+        finally:
+            try:
+                next(session_gen)
+            except StopIteration:
+                pass
+
+    def test_review_interactive_reprocess_cancel(
+        self, cli_runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Test cancelling re-process by providing empty instructions."""
+        repo_dir = self.setup_isolated_env(tmp_path, monkeypatch)
+        monkeypatch.chdir(repo_dir)
+
+        # Create source file
+        source_file = repo_dir / "inbox" / "test.pdf"
+        source_file.parent.mkdir(parents=True)
+        source_file.write_text("test content")
+
+        # Create pending operation
+        self.create_pending_operation(
+            repo_path=str(repo_dir),
+            file_path="inbox/test.pdf",
+            suggested_dir="documents",
+            suggested_filename="test.pdf",
+        )
+
+        # Mock LLM provider (should NOT be called if cancelled)
+        mock_provider_config = ProviderConfig(
+            name="test-provider",
+            provider_type="google",
+            model="gemini-1.5-flash",
+            is_active=True,
+        )
+        mock_provider_instance = Mock()
+        mock_provider_instance.supports_structured_output = True
+
+        monkeypatch.setattr("docman.cli.get_active_provider", Mock(return_value=mock_provider_config))
+        monkeypatch.setattr("docman.cli.get_api_key", Mock(return_value="test-api-key"))
+        monkeypatch.setattr("docman.cli.get_llm_provider", Mock(return_value=mock_provider_instance))
+
+        # Simulate user input: Process -> empty instructions (cancel) -> Skip
+        result = cli_runner.invoke(
+            main,
+            ["review"],
+            input="P\n\nS\n",
+            catch_exceptions=False
+        )
+
+        assert result.exit_code == 0
+        assert "Cancelled re-processing" in result.output
+        assert "Skipped: 1" in result.output
+
+        # Verify LLM was NOT called
+        mock_provider_instance.generate_suggestions.assert_not_called()
+
+        # Verify operation is still pending
+        session_gen = get_session()
+        session = next(session_gen)
+        try:
+            op = session.query(Operation).first()
+            assert op.status == OperationStatus.PENDING
+        finally:
+            try:
+                next(session_gen)
+            except StopIteration:
+                pass
+
+    def test_review_interactive_reprocess_invalid_path_security(
+        self, cli_runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Test that invalid paths from LLM during re-process don't corrupt the operation."""
+        repo_dir = self.setup_isolated_env(tmp_path, monkeypatch)
+        monkeypatch.chdir(repo_dir)
+
+        # Create source file
+        source_file = repo_dir / "inbox" / "test.pdf"
+        source_file.parent.mkdir(parents=True)
+        source_file.write_text("test content")
+
+        # Create pending operation with valid suggestion
+        self.create_pending_operation(
+            repo_path=str(repo_dir),
+            file_path="inbox/test.pdf",
+            suggested_dir="documents",
+            suggested_filename="test.pdf",
+            reason="Original valid reason",
+        )
+
+        # Mock LLM provider to return INVALID path (absolute path)
+        mock_provider_config = ProviderConfig(
+            name="test-provider",
+            provider_type="google",
+            model="gemini-1.5-flash",
+            is_active=True,
+        )
+        mock_provider_instance = Mock()
+        mock_provider_instance.supports_structured_output = True
+        mock_provider_instance.generate_suggestions.return_value = {
+            "suggested_directory_path": "/etc",  # Invalid: absolute path!
+            "suggested_filename": "passwd",
+            "reason": "Malicious suggestion",
+        }
+
+        monkeypatch.setattr("docman.cli.get_active_provider", Mock(return_value=mock_provider_config))
+        monkeypatch.setattr("docman.cli.get_api_key", Mock(return_value="test-api-key"))
+        monkeypatch.setattr("docman.cli.get_llm_provider", Mock(return_value=mock_provider_instance))
+
+        # Simulate user input: Process -> instructions -> (LLM returns invalid path) -> Skip
+        result = cli_runner.invoke(
+            main,
+            ["review"],
+            input="P\nTry to break security\nS\n",
+            catch_exceptions=False
+        )
+
+        assert result.exit_code == 0
+        assert "Error: LLM generated invalid path" in result.output
+        assert "Failed to regenerate suggestion" in result.output
+        assert "Skipped: 1" in result.output
+
+        # Verify operation STILL has the original valid suggestion (not corrupted)
+        session_gen = get_session()
+        session = next(session_gen)
+        try:
+            op = session.query(Operation).first()
+            assert op.status == OperationStatus.PENDING
+            assert op.suggested_directory_path == "documents"  # Original value preserved
+            assert op.suggested_filename == "test.pdf"  # Original value preserved
+            assert op.reason == "Original valid reason"  # Original reason preserved
+        finally:
+            try:
+                next(session_gen)
+            except StopIteration:
+                pass
 
 
 class TestReviewSecurityCleanup:
