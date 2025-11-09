@@ -106,13 +106,6 @@ SUPPORTED_EXTENSIONS = {
     ".ppt",
     ".xlsx",
     ".xls",
-    # Images (OCR-capable)
-    ".png",
-    ".jpg",
-    ".jpeg",
-    ".tiff",
-    ".tif",
-    ".bmp",
     # Text formats
     ".txt",
     ".md",

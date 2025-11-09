@@ -244,12 +244,6 @@ class TestSupportedExtensions:
         assert ".pptx" in SUPPORTED_EXTENSIONS
         assert ".xlsx" in SUPPORTED_EXTENSIONS
 
-    def test_includes_image_types(self) -> None:
-        """Test that image types are supported."""
-        assert ".png" in SUPPORTED_EXTENSIONS
-        assert ".jpg" in SUPPORTED_EXTENSIONS
-        assert ".jpeg" in SUPPORTED_EXTENSIONS
-
     def test_includes_text_formats(self) -> None:
         """Test that text formats are supported."""
         assert ".txt" in SUPPORTED_EXTENSIONS
