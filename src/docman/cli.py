@@ -1610,7 +1610,7 @@ def _find_common_prefix(path1: str, path2: str) -> tuple[str, str, str]:
     return common_prefix, path1_remainder, path2_remainder
 
 
-def _format_path_comparison(label: str, path: str, common_prefix: str, remainder: str) -> None:
+def _format_path_comparison(label: str, path: str, common_prefix: str, remainder: str, is_suggested: bool = False) -> None:
     """
     Display a path with color highlighting for differences.
 
@@ -1618,27 +1618,31 @@ def _format_path_comparison(label: str, path: str, common_prefix: str, remainder
         label: Label to display (e.g., "Current:" or "Suggested:")
         path: Full path string
         common_prefix: Common prefix portion (displayed in dim)
-        remainder: Different portion (displayed in yellow/bold)
+        remainder: Different portion (colored based on is_suggested)
+        is_suggested: True for suggested path (green), False for current path (red)
     """
     # Fixed column alignment - align paths after label
     # "  Suggested:" is 12 chars, add 2 more for spacing = 14 total
     label_width = 14
     padded_label = f"  {label}".ljust(label_width)
 
+    # Use diff-style colors: red for removals (current), green for additions (suggested)
+    diff_color = 'green' if is_suggested else 'red'
+
     # Build the colored output
     if common_prefix and remainder:
-        # Show common part in dim, different part in yellow
+        # Show common part in default color, different part in diff color
         output = (
             padded_label +
-            click.style(common_prefix, fg='white', dim=True) +
-            click.style(remainder, fg='yellow', bold=True)
+            common_prefix +
+            click.style(remainder, fg=diff_color, bold=True)
         )
     elif remainder:
         # No common prefix, entire path is different
-        output = padded_label + click.style(remainder, fg='yellow', bold=True)
+        output = padded_label + click.style(remainder, fg=diff_color, bold=True)
     else:
         # Entire path is common (shouldn't happen in practice)
-        output = padded_label + click.style(path, fg='white')
+        output = padded_label + path
 
     click.echo(output)
 
@@ -1771,7 +1775,7 @@ def _handle_interactive_review(
         )
 
         _format_path_comparison("Current:", current_path, common_prefix, current_remainder)
-        _format_path_comparison("Suggested:", suggested_path, common_prefix, suggested_remainder)
+        _format_path_comparison("Suggested:", suggested_path, common_prefix, suggested_remainder, is_suggested=True)
         click.echo(f"  Reason: {pending_op.reason}")
         click.echo()
 
@@ -1958,7 +1962,7 @@ def _handle_interactive_review(
                     )
 
                     _format_path_comparison("Current:", current_path, common_prefix, current_remainder)
-                    _format_path_comparison("Suggested:", suggested_path, common_prefix, suggested_remainder)
+                    _format_path_comparison("Suggested:", suggested_path, common_prefix, suggested_remainder, is_suggested=True)
                     click.echo(f"  Reason: {pending_op.reason}")
                     click.echo()
                     # Continue in while loop to prompt for next action
@@ -2144,7 +2148,7 @@ def _handle_bulk_apply(
         )
 
         _format_path_comparison("Current:", current_path, common_prefix, current_remainder)
-        _format_path_comparison("Suggested:", suggested_path, common_prefix, suggested_remainder)
+        _format_path_comparison("Suggested:", suggested_path, common_prefix, suggested_remainder, is_suggested=True)
 
         if dry_run:
             click.secho("  [DRY RUN] Would move file", fg="cyan")
