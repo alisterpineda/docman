@@ -1621,7 +1621,8 @@ def _format_path_comparison(label: str, path: str, common_prefix: str, remainder
         remainder: Different portion (displayed in yellow/bold)
     """
     # Fixed column alignment - align paths after label
-    label_width = 12  # "  Suggested:" is 12 chars with leading spaces
+    # "  Suggested:" is 12 chars, add 2 more for spacing = 14 total
+    label_width = 14
     padded_label = f"  {label}".ljust(label_width)
 
     # Build the colored output
