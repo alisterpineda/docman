@@ -1575,6 +1575,73 @@ def _regenerate_suggestion(
         return False
 
 
+def _find_common_prefix(path1: str, path2: str) -> tuple[str, str, str]:
+    """
+    Find the common prefix between two paths at the component level.
+
+    Returns:
+        tuple: (common_prefix, path1_remainder, path2_remainder)
+    """
+    parts1 = path1.split('/')
+    parts2 = path2.split('/')
+
+    # Find common prefix components
+    common_parts = []
+    for p1, p2 in zip(parts1, parts2):
+        if p1 == p2:
+            common_parts.append(p1)
+        else:
+            break
+
+    # Build the common prefix
+    common_prefix = '/'.join(common_parts)
+
+    # Build the remainders
+    if common_parts:
+        path1_remainder = '/'.join(parts1[len(common_parts):])
+        path2_remainder = '/'.join(parts2[len(common_parts):])
+        # Add separator if either path has a remainder
+        if path1_remainder or path2_remainder:
+            common_prefix += '/'
+    else:
+        path1_remainder = path1
+        path2_remainder = path2
+
+    return common_prefix, path1_remainder, path2_remainder
+
+
+def _format_path_comparison(label: str, path: str, common_prefix: str, remainder: str) -> None:
+    """
+    Display a path with color highlighting for differences.
+
+    Args:
+        label: Label to display (e.g., "Current:" or "Suggested:")
+        path: Full path string
+        common_prefix: Common prefix portion (displayed in dim)
+        remainder: Different portion (displayed in yellow/bold)
+    """
+    # Fixed column alignment - align paths after label
+    label_width = 12  # "  Suggested:" is 12 chars with leading spaces
+    padded_label = f"  {label}".ljust(label_width)
+
+    # Build the colored output
+    if common_prefix and remainder:
+        # Show common part in dim, different part in yellow
+        output = (
+            padded_label +
+            click.style(common_prefix, fg='white', dim=True) +
+            click.style(remainder, fg='yellow', bold=True)
+        )
+    elif remainder:
+        # No common prefix, entire path is different
+        output = padded_label + click.style(remainder, fg='yellow', bold=True)
+    else:
+        # Entire path is common (shouldn't happen in practice)
+        output = padded_label + click.style(path, fg='white')
+
+    click.echo(output)
+
+
 def _handle_interactive_review(
     session,
     repo_root: Path,
@@ -1697,8 +1764,13 @@ def _handle_interactive_review(
             continue
 
         # Display operation details
-        click.echo(f"  Current:  {current_path}")
-        click.echo(f"  Suggested: {target.relative_to(repo_root)}")
+        suggested_path = str(target.relative_to(repo_root))
+        common_prefix, current_remainder, suggested_remainder = _find_common_prefix(
+            current_path, suggested_path
+        )
+
+        _format_path_comparison("Current:", current_path, common_prefix, current_remainder)
+        _format_path_comparison("Suggested:", suggested_path, common_prefix, suggested_remainder)
         click.echo(f"  Reason: {pending_op.reason}")
         click.echo()
 
@@ -1879,8 +1951,13 @@ def _handle_interactive_review(
                     target = validate_target_path(repo_root, suggested_dir, suggested_filename)
 
                     # Re-display operation details with new suggestion
-                    click.echo(f"  Current:  {current_path}")
-                    click.echo(f"  Suggested: {target.relative_to(repo_root)}")
+                    suggested_path = str(target.relative_to(repo_root))
+                    common_prefix, current_remainder, suggested_remainder = _find_common_prefix(
+                        current_path, suggested_path
+                    )
+
+                    _format_path_comparison("Current:", current_path, common_prefix, current_remainder)
+                    _format_path_comparison("Suggested:", suggested_path, common_prefix, suggested_remainder)
                     click.echo(f"  Reason: {pending_op.reason}")
                     click.echo()
                     # Continue in while loop to prompt for next action
@@ -2060,8 +2137,13 @@ def _handle_bulk_apply(
             continue
 
         # Display operation details
-        click.echo(f"  Current:  {current_path}")
-        click.echo(f"  Suggested: {target.relative_to(repo_root)}")
+        suggested_path = str(target.relative_to(repo_root))
+        common_prefix, current_remainder, suggested_remainder = _find_common_prefix(
+            current_path, suggested_path
+        )
+
+        _format_path_comparison("Current:", current_path, common_prefix, current_remainder)
+        _format_path_comparison("Suggested:", suggested_path, common_prefix, suggested_remainder)
 
         if dry_run:
             click.secho("  [DRY RUN] Would move file", fg="cyan")
