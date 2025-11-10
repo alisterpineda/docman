@@ -1503,19 +1503,21 @@ def _regenerate_suggestion(
     document: Document,
     repo_root: Path,
     user_prompt: str,
-) -> bool:
+) -> tuple[bool, dict[str, str] | None]:
     """Regenerate LLM suggestion with a pre-built user prompt.
 
     Args:
         session: Database session
-        pending_op: The operation to regenerate
+        pending_op: The operation to regenerate (not modified)
         doc_copy: The document copy being processed
         document: The canonical document with content
         repo_root: Repository root path
         user_prompt: Pre-built user prompt (includes base prompt + conversation history)
 
     Returns:
-        True if successful, False if failed.
+        Tuple of (success: bool, suggestions: dict | None)
+        - success: True if generation succeeded, False otherwise
+        - suggestions: Dict with suggested_directory_path, suggested_filename, reason if success, None otherwise
     """
     try:
         # Get LLM provider
@@ -1527,7 +1529,7 @@ def _regenerate_suggestion(
         organization_instructions = load_organization_instructions(repo_root)
         if not organization_instructions:
             click.secho("  Error: Organization instructions not found", fg="red")
-            return False
+            return False, None
 
         # Build system prompt (user prompt is already provided)
         system_prompt = build_system_prompt(
@@ -1541,7 +1543,7 @@ def _regenerate_suggestion(
             user_prompt
         )
 
-        # Validate the new suggestion before saving it
+        # Validate the new suggestion before returning it
         try:
             validate_target_path(
                 repo_root,
@@ -1550,29 +1552,51 @@ def _regenerate_suggestion(
             )
         except PathSecurityError as e:
             click.secho(f"  Error: LLM generated invalid path: {e}", fg="red")
-            return False
+            return False, None
 
-        # Update existing operation (only after validation succeeds)
-        pending_op.suggested_directory_path = suggestions["suggested_directory_path"]
-        pending_op.suggested_filename = suggestions["suggested_filename"]
-        pending_op.reason = suggestions["reason"]
-
-        # Update hashes (but keep as PENDING status)
-        model_name = active_provider.model
-        current_prompt_hash = compute_prompt_hash(
-            system_prompt, organization_instructions, model_name
-        )
-        pending_op.prompt_hash = current_prompt_hash
-        pending_op.document_content_hash = document.content_hash
-        pending_op.model_name = model_name
-
-        session.commit()
-        return True
+        # Return the suggestion without persisting to database
+        return True, suggestions
 
     except Exception as e:
-        session.rollback()
         click.secho(f"  Error regenerating suggestion: {e}", fg="red")
-        return False
+        return False, None
+
+
+def _persist_reprocessed_suggestion(
+    pending_op: Operation,
+    doc_copy: DocumentCopy,
+    in_memory_suggestion: dict[str, str],
+    repo_root: Path,
+) -> None:
+    """Persist an in-memory re-processed suggestion to the database.
+
+    This should only be called after a successful file operation (move/rename/overwrite).
+
+    Args:
+        pending_op: The operation to update
+        doc_copy: The document copy being processed
+        in_memory_suggestion: Dict with suggested_directory_path, suggested_filename, reason
+        repo_root: Repository root path
+    """
+    # Get active provider and compute prompt hash for tracking
+    active_provider = get_active_provider()
+    organization_instructions = load_organization_instructions(repo_root)
+    llm_provider_instance = get_llm_provider(active_provider, get_api_key(active_provider.name))
+    system_prompt = build_system_prompt(
+        use_structured_output=llm_provider_instance.supports_structured_output
+    )
+    model_name = active_provider.model
+    current_prompt_hash = compute_prompt_hash(
+        system_prompt, organization_instructions, model_name
+    )
+
+    # Update operation with in-memory suggestion
+    pending_op.suggested_directory_path = in_memory_suggestion["suggested_directory_path"]
+    pending_op.suggested_filename = in_memory_suggestion["suggested_filename"]
+    pending_op.reason = in_memory_suggestion["reason"]
+    pending_op.prompt_hash = current_prompt_hash
+    pending_op.document_content_hash = doc_copy.document.content_hash
+    pending_op.model_name = model_name
 
 
 def _find_common_prefix(path1: str, path2: str) -> tuple[str, str, str]:
@@ -1714,13 +1738,24 @@ def _handle_interactive_review(
         # Will be initialized on first [P]rocess action
         current_user_prompt = None
 
+        # Track in-memory re-processed suggestion (not persisted until successfully applied)
+        in_memory_suggestion: dict[str, str] | None = None
+
         # Current path
         current_path = doc_copy.file_path
         source = repo_root / current_path
 
         # Suggested path with security validation
-        suggested_dir = pending_op.suggested_directory_path
-        suggested_filename = pending_op.suggested_filename
+        # Use in-memory suggestion if available (from re-processing), otherwise use DB suggestion
+        if in_memory_suggestion:
+            suggested_dir = in_memory_suggestion["suggested_directory_path"]
+            suggested_filename = in_memory_suggestion["suggested_filename"]
+            display_reason = in_memory_suggestion["reason"]
+        else:
+            suggested_dir = pending_op.suggested_directory_path
+            suggested_filename = pending_op.suggested_filename
+            display_reason = pending_op.reason
+
         try:
             target = validate_target_path(repo_root, suggested_dir, suggested_filename)
         except PathSecurityError as e:
@@ -1776,7 +1811,7 @@ def _handle_interactive_review(
 
         _format_path_comparison("Current:", current_path, common_prefix, current_remainder)
         _format_path_comparison("Suggested:", suggested_path, common_prefix, suggested_remainder, is_suggested=True)
-        click.echo(f"  Reason: {pending_op.reason}")
+        click.echo(f"  Reason: {display_reason}")
         click.echo()
 
         # Prompt user for action
@@ -1796,6 +1831,11 @@ def _handle_interactive_review(
 
                     # Update the document copy's file path in the database
                     doc_copy.file_path = str(target.relative_to(repo_root))
+
+                    # If there's an in-memory suggestion from re-processing, persist it to the database NOW
+                    # (after successful file move)
+                    if in_memory_suggestion:
+                        _persist_reprocessed_suggestion(pending_op, doc_copy, in_memory_suggestion, repo_root)
 
                     # Mark the file as organized and accept the operation
                     pending_op.status = OperationStatus.ACCEPTED
@@ -1841,6 +1881,11 @@ def _handle_interactive_review(
                             # Use RENAME conflict resolution
                             new_target = move_file(source, target, conflict_resolution=ConflictResolution.RENAME, create_dirs=True)
                             doc_copy.file_path = str(new_target.relative_to(repo_root))
+
+                            # If there's an in-memory suggestion from re-processing, persist it now
+                            if in_memory_suggestion:
+                                _persist_reprocessed_suggestion(pending_op, doc_copy, in_memory_suggestion, repo_root)
+
                             pending_op.status = OperationStatus.ACCEPTED
                             doc_copy.accepted_operation_id = pending_op.id
                             doc_copy.organization_status = OrganizationStatus.ORGANIZED
@@ -1850,6 +1895,11 @@ def _handle_interactive_review(
                             # Use OVERWRITE conflict resolution
                             move_file(source, target, conflict_resolution=ConflictResolution.OVERWRITE, create_dirs=True)
                             doc_copy.file_path = str(target.relative_to(repo_root))
+
+                            # If there's an in-memory suggestion from re-processing, persist it now
+                            if in_memory_suggestion:
+                                _persist_reprocessed_suggestion(pending_op, doc_copy, in_memory_suggestion, repo_root)
+
                             pending_op.status = OperationStatus.ACCEPTED
                             doc_copy.accepted_operation_id = pending_op.id
                             doc_copy.organization_status = OrganizationStatus.ORGANIZED
@@ -1925,18 +1975,22 @@ def _handle_interactive_review(
                     )
 
                 # Capture current suggestion before regeneration
-                current_suggestion = {
-                    "suggested_directory_path": pending_op.suggested_directory_path,
-                    "suggested_filename": pending_op.suggested_filename,
-                    "reason": pending_op.reason,
-                }
+                # Use in-memory suggestion if available, otherwise use DB suggestion
+                if in_memory_suggestion:
+                    current_suggestion = in_memory_suggestion
+                else:
+                    current_suggestion = {
+                        "suggested_directory_path": pending_op.suggested_directory_path,
+                        "suggested_filename": pending_op.suggested_filename,
+                        "reason": pending_op.reason,
+                    }
 
                 # Append current suggestion and user feedback to prompt
                 current_user_prompt += "\n\n" + _format_suggestion_as_json(current_suggestion)
                 current_user_prompt += f"\n\n<userFeedback>\n{user_feedback}\n</userFeedback>"
 
-                # Regenerate suggestion with growing prompt
-                success = _regenerate_suggestion(
+                # Regenerate suggestion with growing prompt (returns new suggestion without persisting)
+                success, new_suggestion = _regenerate_suggestion(
                     session,
                     pending_op,
                     doc_copy,
@@ -1945,14 +1999,17 @@ def _handle_interactive_review(
                     current_user_prompt,
                 )
 
-                if success:
+                if success and new_suggestion:
                     click.echo()
                     click.secho("✓ New suggestion generated!", fg="green")
                     click.echo()
 
-                    # Re-compute target path with updated suggestion (already validated in _regenerate_suggestion)
-                    suggested_dir = pending_op.suggested_directory_path
-                    suggested_filename = pending_op.suggested_filename
+                    # Store new suggestion in memory (will be persisted only if user applies)
+                    in_memory_suggestion = new_suggestion
+
+                    # Re-compute target path with new suggestion (already validated in _regenerate_suggestion)
+                    suggested_dir = new_suggestion["suggested_directory_path"]
+                    suggested_filename = new_suggestion["suggested_filename"]
                     target = validate_target_path(repo_root, suggested_dir, suggested_filename)
 
                     # Re-display operation details with new suggestion
@@ -1963,7 +2020,7 @@ def _handle_interactive_review(
 
                     _format_path_comparison("Current:", current_path, common_prefix, current_remainder)
                     _format_path_comparison("Suggested:", suggested_path, common_prefix, suggested_remainder, is_suggested=True)
-                    click.echo(f"  Reason: {pending_op.reason}")
+                    click.echo(f"  Reason: {new_suggestion['reason']}")
                     click.echo()
                     # Continue in while loop to prompt for next action
                     continue

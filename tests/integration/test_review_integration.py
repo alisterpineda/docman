@@ -1853,3 +1853,281 @@ class TestReprocessConversationHistory:
         assert "Error: Organization instructions not found" in result.output
         # Should NOT call generate_suggestions since instructions are required
         assert mock_provider_instance.generate_suggestions.call_count == 0
+
+    def test_reprocess_not_persisted_on_skip(
+        self, cli_runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Test that re-processed suggestions are NOT persisted when skipped."""
+        repo_dir = self.setup_isolated_env(tmp_path, monkeypatch)
+        monkeypatch.chdir(repo_dir)
+
+        # Create source file
+        source_file = repo_dir / "inbox" / "test.pdf"
+        source_file.parent.mkdir(parents=True)
+        source_file.write_text("test content")
+
+        # Create pending operation with ORIGINAL suggestion
+        self.create_pending_operation(
+            repo_path=str(repo_dir),
+            file_path="inbox/test.pdf",
+            suggested_dir="original_dir",
+            suggested_filename="original_name.pdf",
+            reason="Original reason",
+        )
+
+        # Mock LLM provider to return NEW suggestion
+        mock_provider_config = ProviderConfig(
+            name="test-provider",
+            provider_type="google",
+            model="gemini-1.5-flash",
+            is_active=True,
+        )
+        mock_provider_instance = Mock()
+        mock_provider_instance.supports_structured_output = True
+        mock_provider_instance.generate_suggestions.return_value = {
+            "suggested_directory_path": "new_dir",
+            "suggested_filename": "new_name.pdf",
+            "reason": "New reason from re-processing",
+        }
+
+        monkeypatch.setattr("docman.cli.get_active_provider", Mock(return_value=mock_provider_config))
+        monkeypatch.setattr("docman.cli.get_api_key", Mock(return_value="test-api-key"))
+        monkeypatch.setattr("docman.cli.get_llm_provider", Mock(return_value=mock_provider_instance))
+
+        # Simulate: Process -> feedback -> Skip
+        result = cli_runner.invoke(
+            main,
+            ["review"],
+            input="P\nMake it better\nS\n",
+            catch_exceptions=False,
+        )
+
+        assert result.exit_code == 0
+        assert "New suggestion generated!" in result.output
+
+        # Verify operation STILL has ORIGINAL values in database
+        session_gen = get_session()
+        session = next(session_gen)
+        try:
+            op = session.query(Operation).first()
+            assert op.suggested_directory_path == "original_dir"
+            assert op.suggested_filename == "original_name.pdf"
+            assert op.reason == "Original reason"
+            assert op.status == OperationStatus.PENDING  # Still pending
+        finally:
+            try:
+                next(session_gen)
+            except StopIteration:
+                pass
+
+    def test_reprocess_not_persisted_on_reject(
+        self, cli_runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Test that re-processed suggestions are NOT persisted when rejected."""
+        repo_dir = self.setup_isolated_env(tmp_path, monkeypatch)
+        monkeypatch.chdir(repo_dir)
+
+        # Create source file
+        source_file = repo_dir / "inbox" / "test.pdf"
+        source_file.parent.mkdir(parents=True)
+        source_file.write_text("test content")
+
+        # Create pending operation with ORIGINAL suggestion
+        self.create_pending_operation(
+            repo_path=str(repo_dir),
+            file_path="inbox/test.pdf",
+            suggested_dir="original_dir",
+            suggested_filename="original_name.pdf",
+            reason="Original reason",
+        )
+
+        # Mock LLM provider to return NEW suggestion
+        mock_provider_config = ProviderConfig(
+            name="test-provider",
+            provider_type="google",
+            model="gemini-1.5-flash",
+            is_active=True,
+        )
+        mock_provider_instance = Mock()
+        mock_provider_instance.supports_structured_output = True
+        mock_provider_instance.generate_suggestions.return_value = {
+            "suggested_directory_path": "new_dir",
+            "suggested_filename": "new_name.pdf",
+            "reason": "New reason from re-processing",
+        }
+
+        monkeypatch.setattr("docman.cli.get_active_provider", Mock(return_value=mock_provider_config))
+        monkeypatch.setattr("docman.cli.get_api_key", Mock(return_value="test-api-key"))
+        monkeypatch.setattr("docman.cli.get_llm_provider", Mock(return_value=mock_provider_instance))
+
+        # Simulate: Process -> feedback -> Reject
+        result = cli_runner.invoke(
+            main,
+            ["review"],
+            input="P\nMake it better\nR\n",
+            catch_exceptions=False,
+        )
+
+        assert result.exit_code == 0
+        assert "New suggestion generated!" in result.output
+
+        # Verify operation STILL has ORIGINAL values in database
+        session_gen = get_session()
+        session = next(session_gen)
+        try:
+            op = session.query(Operation).first()
+            assert op.suggested_directory_path == "original_dir"
+            assert op.suggested_filename == "original_name.pdf"
+            assert op.reason == "Original reason"
+            assert op.status == OperationStatus.REJECTED  # Now rejected
+        finally:
+            try:
+                next(session_gen)
+            except StopIteration:
+                pass
+
+    def test_reprocess_persisted_on_apply(
+        self, cli_runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Test that re-processed suggestions ARE persisted when applied."""
+        repo_dir = self.setup_isolated_env(tmp_path, monkeypatch)
+        monkeypatch.chdir(repo_dir)
+
+        # Create source file
+        source_file = repo_dir / "inbox" / "test.pdf"
+        source_file.parent.mkdir(parents=True)
+        source_file.write_text("test content")
+
+        # Create pending operation with ORIGINAL suggestion
+        self.create_pending_operation(
+            repo_path=str(repo_dir),
+            file_path="inbox/test.pdf",
+            suggested_dir="original_dir",
+            suggested_filename="original_name.pdf",
+            reason="Original reason",
+        )
+
+        # Mock LLM provider to return NEW suggestion
+        mock_provider_config = ProviderConfig(
+            name="test-provider",
+            provider_type="google",
+            model="gemini-1.5-flash",
+            is_active=True,
+        )
+        mock_provider_instance = Mock()
+        mock_provider_instance.supports_structured_output = True
+        mock_provider_instance.generate_suggestions.return_value = {
+            "suggested_directory_path": "new_dir",
+            "suggested_filename": "new_name.pdf",
+            "reason": "New reason from re-processing",
+        }
+
+        monkeypatch.setattr("docman.cli.get_active_provider", Mock(return_value=mock_provider_config))
+        monkeypatch.setattr("docman.cli.get_api_key", Mock(return_value="test-api-key"))
+        monkeypatch.setattr("docman.cli.get_llm_provider", Mock(return_value=mock_provider_instance))
+
+        # Simulate: Process -> feedback -> Apply
+        result = cli_runner.invoke(
+            main,
+            ["review"],
+            input="P\nMake it better\nA\n",
+            catch_exceptions=False,
+        )
+
+        assert result.exit_code == 0
+        assert "New suggestion generated!" in result.output
+        assert "Applied: 1" in result.output
+
+        # Verify file was moved to NEW location
+        assert not source_file.exists()
+        assert (repo_dir / "new_dir" / "new_name.pdf").exists()
+
+        # Verify operation NOW has NEW values in database
+        session_gen = get_session()
+        session = next(session_gen)
+        try:
+            op = session.query(Operation).first()
+            assert op.suggested_directory_path == "new_dir"
+            assert op.suggested_filename == "new_name.pdf"
+            assert op.reason == "New reason from re-processing"
+            assert op.status == OperationStatus.ACCEPTED  # Now accepted
+        finally:
+            try:
+                next(session_gen)
+            except StopIteration:
+                pass
+
+    def test_reprocess_not_persisted_on_conflict_skip(
+        self, cli_runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Test that re-processed suggestions are NOT persisted when conflict occurs and user skips."""
+        repo_dir = self.setup_isolated_env(tmp_path, monkeypatch)
+        monkeypatch.chdir(repo_dir)
+
+        # Create source file
+        source_file = repo_dir / "inbox" / "test.pdf"
+        source_file.parent.mkdir(parents=True)
+        source_file.write_text("test content")
+
+        # Create CONFLICTING target file that already exists
+        conflict_target = repo_dir / "new_dir" / "new_name.pdf"
+        conflict_target.parent.mkdir(parents=True)
+        conflict_target.write_text("existing file")
+
+        # Create pending operation with ORIGINAL suggestion
+        self.create_pending_operation(
+            repo_path=str(repo_dir),
+            file_path="inbox/test.pdf",
+            suggested_dir="original_dir",
+            suggested_filename="original_name.pdf",
+            reason="Original reason",
+        )
+
+        # Mock LLM provider to return NEW suggestion that conflicts
+        mock_provider_config = ProviderConfig(
+            name="test-provider",
+            provider_type="google",
+            model="gemini-1.5-flash",
+            is_active=True,
+        )
+        mock_provider_instance = Mock()
+        mock_provider_instance.supports_structured_output = True
+        mock_provider_instance.generate_suggestions.return_value = {
+            "suggested_directory_path": "new_dir",
+            "suggested_filename": "new_name.pdf",  # Conflicts with existing file
+            "reason": "New reason from re-processing",
+        }
+
+        monkeypatch.setattr("docman.cli.get_active_provider", Mock(return_value=mock_provider_config))
+        monkeypatch.setattr("docman.cli.get_api_key", Mock(return_value="test-api-key"))
+        monkeypatch.setattr("docman.cli.get_llm_provider", Mock(return_value=mock_provider_instance))
+
+        # Simulate: Process -> feedback -> Apply -> Conflict -> Skip
+        result = cli_runner.invoke(
+            main,
+            ["review"],
+            input="P\nMake it better\nA\nS\n",  # S = Skip in conflict menu
+            catch_exceptions=False,
+        )
+
+        assert result.exit_code == 0
+        assert "New suggestion generated!" in result.output
+        assert "CONFLICT: Target already exists" in result.output or "Skipped: Target file already exists" in result.output
+
+        # Verify source file was NOT moved
+        assert source_file.exists()
+
+        # Verify operation STILL has ORIGINAL values in database (NOT the re-processed values)
+        session_gen = get_session()
+        session = next(session_gen)
+        try:
+            op = session.query(Operation).first()
+            assert op.suggested_directory_path == "original_dir"
+            assert op.suggested_filename == "original_name.pdf"
+            assert op.reason == "Original reason"
+            assert op.status == OperationStatus.PENDING  # Still pending
+        finally:
+            try:
+                next(session_gen)
+            except StopIteration:
+                pass
