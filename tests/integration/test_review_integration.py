@@ -1,7 +1,8 @@
 """Integration tests for the 'docman review' command."""
 
+import platform
 from pathlib import Path
-from unittest.mock import Mock
+from unittest.mock import Mock, patch
 
 import pytest
 from click.testing import CliRunner
@@ -1093,6 +1094,162 @@ class TestDocmanReview:
             assert op.suggested_directory_path == "documents"  # Original value preserved
             assert op.suggested_filename == "test.pdf"  # Original value preserved
             assert op.reason == "Original valid reason"  # Original reason preserved
+        finally:
+            try:
+                next(session_gen)
+            except StopIteration:
+                pass
+
+    def test_review_interactive_open_file(
+        self, cli_runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Test interactive mode - user opens file with default application."""
+        repo_dir = self.setup_isolated_env(tmp_path, monkeypatch)
+        monkeypatch.chdir(repo_dir)
+
+        # Create source file
+        source_file = repo_dir / "inbox" / "test.pdf"
+        source_file.parent.mkdir(parents=True)
+        source_file.write_text("test content")
+
+        # Create pending operation
+        self.create_pending_operation(
+            repo_path=str(repo_dir),
+            file_path="inbox/test.pdf",
+            suggested_dir="documents",
+            suggested_filename="test.pdf",
+        )
+
+        # Mock the appropriate function based on platform
+        system = platform.system()
+        if system == "Windows":
+            # On Windows, os.startfile is used
+            with patch("os.startfile") as mock_startfile:
+                # Simulate user choosing to open file, then skip
+                result = cli_runner.invoke(main, ["review"], input="O\nS\n", catch_exceptions=False)
+
+                assert result.exit_code == 0
+                assert "Opened file with default application" in result.output
+                assert "Skipped: 1" in result.output
+
+                # Verify os.startfile was called with correct file path
+                mock_startfile.assert_called_once_with(str(source_file))
+        else:
+            # On macOS/Linux, subprocess.run is used
+            with patch("docman.cli.subprocess.run") as mock_run:
+                mock_run.return_value = Mock()  # Simulate successful execution
+
+                # Simulate user choosing to open file, then skip
+                result = cli_runner.invoke(main, ["review"], input="O\nS\n", catch_exceptions=False)
+
+                assert result.exit_code == 0
+                assert "Opened file with default application" in result.output
+                assert "Skipped: 1" in result.output
+
+                # Verify subprocess.run was called with correct file path
+                mock_run.assert_called_once()
+                call_args = mock_run.call_args
+                # Check that the file path is in the command
+                assert str(source_file) in str(call_args)
+
+        # Verify operation still PENDING (file was opened but not applied)
+        session_gen = get_session()
+        session = next(session_gen)
+        try:
+            op = session.query(Operation).first()
+            assert op.status == OperationStatus.PENDING
+        finally:
+            try:
+                next(session_gen)
+            except StopIteration:
+                pass
+
+    def test_review_interactive_open_file_not_found(
+        self, cli_runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Test interactive mode - open file fails when file doesn't exist."""
+        repo_dir = self.setup_isolated_env(tmp_path, monkeypatch)
+        monkeypatch.chdir(repo_dir)
+
+        # Create pending operation WITHOUT creating the actual file
+        self.create_pending_operation(
+            repo_path=str(repo_dir),
+            file_path="inbox/missing.pdf",
+            suggested_dir="documents",
+            suggested_filename="missing.pdf",
+        )
+
+        # Simulate user choosing to open file (which doesn't exist), then skip
+        result = cli_runner.invoke(main, ["review"], input="O\nS\n", catch_exceptions=False)
+
+        assert result.exit_code == 0
+        assert "Error: File not found" in result.output
+        assert "Skipped: 1" in result.output
+
+        # Verify operation still PENDING
+        session_gen = get_session()
+        session = next(session_gen)
+        try:
+            op = session.query(Operation).first()
+            assert op.status == OperationStatus.PENDING
+        finally:
+            try:
+                next(session_gen)
+            except StopIteration:
+                pass
+
+    def test_review_interactive_open_file_command_fails(
+        self, cli_runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Test interactive mode - open file handles subprocess failure gracefully."""
+        repo_dir = self.setup_isolated_env(tmp_path, monkeypatch)
+        monkeypatch.chdir(repo_dir)
+
+        # Create source file
+        source_file = repo_dir / "inbox" / "test.pdf"
+        source_file.parent.mkdir(parents=True)
+        source_file.write_text("test content")
+
+        # Create pending operation
+        self.create_pending_operation(
+            repo_path=str(repo_dir),
+            file_path="inbox/test.pdf",
+            suggested_dir="documents",
+            suggested_filename="test.pdf",
+        )
+
+        # Mock the appropriate function based on platform to raise an exception
+        system = platform.system()
+        if system == "Windows":
+            # On Windows, os.startfile is used
+            with patch("os.startfile") as mock_startfile:
+                mock_startfile.side_effect = OSError("Failed to open file")
+
+                # Simulate user choosing to open file (which fails), then skip
+                result = cli_runner.invoke(main, ["review"], input="O\nS\n", catch_exceptions=False)
+
+                assert result.exit_code == 0
+                assert "Error: Failed to open file" in result.output
+                assert "Skipped: 1" in result.output
+        else:
+            # On macOS/Linux, subprocess.run is used
+            with patch("docman.cli.subprocess.run") as mock_run:
+                from subprocess import CalledProcessError
+                mock_run.side_effect = CalledProcessError(1, "open")
+
+                # Simulate user choosing to open file (which fails), then skip
+                result = cli_runner.invoke(main, ["review"], input="O\nS\n", catch_exceptions=False)
+
+                assert result.exit_code == 0
+                assert "Error: Failed to open file" in result.output
+                assert "Skipped: 1" in result.output
+
+        # Verify operation still PENDING (open failed but operation continues)
+        session_gen = get_session()
+        session = next(session_gen)
+        try:
+            op = session.query(Operation).first()
+            assert op.status == OperationStatus.PENDING
         finally:
             try:
                 next(session_gen)

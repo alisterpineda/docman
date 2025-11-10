@@ -6,7 +6,9 @@ move, and rename documents intelligently.
 """
 
 import json
+import platform
 import signal
+import subprocess
 from datetime import datetime
 from pathlib import Path
 
@@ -1671,6 +1673,39 @@ def _format_path_comparison(label: str, path: str, common_prefix: str, remainder
     click.echo(output)
 
 
+def _open_file_with_default_app(file_path: Path) -> bool:
+    """
+    Open a file with the system's default application.
+
+    Args:
+        file_path: Path to the file to open
+
+    Returns:
+        True if the file was opened successfully, False otherwise
+    """
+    try:
+        system = platform.system()
+
+        if system == "Darwin":  # macOS
+            subprocess.run(["open", str(file_path)], check=True)
+        elif system == "Windows":
+            # Use os.startfile for Windows (more reliable than subprocess)
+            import os
+            os.startfile(str(file_path))
+        else:  # Linux and other Unix-like systems
+            subprocess.run(["xdg-open", str(file_path)], check=True)
+
+        return True
+    except subprocess.CalledProcessError:
+        return False
+    except FileNotFoundError:
+        # Command not found (e.g., xdg-open not available)
+        return False
+    except Exception:
+        # Catch any other exceptions (e.g., os.startfile failures)
+        return False
+
+
 def _handle_interactive_review(
     session,
     repo_root: Path,
@@ -1817,7 +1852,7 @@ def _handle_interactive_review(
         # Prompt user for action
         while True:
             action = click.prompt(
-                "  [A]pply / [R]eject / [S]kip / [P]rocess / [Q]uit / [H]elp",
+                "  [A]pply / [R]eject / [S]kip / [O]pen / [P]rocess / [Q]uit / [H]elp",
                 type=str,
                 default="S",
                 show_default=True,
@@ -1941,6 +1976,22 @@ def _handle_interactive_review(
                 skipped_count += 1
                 break
 
+            elif action in ["O", "OPEN"]:
+                # Open: open the file with default application
+                file_path = repo_root / doc_copy.file_path
+                if not file_path.exists():
+                    click.secho("  ✗ Error: File not found", fg="red")
+                    continue
+
+                if _open_file_with_default_app(file_path):
+                    click.secho("  ✓ Opened file with default application", fg="green")
+                else:
+                    click.secho("  ✗ Error: Failed to open file", fg="red")
+                    click.echo("    (No default application found or system command failed)")
+
+                # Continue in the loop to re-prompt for action
+                continue
+
             elif action in ["P", "PROCESS"]:
                 # Process: regenerate suggestion with additional instructions
                 click.echo()
@@ -2044,6 +2095,7 @@ def _handle_interactive_review(
                 click.echo("    [A]pply  - Move this file to the suggested location")
                 click.echo("    [R]eject - Reject this suggestion (marks as rejected, won't show again)")
                 click.echo("    [S]kip   - Skip this operation (keeps as pending for later review)")
+                click.echo("    [O]pen   - Open file with default application for preview")
                 click.echo("    [P]rocess - Re-generate suggestion with additional instructions")
                 click.echo("    [Q]uit   - Stop processing and exit")
                 click.echo("    [H]elp   - Show this help message")
