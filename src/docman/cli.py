@@ -2832,8 +2832,15 @@ def ignore(path: str | None, yes: bool, recursive: bool) -> None:
     default=False,
     help="Show what would be deleted without actually deleting files",
 )
+@click.option(
+    "-r",
+    "--recursive",
+    is_flag=True,
+    default=False,
+    help="Include files in subdirectories (only applies when path is a directory)",
+)
 @require_database
-def dedupe(path: str | None, yes: bool, dry_run: bool) -> None:
+def dedupe(path: str | None, yes: bool, dry_run: bool, recursive: bool) -> None:
     """
     Find and resolve duplicate files in the repository.
 
@@ -2849,10 +2856,12 @@ def dedupe(path: str | None, yes: bool, dry_run: bool) -> None:
     Options:
         -y, --yes: Skip confirmation prompts (bulk mode)
         --dry-run: Preview changes without modifying files
+        -r, --recursive: Include files in subdirectories (only applies when path is a directory)
 
     Examples:
         - 'docman dedupe': Interactive deduplication of entire repository
-        - 'docman dedupe docs/': Deduplicate only files in docs directory
+        - 'docman dedupe docs/': Deduplicate only files directly in docs directory
+        - 'docman dedupe docs/ -r': Deduplicate files in docs directory and subdirectories
         - 'docman dedupe -y --dry-run': Preview bulk deduplication
         - 'docman dedupe -y': Auto-delete duplicates (keep first copy)
     """
@@ -2917,16 +2926,38 @@ def dedupe(path: str | None, yes: bool, dry_run: bool) -> None:
 
             # Filter duplicate groups to only include copies in target path
             filtered_groups: dict[int, list[DocumentCopy]] = {}
-            for doc_id, copies in all_duplicate_groups.items():
-                # Filter copies to those in target path
-                matching_copies = [
-                    copy
-                    for copy in copies
-                    if (repo_root / copy.file_path).resolve().is_relative_to(target_path)
-                ]
-                # Only include if we still have duplicates after filtering
-                if len(matching_copies) > 1:
-                    filtered_groups[doc_id] = matching_copies
+
+            if target_path.is_file():
+                # Single file - filter by exact match
+                rel_path = str(target_path.relative_to(repo_root))
+                for doc_id, copies in all_duplicate_groups.items():
+                    matching_copies = [
+                        copy for copy in copies if copy.file_path == rel_path
+                    ]
+                    # Only include if we still have duplicates after filtering
+                    if len(matching_copies) > 1:
+                        filtered_groups[doc_id] = matching_copies
+            elif target_path.is_dir():
+                # Directory - filter by filesystem path relationship
+                for doc_id, copies in all_duplicate_groups.items():
+                    if recursive:
+                        # Match files in this directory and all subdirectories
+                        matching_copies = [
+                            copy
+                            for copy in copies
+                            if (repo_root / copy.file_path).resolve().is_relative_to(target_path)
+                        ]
+                    else:
+                        # Match only files directly in this directory (not subdirectories)
+                        matching_copies = [
+                            copy
+                            for copy in copies
+                            if (repo_root / copy.file_path).resolve().parent == target_path
+                        ]
+
+                    # Only include if we still have duplicates after filtering
+                    if len(matching_copies) > 1:
+                        filtered_groups[doc_id] = matching_copies
 
             duplicate_groups = filtered_groups
         else:
@@ -2950,6 +2981,11 @@ def dedupe(path: str | None, yes: bool, dry_run: bool) -> None:
         click.echo(f"Duplicates to resolve: {duplicate_copies}")
         if path:
             click.echo(f"Scope: {path}")
+            if target_path.is_dir():
+                if recursive:
+                    click.echo("Mode: Recursive")
+                else:
+                    click.echo("Mode: Non-recursive (current directory only)")
         click.echo()
 
         if dry_run:
