@@ -71,7 +71,7 @@ alembic -c src/docman/alembic.ini history
    - Test override: `DOCMAN_APP_CONFIG_DIR` environment variable
 
 2. **Repository-level config**: Project-specific settings stored in `<project>/.docman/`
-   - `config.yaml`: Repository configuration
+   - `config.yaml`: Repository configuration (stores folder definitions)
    - `instructions.md`: Document organization instructions (required for LLM prompts)
 
 ### Database Schema (SQLAlchemy + Alembic)
@@ -294,6 +294,49 @@ docman plan                      # Skips ignored files
 docman unmark archives/ -r -y   # Reset to unorganized to re-process
 ```
 
+### Folder Definition System
+
+**Overview**: Provides structured way for users to define document organization hierarchies without writing full instructions manually. Definitions are stored in `.docman/config.yaml` as recursive tree structure.
+
+**Architecture** (`repo_config.py`):
+- **`FolderDefinition`**: Dataclass with `description` and nested `folders` dict
+- **Storage**: YAML format in `.docman/config.yaml` under `organization.folders`
+- **Variable patterns**: Supports placeholders like `{year}`, `{company}`, `{family_member}`
+- **YAML error handling**: Detects malformed config (e.g., merge conflicts) with actionable error messages
+- **Tree operations**: Functions for loading (`get_folder_definitions`), saving (`add_folder_definition`), and displaying
+
+**Commands**:
+- `docman define <path> --desc "description"`: Define/update folder with description
+  - Path uses `/` separator (e.g., `Financial/invoices/{year}`)
+  - Creates nested structure automatically
+  - Updates existing folders without losing children
+- `docman config list-dirs`: Display folder tree with box-drawing characters
+  - `--path` option to specify repository location
+  - Visual tree structure with proper indentation
+
+**Example Usage**:
+```bash
+# Define top-level folder
+docman define Financial --desc "Financial documents"
+
+# Define nested structure with variable
+docman define Financial/invoices/{year} --desc "Invoices by year (YYYY format)"
+
+# Define parallel structure
+docman define Financial/receipts/{category} --desc "Personal receipts by category"
+
+# View defined structure
+docman config list-dirs
+# Output:
+# Financial
+# ├─ invoices
+# │  └─ {year}
+# └─ receipts
+#    └─ {category}
+```
+
+**Future Integration**: Folder definitions will be used to auto-generate organization instructions for LLM prompts, simplifying setup for users.
+
 ### CLI Structure (`cli.py`)
 
 **Workflow**: `scan` → `plan` → `status` → `review`
@@ -322,13 +365,16 @@ Main commands:
   - Interactive mode (default): Review each duplicate group, choose which copy to keep
   - Bulk mode (`-y`): Auto-delete duplicates, keep first copy
   - `--dry-run`: Preview changes without deleting files
+- `docman define <path> --desc "description"`: Define folder hierarchies for document organization
+  - Supports variable patterns like `{year}`, `{company}`
+  - Stores definitions in `.docman/config.yaml`
 - `docman unmark [path]`: Reset organization status to 'unorganized' for specified files
   - `--all`: Unmark all files in repository
   - `-r`: Recursively unmark files in subdirectories
 - `docman ignore [path]`: Mark files as 'ignored' to exclude from future plan runs
   - `-r`: Recursively ignore files in subdirectories
 - `docman llm`: Manage LLM providers (add, list, show, test, set-active, remove)
-- `docman config`: Manage repository configuration (set-instructions, show-instructions)
+- `docman config`: Manage repository configuration (set-instructions, show-instructions, list-dirs)
 
 ### Duplicate Document Handling
 
@@ -414,12 +460,14 @@ Your choice [1]:
 ### Testing Structure
 
 - **Unit tests** (`tests/unit/`): Test modules in isolation (config, models, file_operations, etc.)
+  - `test_repo_config.py`: Repository config operations including `FolderDefinition` serialization, folder definition CRUD, YAML error handling (40 tests)
 - **Integration tests** (`tests/integration/`): Test full command workflows
   - `test_review_integration.py`: Review command (interactive mode with apply/reject/skip, bulk apply mode, bulk reject mode)
   - `test_status_integration.py`: Status command
   - `test_plan_integration.py`: Plan command (includes mutation tests: stale content, deleted files, model changes, error handling)
     - `test_plan_skips_file_on_llm_failure`: Verifies LLM failures skip files without creating pending operations
     - `test_plan_extraction_failure_not_double_counted`: Confirms extraction failures counted only in `failed_count`
+  - `test_config_integration.py`: Config commands including `define` and `list-dirs` (17 tests)
 - Uses `CliRunner` from Click for CLI testing
 - Test fixtures in `conftest.py`
 - **Test isolation**: Global `autouse` fixture in `conftest.py` automatically isolates ALL tests from user app data
