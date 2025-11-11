@@ -53,8 +53,10 @@ from docman.prompt_builder import (
     load_organization_instructions,
 )
 from docman.repo_config import (
+    add_folder_definition,
     create_instructions_template,
     edit_instructions_interactive,
+    get_folder_definitions,
     load_instructions,
     save_instructions,
 )
@@ -3191,6 +3193,45 @@ def dedupe(path: str | None, yes: bool, dry_run: bool, recursive: bool) -> None:
             pass
 
 
+@main.command()
+@click.argument("path", type=str)
+@click.option("--desc", type=str, required=True, help="Description of the folder")
+def define(path: str, desc: str) -> None:
+    """Define a folder with its description in the organization structure.
+
+    Creates or updates a folder definition in the repository configuration.
+    Paths use '/' as separator and can include variable patterns like {year}.
+
+    Arguments:
+        PATH: Folder path (e.g., "Financial/invoices/{year}")
+
+    Options:
+        --desc: Human-readable description of what belongs in this folder
+
+    Examples:
+        - 'docman define Financial --desc "Financial documents"'
+        - 'docman define Financial/invoices/{year} --desc "Invoices by year (YYYY format)"'
+        - 'docman define Personal/medical/{family_member} --desc "Medical records by family member"'
+    """
+    # Find repository root
+    try:
+        repo_root = get_repository_root(start_path=Path.cwd())
+    except RepositoryError:
+        click.secho("Error: Not in a docman repository. Run 'docman init' first.", fg="red", err=True)
+        raise click.Abort()
+
+    # Add folder definition
+    try:
+        add_folder_definition(repo_root, path, desc)
+        click.secho(f"✓ Defined folder: {path}", fg="green")
+    except ValueError as e:
+        click.secho(f"Error: {e}", fg="red", err=True)
+        raise click.Abort()
+    except OSError as e:
+        click.secho(f"Error: Failed to save configuration: {e}", fg="red", err=True)
+        raise click.Abort()
+
+
 @main.group()
 def llm() -> None:
     """Manage LLM provider configurations."""
@@ -3499,6 +3540,93 @@ def config_show_instructions(path: str) -> None:
         click.echo("No document organization instructions found for this repository.")
         click.echo()
         click.echo("Run 'docman config set-instructions' to create them.")
+
+
+def _render_folder_tree(folders: dict, prefix: str = "", is_root: bool = True) -> list[str]:
+    """Recursively render folder tree with box-drawing characters.
+
+    Args:
+        folders: Dictionary mapping folder names to FolderDefinition objects.
+        prefix: Prefix string for indentation.
+        is_root: Whether this is the root level (top-level folders).
+
+    Returns:
+        List of lines representing the tree structure.
+    """
+    from docman.repo_config import FolderDefinition
+
+    lines = []
+    folder_items = list(folders.items())
+
+    for i, (name, folder_def) in enumerate(folder_items):
+        is_last_item = i == len(folder_items) - 1
+
+        # Determine branch character
+        if is_root:
+            # Top level folders, no prefix or branch
+            branch = ""
+        else:
+            # Child folders get branch characters
+            branch = "└─ " if is_last_item else "├─ "
+
+        # Add this folder
+        lines.append(f"{prefix}{branch}{name}")
+
+        # Recursively add children if any
+        if isinstance(folder_def, FolderDefinition) and folder_def.folders:
+            # Determine new prefix for children
+            if is_root:
+                # Children of root folders start with minimal indentation
+                new_prefix = ""
+            else:
+                # Deeper nesting, extend the prefix
+                extension = "   " if is_last_item else "│  "
+                new_prefix = prefix + extension
+
+            # Render children (not root anymore)
+            child_lines = _render_folder_tree(folder_def.folders, new_prefix, is_root=False)
+            lines.extend(child_lines)
+
+    return lines
+
+
+@config.command(name="list-dirs")
+@click.option("--path", type=str, default=".", help="Repository path (default: current directory)")
+def config_list_dirs(path: str) -> None:
+    """List all defined folder structures in the repository.
+
+    Displays the folder hierarchy defined in the repository configuration
+    as a tree structure.
+
+    Examples:
+        docman config list-dirs
+        docman config list-dirs --path /path/to/repo
+    """
+    # Find repository root
+    try:
+        repo_root = get_repository_root(start_path=Path(path).resolve())
+    except RepositoryError:
+        raise click.Abort()
+
+    # Load folder definitions
+    try:
+        folders = get_folder_definitions(repo_root)
+    except ValueError as e:
+        click.secho(f"Error: {e}", fg="red", err=True)
+        raise click.Abort()
+
+    if not folders:
+        click.echo("No folder definitions found for this repository.")
+        click.echo()
+        click.echo("Run 'docman define <path> --desc \"description\"' to define folders.")
+        return
+
+    # Render tree
+    click.echo()
+    tree_lines = _render_folder_tree(folders)
+    for line in tree_lines:
+        click.echo(line)
+    click.echo()
 
 
 if __name__ == "__main__":

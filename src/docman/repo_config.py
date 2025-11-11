@@ -1,12 +1,17 @@
 """Repository-level configuration management for docman.
 
 This module handles reading and writing repository-specific configuration,
-particularly document organization instructions stored in .docman/instructions.md.
+particularly document organization instructions stored in .docman/instructions.md
+and folder definitions stored in .docman/config.yaml.
 """
 
 import os
 import subprocess
+from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Any
+
+import yaml
 
 # Template for new instructions file
 INSTRUCTIONS_TEMPLATE = """# Document Organization Instructions
@@ -18,6 +23,190 @@ Add your instructions here for how documents should be organized in this reposit
 - Keep all contracts in legal/contracts/
 - Use lowercase and hyphens for directory names
 """
+
+
+@dataclass
+class FolderDefinition:
+    """Represents a folder with its description and nested subfolders.
+
+    Attributes:
+        description: Human-readable description of what belongs in this folder.
+        folders: Dictionary mapping folder names to their FolderDefinition objects.
+    """
+
+    description: str
+    folders: dict[str, "FolderDefinition"] = field(default_factory=dict)
+
+    def to_dict(self) -> dict[str, Any]:
+        """Convert to dictionary representation for YAML serialization.
+
+        Returns:
+            Dictionary with 'description' and 'folders' keys.
+        """
+        result: dict[str, Any] = {"description": self.description}
+        if self.folders:
+            result["folders"] = {
+                name: folder.to_dict() for name, folder in self.folders.items()
+            }
+        return result
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "FolderDefinition":
+        """Create FolderDefinition from dictionary representation.
+
+        Args:
+            data: Dictionary with 'description' and optional 'folders' keys.
+
+        Returns:
+            FolderDefinition instance.
+        """
+        description = data.get("description", "")
+        folders_data = data.get("folders", {})
+        folders = {
+            name: cls.from_dict(folder_data)
+            for name, folder_data in folders_data.items()
+        }
+        return cls(description=description, folders=folders)
+
+
+def get_repo_config_path(repo_root: Path) -> Path:
+    """Get the path to the repository's config file.
+
+    Args:
+        repo_root: The repository root directory.
+
+    Returns:
+        Path to .docman/config.yaml file.
+    """
+    return repo_root / ".docman" / "config.yaml"
+
+
+def load_repo_config(repo_root: Path) -> dict[str, Any]:
+    """Load repository configuration from .docman/config.yaml.
+
+    Args:
+        repo_root: The repository root directory.
+
+    Returns:
+        Dictionary containing configuration data. Returns empty dict if file
+        doesn't exist or is empty.
+
+    Raises:
+        ValueError: If the YAML file contains syntax errors.
+    """
+    config_path = get_repo_config_path(repo_root)
+
+    if not config_path.exists():
+        return {}
+
+    content = config_path.read_text()
+    if not content.strip():
+        return {}
+
+    try:
+        config = yaml.safe_load(content)
+        return config if config is not None else {}
+    except yaml.YAMLError as e:
+        # Provide actionable error message for invalid YAML
+        raise ValueError(
+            f"Configuration file {config_path} contains invalid YAML syntax. "
+            f"Please fix the syntax errors or delete the file to reset. "
+            f"Error: {e}"
+        ) from e
+
+
+def save_repo_config(repo_root: Path, config: dict[str, Any]) -> None:
+    """Save repository configuration to .docman/config.yaml.
+
+    Creates .docman directory if it doesn't exist.
+
+    Args:
+        repo_root: The repository root directory.
+        config: Dictionary containing configuration data to save.
+
+    Raises:
+        OSError: If file cannot be written.
+    """
+    config_path = get_repo_config_path(repo_root)
+
+    # Ensure .docman directory exists
+    config_path.parent.mkdir(parents=True, exist_ok=True)
+
+    # Write config
+    content = yaml.safe_dump(config, default_flow_style=False, sort_keys=False)
+    config_path.write_text(content)
+
+
+def get_folder_definitions(repo_root: Path) -> dict[str, FolderDefinition]:
+    """Get folder definitions from repository config.
+
+    Args:
+        repo_root: The repository root directory.
+
+    Returns:
+        Dictionary mapping top-level folder names to FolderDefinition objects.
+        Returns empty dict if no folders defined.
+    """
+    config = load_repo_config(repo_root)
+    organization = config.get("organization", {})
+    folders_data = organization.get("folders", {})
+
+    return {
+        name: FolderDefinition.from_dict(folder_data)
+        for name, folder_data in folders_data.items()
+    }
+
+
+def add_folder_definition(repo_root: Path, path: str, description: str) -> None:
+    """Add or update a folder definition.
+
+    Parses the path (e.g., "Financial/invoices/{year}") and creates/updates
+    the nested folder structure with the given description.
+
+    Args:
+        repo_root: The repository root directory.
+        path: Folder path, using '/' as separator (e.g., "Financial/invoices/{year}").
+        description: Human-readable description of the folder.
+
+    Raises:
+        ValueError: If path is empty or invalid.
+        OSError: If config file cannot be written.
+    """
+    if not path or not path.strip():
+        raise ValueError("Folder path cannot be empty")
+
+    # Split path into components
+    parts = [p.strip() for p in path.split("/") if p.strip()]
+    if not parts:
+        raise ValueError("Folder path cannot be empty")
+
+    # Load existing config
+    config = load_repo_config(repo_root)
+
+    # Ensure organization.folders structure exists
+    if "organization" not in config:
+        config["organization"] = {}
+    if "folders" not in config["organization"]:
+        config["organization"]["folders"] = {}
+
+    # Navigate/create the tree structure
+    current_level = config["organization"]["folders"]
+    for i, part in enumerate(parts):
+        if part not in current_level:
+            # Create new folder entry
+            current_level[part] = {"description": "", "folders": {}}
+
+        # If this is the last part, update description
+        if i == len(parts) - 1:
+            current_level[part]["description"] = description
+        else:
+            # Ensure folders key exists for navigation
+            if "folders" not in current_level[part]:
+                current_level[part]["folders"] = {}
+            current_level = current_level[part]["folders"]
+
+    # Save updated config
+    save_repo_config(repo_root, config)
 
 
 def get_instructions_path(repo_root: Path) -> Path:

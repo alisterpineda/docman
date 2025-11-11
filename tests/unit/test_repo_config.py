@@ -6,10 +6,16 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from docman.repo_config import (
+    FolderDefinition,
+    add_folder_definition,
     edit_instructions_interactive,
+    get_folder_definitions,
     get_instructions_path,
+    get_repo_config_path,
     load_instructions,
+    load_repo_config,
     save_instructions,
+    save_repo_config,
 )
 
 
@@ -198,3 +204,271 @@ class TestEditInstructionsInteractive:
             result = edit_instructions_interactive(tmp_path)
 
         assert result is False
+
+
+class TestFolderDefinition:
+    """Tests for FolderDefinition dataclass."""
+
+    def test_to_dict_simple(self) -> None:
+        """Test to_dict with simple folder (no subfolders)."""
+        folder = FolderDefinition(description="Test folder")
+        result = folder.to_dict()
+
+        assert result == {"description": "Test folder"}
+
+    def test_to_dict_with_subfolders(self) -> None:
+        """Test to_dict with nested subfolders."""
+        subfolder = FolderDefinition(description="Subfolder")
+        folder = FolderDefinition(description="Main folder", folders={"sub": subfolder})
+        result = folder.to_dict()
+
+        assert result == {
+            "description": "Main folder",
+            "folders": {"sub": {"description": "Subfolder"}},
+        }
+
+    def test_from_dict_simple(self) -> None:
+        """Test from_dict with simple folder data."""
+        data = {"description": "Test folder"}
+        folder = FolderDefinition.from_dict(data)
+
+        assert folder.description == "Test folder"
+        assert folder.folders == {}
+
+    def test_from_dict_with_subfolders(self) -> None:
+        """Test from_dict with nested subfolders."""
+        data = {
+            "description": "Main folder",
+            "folders": {"sub": {"description": "Subfolder"}},
+        }
+        folder = FolderDefinition.from_dict(data)
+
+        assert folder.description == "Main folder"
+        assert "sub" in folder.folders
+        assert folder.folders["sub"].description == "Subfolder"
+
+    def test_from_dict_missing_description(self) -> None:
+        """Test from_dict with missing description (should default to empty)."""
+        data: dict = {"folders": {}}
+        folder = FolderDefinition.from_dict(data)
+
+        assert folder.description == ""
+
+    def test_from_dict_missing_folders(self) -> None:
+        """Test from_dict with missing folders (should default to empty dict)."""
+        data = {"description": "Test"}
+        folder = FolderDefinition.from_dict(data)
+
+        assert folder.folders == {}
+
+
+class TestGetRepoConfigPath:
+    """Tests for get_repo_config_path function."""
+
+    def test_returns_correct_path(self, tmp_path: Path) -> None:
+        """Test that function returns correct path."""
+        result = get_repo_config_path(tmp_path)
+        expected = tmp_path / ".docman" / "config.yaml"
+        assert result == expected
+
+
+class TestLoadRepoConfig:
+    """Tests for load_repo_config function."""
+
+    def test_file_does_not_exist(self, tmp_path: Path) -> None:
+        """Test when config file doesn't exist."""
+        result = load_repo_config(tmp_path)
+        assert result == {}
+
+    def test_empty_file(self, tmp_path: Path) -> None:
+        """Test when config file is empty."""
+        config_path = get_repo_config_path(tmp_path)
+        config_path.parent.mkdir(parents=True)
+        config_path.write_text("")
+
+        result = load_repo_config(tmp_path)
+        assert result == {}
+
+    def test_valid_yaml(self, tmp_path: Path) -> None:
+        """Test when config file has valid YAML."""
+        config_path = get_repo_config_path(tmp_path)
+        config_path.parent.mkdir(parents=True)
+        config_path.write_text("organization:\n  folders: {}")
+
+        result = load_repo_config(tmp_path)
+        assert result == {"organization": {"folders": {}}}
+
+    def test_invalid_yaml_raises_error(self, tmp_path: Path) -> None:
+        """Test when config file contains invalid YAML syntax."""
+        config_path = get_repo_config_path(tmp_path)
+        config_path.parent.mkdir(parents=True)
+        # Invalid YAML: unbalanced brackets
+        config_path.write_text("organization:\n  folders: {\n    invalid")
+
+        with pytest.raises(ValueError) as exc_info:
+            load_repo_config(tmp_path)
+
+        assert "invalid YAML syntax" in str(exc_info.value)
+        assert "config.yaml" in str(exc_info.value)
+
+    def test_malformed_yaml_from_merge_conflict(self, tmp_path: Path) -> None:
+        """Test when config file has merge conflict markers."""
+        config_path = get_repo_config_path(tmp_path)
+        config_path.parent.mkdir(parents=True)
+        # Simulate merge conflict markers
+        config_path.write_text(
+            "organization:\n"
+            "<<<<<<< HEAD\n"
+            "  folders:\n"
+            "    Financial:\n"
+            "=======\n"
+            "  folders:\n"
+            "    Personal:\n"
+            ">>>>>>> branch\n"
+        )
+
+        with pytest.raises(ValueError) as exc_info:
+            load_repo_config(tmp_path)
+
+        assert "invalid YAML syntax" in str(exc_info.value)
+
+
+class TestSaveRepoConfig:
+    """Tests for save_repo_config function."""
+
+    def test_creates_directory_if_not_exists(self, tmp_path: Path) -> None:
+        """Test that .docman directory is created if it doesn't exist."""
+        config = {"test": "value"}
+        save_repo_config(tmp_path, config)
+
+        config_path = get_repo_config_path(tmp_path)
+        assert config_path.parent.exists()
+        assert config_path.parent.is_dir()
+
+    def test_saves_config(self, tmp_path: Path) -> None:
+        """Test that config is saved correctly."""
+        config = {"organization": {"folders": {}}}
+        save_repo_config(tmp_path, config)
+
+        config_path = get_repo_config_path(tmp_path)
+        assert config_path.exists()
+
+        # Reload and verify
+        loaded = load_repo_config(tmp_path)
+        assert loaded == config
+
+
+class TestGetFolderDefinitions:
+    """Tests for get_folder_definitions function."""
+
+    def test_empty_config(self, tmp_path: Path) -> None:
+        """Test with empty config."""
+        result = get_folder_definitions(tmp_path)
+        assert result == {}
+
+    def test_no_organization_key(self, tmp_path: Path) -> None:
+        """Test with config but no organization key."""
+        save_repo_config(tmp_path, {"other": "data"})
+        result = get_folder_definitions(tmp_path)
+        assert result == {}
+
+    def test_with_folder_definitions(self, tmp_path: Path) -> None:
+        """Test with folder definitions."""
+        config = {
+            "organization": {
+                "folders": {
+                    "Financial": {
+                        "description": "Financial documents",
+                        "folders": {
+                            "invoices": {"description": "Customer invoices"}
+                        },
+                    }
+                }
+            }
+        }
+        save_repo_config(tmp_path, config)
+
+        result = get_folder_definitions(tmp_path)
+
+        assert "Financial" in result
+        assert result["Financial"].description == "Financial documents"
+        assert "invoices" in result["Financial"].folders
+        assert result["Financial"].folders["invoices"].description == "Customer invoices"
+
+
+class TestAddFolderDefinition:
+    """Tests for add_folder_definition function."""
+
+    def test_empty_path_raises_error(self, tmp_path: Path) -> None:
+        """Test that empty path raises ValueError."""
+        with pytest.raises(ValueError, match="Folder path cannot be empty"):
+            add_folder_definition(tmp_path, "", "Description")
+
+    def test_whitespace_only_path_raises_error(self, tmp_path: Path) -> None:
+        """Test that whitespace-only path raises ValueError."""
+        with pytest.raises(ValueError, match="Folder path cannot be empty"):
+            add_folder_definition(tmp_path, "   ", "Description")
+
+    def test_add_single_folder(self, tmp_path: Path) -> None:
+        """Test adding a single top-level folder."""
+        add_folder_definition(tmp_path, "Financial", "Financial documents")
+
+        folders = get_folder_definitions(tmp_path)
+        assert "Financial" in folders
+        assert folders["Financial"].description == "Financial documents"
+        assert folders["Financial"].folders == {}
+
+    def test_add_nested_folder(self, tmp_path: Path) -> None:
+        """Test adding a nested folder path."""
+        add_folder_definition(
+            tmp_path, "Financial/invoices/{year}", "Invoices by year"
+        )
+
+        folders = get_folder_definitions(tmp_path)
+        assert "Financial" in folders
+        assert "invoices" in folders["Financial"].folders
+        assert "{year}" in folders["Financial"].folders["invoices"].folders
+        assert (
+            folders["Financial"].folders["invoices"].folders["{year}"].description
+            == "Invoices by year"
+        )
+
+    def test_update_existing_folder_description(self, tmp_path: Path) -> None:
+        """Test updating an existing folder's description."""
+        add_folder_definition(tmp_path, "Financial", "Old description")
+        add_folder_definition(tmp_path, "Financial", "New description")
+
+        folders = get_folder_definitions(tmp_path)
+        assert folders["Financial"].description == "New description"
+
+    def test_add_sibling_folders(self, tmp_path: Path) -> None:
+        """Test adding multiple folders at same level."""
+        add_folder_definition(tmp_path, "Financial", "Financial documents")
+        add_folder_definition(tmp_path, "Personal", "Personal documents")
+
+        folders = get_folder_definitions(tmp_path)
+        assert "Financial" in folders
+        assert "Personal" in folders
+        assert folders["Financial"].description == "Financial documents"
+        assert folders["Personal"].description == "Personal documents"
+
+    def test_add_child_to_existing_parent(self, tmp_path: Path) -> None:
+        """Test adding a child folder to an existing parent."""
+        add_folder_definition(tmp_path, "Financial", "Financial documents")
+        add_folder_definition(tmp_path, "Financial/invoices", "Customer invoices")
+
+        folders = get_folder_definitions(tmp_path)
+        assert folders["Financial"].description == "Financial documents"
+        assert "invoices" in folders["Financial"].folders
+        assert folders["Financial"].folders["invoices"].description == "Customer invoices"
+
+    def test_preserves_existing_structure(self, tmp_path: Path) -> None:
+        """Test that adding new folders preserves existing structure."""
+        add_folder_definition(tmp_path, "Financial/invoices", "Invoices")
+        add_folder_definition(tmp_path, "Financial/receipts", "Receipts")
+
+        folders = get_folder_definitions(tmp_path)
+        assert "invoices" in folders["Financial"].folders
+        assert "receipts" in folders["Financial"].folders
+        assert folders["Financial"].folders["invoices"].description == "Invoices"
+        assert folders["Financial"].folders["receipts"].description == "Receipts"
