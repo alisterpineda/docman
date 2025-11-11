@@ -5,12 +5,16 @@ organization tasks, keeping prompt logic separate from LLM providers.
 """
 
 import functools
+import json
 from pathlib import Path
 
 from jinja2 import Environment, PackageLoader
 
 # Initialize Jinja2 template environment
 _template_env = Environment(loader=PackageLoader("docman", "prompt_templates"))
+
+# Import FolderDefinition for type hints
+from docman.repo_config import FolderDefinition
 
 
 def _truncate_content_smart(
@@ -69,6 +73,209 @@ def load_organization_instructions(repo_root: Path) -> str | None:
     except Exception:
         # If we can't read the file, treat as if it doesn't exist
         return None
+
+
+def load_or_generate_instructions(repo_root: Path) -> str | None:
+    """Load instructions from file or generate from folder definitions.
+
+    This helper function tries multiple sources for organization instructions:
+    1. First tries to load from instructions.md file
+    2. If that fails, tries to generate from folder definitions
+    3. Returns None only if both approaches fail
+
+    This allows code paths like regeneration to work regardless of whether
+    the user originally used instructions.md or --auto-instructions.
+
+    Args:
+        repo_root: The repository root directory.
+
+    Returns:
+        Organization instructions content, or None if neither source is available.
+    """
+    # First try to load from instructions.md
+    instructions = load_organization_instructions(repo_root)
+    if instructions:
+        return instructions
+
+    # Fall back to generating from folder definitions
+    from docman.repo_config import get_folder_definitions
+
+    folder_definitions = get_folder_definitions(repo_root)
+    if folder_definitions:
+        return generate_instructions_from_folders(folder_definitions)
+
+    # Both sources failed
+    return None
+
+
+def generate_instructions_from_folders(
+    folders: dict[str, FolderDefinition]
+) -> str:
+    """Generate organization instructions from folder definitions.
+
+    Creates markdown instructions for the LLM including folder hierarchy
+    and variable pattern guidance.
+
+    Args:
+        folders: Dictionary mapping top-level folder names to FolderDefinition objects.
+
+    Returns:
+        Markdown-formatted instruction text for LLM consumption.
+    """
+    if not folders:
+        return ""
+
+    sections = []
+
+    # Section 1: Folder Hierarchy
+    sections.append("# Document Organization Structure\n")
+    sections.append(
+        "The following folder structure defines how documents should be organized:\n"
+    )
+    sections.append(_render_folder_hierarchy(folders, indent=0))
+
+    # Section 2: Variable Pattern Guidance
+    variable_patterns = _extract_variable_patterns(folders)
+    if variable_patterns:
+        sections.append("\n# Variable Pattern Extraction\n")
+        sections.append(
+            "Some folders use variable patterns (indicated by curly braces like {year}). "
+            "Extract these values from the document content:\n"
+        )
+        for pattern, examples in variable_patterns.items():
+            sections.append(f"\n**{pattern}**:")
+            sections.append(examples)
+
+    return "\n".join(sections)
+
+
+def _render_folder_hierarchy(
+    folders: dict[str, FolderDefinition], indent: int = 0
+) -> str:
+    """Recursively render folder hierarchy as markdown list.
+
+    Args:
+        folders: Dictionary of folder names to FolderDefinition objects.
+        indent: Current indentation level.
+
+    Returns:
+        Markdown-formatted folder tree.
+    """
+    lines = []
+    prefix = "  " * indent
+
+    for name, definition in folders.items():
+        # Add folder name and description
+        lines.append(f"{prefix}- **{name}/** - {definition.description}")
+
+        # Recursively add subfolders
+        if definition.folders:
+            lines.append(_render_folder_hierarchy(definition.folders, indent + 1))
+
+    return "\n".join(lines)
+
+
+def _extract_variable_patterns(
+    folders: dict[str, FolderDefinition]
+) -> dict[str, str]:
+    """Extract all variable patterns from folder definitions with usage guidance.
+
+    Args:
+        folders: Dictionary of folder names to FolderDefinition objects.
+
+    Returns:
+        Dictionary mapping variable patterns to extraction guidance.
+    """
+    patterns = {}
+
+    def collect_patterns(folder_dict: dict[str, FolderDefinition]) -> None:
+        """Recursively collect patterns from folder structure."""
+        for name, definition in folder_dict.items():
+            # Check if folder name contains variables (e.g., {year}, {category})
+            if "{" in name and "}" in name:
+                # Extract variable name
+                import re
+
+                matches = re.findall(r"\{(\w+)\}", name)
+                for var_name in matches:
+                    if var_name not in patterns:
+                        patterns[var_name] = _get_pattern_guidance(var_name)
+
+            # Recurse into subfolders
+            if definition.folders:
+                collect_patterns(definition.folders)
+
+    collect_patterns(folders)
+    return patterns
+
+
+def _get_pattern_guidance(variable_name: str) -> str:
+    """Generate extraction guidance for a specific variable pattern.
+
+    Args:
+        variable_name: The variable name (e.g., "year", "category").
+
+    Returns:
+        Guidance text for extracting this variable.
+    """
+    # Common pattern guidance
+    guidance_map = {
+        "year": (
+            "\n  - Extract 4-digit year (YYYY format) from document content or metadata"
+            "\n  - Examples: 2024, 2025"
+            "\n  - Check document dates, invoice dates, fiscal year references"
+        ),
+        "month": (
+            "\n  - Extract 2-digit month (MM format) from document content or metadata"
+            "\n  - Examples: 01 for January, 12 for December"
+            "\n  - Use leading zeros (e.g., 01 not 1)"
+        ),
+        "category": (
+            "\n  - Determine category based on document type and content"
+            "\n  - Use lowercase with hyphens for multi-word categories"
+            "\n  - Examples: office-supplies, utilities, travel, meals"
+        ),
+        "company": (
+            "\n  - Extract company name from document header, sender, or subject"
+            "\n  - Use lowercase with hyphens for multi-word names"
+            "\n  - Remove Inc., LLC, Ltd. suffixes"
+            "\n  - Examples: acme-corp, global-tech"
+        ),
+        "client": (
+            "\n  - Extract client/customer name from document"
+            "\n  - Use lowercase with hyphens for multi-word names"
+            "\n  - Examples: smith-industries, jones-llc"
+        ),
+        "project": (
+            "\n  - Extract project name or code from document"
+            "\n  - Use lowercase with hyphens"
+            "\n  - Examples: website-redesign, mobile-app, q4-campaign"
+        ),
+    }
+
+    # Return specific guidance or generic guidance
+    return guidance_map.get(
+        variable_name.lower(),
+        f"\n  - Extract {variable_name} value from document content"
+        "\n  - Use lowercase with hyphens for multi-word values"
+        "\n  - Be consistent with naming",
+    )
+
+
+def serialize_folder_definitions(folders: dict[str, FolderDefinition]) -> str:
+    """Serialize folder definitions to JSON for hashing purposes.
+
+    Args:
+        folders: Dictionary mapping folder names to FolderDefinition objects.
+
+    Returns:
+        JSON string representation of folder structure.
+    """
+    # Convert FolderDefinitions to dict representation
+    serializable = {name: folder.to_dict() for name, folder in folders.items()}
+
+    # Convert to JSON with sorted keys for stable hashing
+    return json.dumps(serializable, sort_keys=True)
 
 
 @functools.lru_cache(maxsize=2)

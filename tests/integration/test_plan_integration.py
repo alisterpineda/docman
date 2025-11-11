@@ -1633,3 +1633,294 @@ class TestDocmanPlanPathSecurity:
                 next(session_gen)
             except StopIteration:
                 pass
+
+
+class TestDocmanPlanAutoInstructions:
+    """Integration tests for docman plan --auto-instructions feature."""
+
+    @pytest.fixture(autouse=True)
+    def _mock_llm_provider(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Automatically mock LLM provider for all tests in this class."""
+        # Create a mock provider config
+        mock_provider_config = ProviderConfig(
+            name="test-provider",
+            provider_type="google",
+            model="gemini-1.5-flash",
+            is_active=True,
+        )
+
+        # Create mock provider instance
+        mock_provider_instance = Mock()
+        mock_provider_instance.test_connection.return_value = True
+        mock_provider_instance.supports_structured_output = True
+        mock_provider_instance.generate_suggestions.return_value = {
+            "suggested_directory_path": "financial/invoices/2024",
+            "suggested_filename": "acme-invoice.pdf",
+            "reason": "Invoice from Acme Corp for 2024",
+        }
+
+        # Patch the LLM-related functions
+        monkeypatch.setattr("docman.cli.get_active_provider", Mock(return_value=mock_provider_config))
+        monkeypatch.setattr("docman.cli.get_api_key", Mock(return_value="test-api-key"))
+        monkeypatch.setattr("docman.cli.get_llm_provider", Mock(return_value=mock_provider_instance))
+
+    def setup_repository(self, path: Path, create_instructions: bool = True) -> None:
+        """Set up a docman repository for testing."""
+        docman_dir = path / ".docman"
+        docman_dir.mkdir()
+        config_file = docman_dir / "config.yaml"
+        config_file.touch()
+
+        if create_instructions:
+            # Create instructions file
+            instructions_file = docman_dir / "instructions.md"
+            instructions_file.write_text("Test organization instructions from instructions.md")
+
+    def setup_folder_definitions(self, path: Path) -> None:
+        """Set up folder definitions in the repository."""
+        config_file = path / ".docman" / "config.yaml"
+        config_content = """
+organization:
+  folders:
+    Financial:
+      description: "Financial documents"
+      folders:
+        invoices:
+          description: "Customer invoices"
+          folders:
+            "{year}":
+              description: "Invoices by year (YYYY format)"
+        receipts:
+          description: "Personal receipts"
+          folders:
+            "{category}":
+              description: "Receipt category"
+"""
+        config_file.write_text(config_content)
+
+    def setup_isolated_env(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        create_instructions: bool = True,
+    ) -> Path:
+        """Set up isolated environment with separate app config and repository."""
+        app_config_dir = tmp_path / "app_config"
+        repo_dir = tmp_path / "repo"
+        repo_dir.mkdir()
+        monkeypatch.setenv("DOCMAN_APP_CONFIG_DIR", str(app_config_dir))
+        self.setup_repository(repo_dir, create_instructions=create_instructions)
+        return repo_dir
+
+    def create_scanned_document(
+        self, repo_dir: Path, file_path: str, content: str = "Test invoice content"
+    ) -> tuple[Document, DocumentCopy]:
+        """Create a scanned document in the database."""
+        ensure_database()
+        session_gen = get_session()
+        session = next(session_gen)
+
+        try:
+            # Create the actual file
+            full_path = repo_dir / file_path
+            full_path.parent.mkdir(parents=True, exist_ok=True)
+            full_path.write_text(content)
+
+            # Compute content hash
+            content_hash = compute_content_hash(full_path)
+
+            # Create document
+            document = Document(content_hash=content_hash, content=content)
+            session.add(document)
+            session.flush()
+
+            # Create document copy with stored metadata
+            stat = full_path.stat()
+            copy = DocumentCopy(
+                document_id=document.id,
+                repository_path=str(repo_dir),
+                file_path=file_path,
+                stored_content_hash=content_hash,
+                stored_size=stat.st_size,
+                stored_mtime=stat.st_mtime,
+            )
+            session.add(copy)
+            session.commit()
+
+            return document, copy
+        finally:
+            try:
+                next(session_gen)
+            except StopIteration:
+                pass
+
+    def test_auto_instructions_success(
+        self,
+        cli_runner: CliRunner,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Test that auto-instructions works with valid folder definitions."""
+        repo_dir = self.setup_isolated_env(tmp_path, monkeypatch, create_instructions=False)
+        self.setup_folder_definitions(repo_dir)
+
+        # Create scanned document
+        self.create_scanned_document(repo_dir, "invoice.pdf", "Acme Corp invoice 2024")
+
+        # Change to the repository directory
+        monkeypatch.chdir(repo_dir)
+
+        # Run plan command with auto-instructions
+        result = cli_runner.invoke(main, ["plan", "--auto-instructions"], catch_exceptions=False)
+
+        # Verify exit code
+        assert result.exit_code == 0
+
+        # Verify output shows auto-generated instructions are being used
+        assert "Using auto-generated instructions from folder definitions" in result.output
+
+        # Verify operation was created
+        session_gen = get_session()
+        session = next(session_gen)
+        try:
+            operations = session.query(Operation).all()
+            assert len(operations) == 1
+            assert operations[0].status == OperationStatus.PENDING
+        finally:
+            try:
+                next(session_gen)
+            except StopIteration:
+                pass
+
+    def test_auto_instructions_empty_folder_defs_errors(
+        self,
+        cli_runner: CliRunner,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Test that auto-instructions errors when folder definitions are empty."""
+        repo_dir = self.setup_isolated_env(tmp_path, monkeypatch, create_instructions=False)
+
+        # Create scanned document
+        self.create_scanned_document(repo_dir, "invoice.pdf", "Test invoice")
+
+        # Change to the repository directory
+        monkeypatch.chdir(repo_dir)
+
+        # Run plan command with auto-instructions but no folder definitions
+        result = cli_runner.invoke(main, ["plan", "--auto-instructions"])
+
+        # Verify it errors
+        assert result.exit_code != 0
+        assert "Error: No folder definitions found" in result.output
+        assert "docman define" in result.output
+
+    def test_auto_instructions_ignores_instructions_md(
+        self,
+        cli_runner: CliRunner,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Test that instructions.md is ignored when auto-instructions flag is used."""
+        repo_dir = self.setup_isolated_env(tmp_path, monkeypatch, create_instructions=True)
+        self.setup_folder_definitions(repo_dir)
+
+        # Create scanned document
+        self.create_scanned_document(repo_dir, "invoice.pdf", "Test invoice")
+
+        # Change to the repository directory
+        monkeypatch.chdir(repo_dir)
+
+        # Run plan command with auto-instructions
+        result = cli_runner.invoke(main, ["plan", "--auto-instructions"], catch_exceptions=False)
+
+        # Verify exit code
+        assert result.exit_code == 0
+
+        # Verify auto-generated instructions message is shown
+        assert "Using auto-generated instructions from folder definitions" in result.output
+
+        # The instructions.md should be ignored - verify by checking the operation was created
+        session_gen = get_session()
+        session = next(session_gen)
+        try:
+            operations = session.query(Operation).all()
+            assert len(operations) == 1
+        finally:
+            try:
+                next(session_gen)
+            except StopIteration:
+                pass
+
+    def test_auto_instructions_prompt_hash_invalidation(
+        self,
+        cli_runner: CliRunner,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Test that prompt hash changes when folder definitions change."""
+        repo_dir = self.setup_isolated_env(tmp_path, monkeypatch, create_instructions=False)
+        self.setup_folder_definitions(repo_dir)
+
+        # Create scanned document
+        self.create_scanned_document(repo_dir, "invoice.pdf", "Test invoice")
+
+        # Change to the repository directory
+        monkeypatch.chdir(repo_dir)
+
+        # Run plan command first time
+        result = cli_runner.invoke(main, ["plan", "--auto-instructions"], catch_exceptions=False)
+        assert result.exit_code == 0
+
+        # Get the first operation and its prompt hash
+        session_gen = get_session()
+        session = next(session_gen)
+        try:
+            first_operation = session.query(Operation).first()
+            assert first_operation is not None
+            first_prompt_hash = first_operation.prompt_hash
+        finally:
+            try:
+                next(session_gen)
+            except StopIteration:
+                pass
+
+        # Modify folder definitions
+        config_file = repo_dir / ".docman" / "config.yaml"
+        new_config_content = """
+organization:
+  folders:
+    Financial:
+      description: "Updated financial documents"
+      folders:
+        invoices:
+          description: "Updated customer invoices"
+          folders:
+            "{year}":
+              description: "Updated invoices by year"
+            "{month}":
+              description: "Invoices by month (MM format)"
+"""
+        config_file.write_text(new_config_content)
+
+        # Run plan command again with --reprocess to regenerate
+        result = cli_runner.invoke(
+            main, ["plan", "--auto-instructions", "--reprocess"], catch_exceptions=False
+        )
+        assert result.exit_code == 0
+
+        # Verify the prompt hash changed
+        session_gen = get_session()
+        session = next(session_gen)
+        try:
+            second_operation = session.query(Operation).first()
+            assert second_operation is not None
+            second_prompt_hash = second_operation.prompt_hash
+
+            # Hash should be different because folder definitions changed
+            assert first_prompt_hash != second_prompt_hash
+        finally:
+            try:
+                next(session_gen)
+            except StopIteration:
+                pass

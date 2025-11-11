@@ -335,7 +335,35 @@ docman config list-dirs
 #    └─ {category}
 ```
 
-**Future Integration**: Folder definitions will be used to auto-generate organization instructions for LLM prompts, simplifying setup for users.
+**LLM Integration** (`prompt_builder.py`):
+- **Auto-generated instructions**: Folder definitions can be used to automatically generate organization instructions
+- **`generate_instructions_from_folders()`**: Converts folder structure to markdown instructions for LLM
+- **`load_or_generate_instructions()`**: Helper that tries both instruction sources (file then folder definitions)
+  - Used by regeneration flows (PROCESS action in review command) to work with either source
+  - Ensures feature works consistently across all code paths
+- **Generated content includes**:
+  - Folder hierarchy tree with descriptions
+  - Variable pattern extraction guidance (how to extract `{year}`, `{category}`, etc. from documents)
+- **Prompt hash consistency**: All operations use same hash computation logic
+  - Includes: system prompt + organization instructions + model name + serialized folder definitions (if applicable)
+  - Hash computed consistently across plan command, regeneration, and reprocessing flows
+  - Changes to folder structure automatically invalidate existing operations
+  - Prevents false invalidations when reprocessing auto-instruction operations
+- **Usage**: Run `docman plan --auto-instructions` to use folder definitions instead of `instructions.md`
+
+**Example Workflow with Auto-Instructions**:
+```bash
+# Define folder structure
+docman define Financial/invoices/{year} --desc "Invoices by year (YYYY format)"
+docman define Financial/receipts/{category} --desc "Receipts by category"
+
+# Use folder definitions to generate instructions automatically
+docman scan -r
+docman plan --auto-instructions
+
+# Folder definitions are automatically converted to LLM instructions
+# including folder hierarchy and guidance on extracting {year} and {category} from document content
+```
 
 ### CLI Structure (`cli.py`)
 
@@ -351,6 +379,7 @@ Main commands:
 - `docman plan [path]`: Generate LLM organization suggestions for scanned documents
   - `--reprocess`: Reprocess all files, including those already organized or ignored
   - `--scan`: Run scan first, then generate suggestions (combines both steps)
+  - `--auto-instructions`: Generate instructions from folder definitions instead of using `instructions.md`
   - Shows warnings when duplicates detected to save LLM costs
   - Shows warnings for unscanned files
   - **Note**: Requires documents to be scanned first via `docman scan` (or use `--scan` flag)

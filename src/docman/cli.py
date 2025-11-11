@@ -50,7 +50,10 @@ from docman.prompt_builder import (
     build_system_prompt,
     build_user_prompt,
     compute_prompt_hash,
+    generate_instructions_from_folders,
+    load_or_generate_instructions,
     load_organization_instructions,
+    serialize_folder_definitions,
 )
 from docman.repo_config import (
     add_folder_definition,
@@ -686,8 +689,20 @@ def scan(path: str | None, recursive: bool, rescan: bool) -> None:
     default=False,
     help="Scan for new documents before generating suggestions",
 )
+@click.option(
+    "--auto-instructions",
+    is_flag=True,
+    default=False,
+    help="Generate instructions from folder definitions instead of using instructions.md",
+)
 @require_database
-def plan(path: str | None, recursive: bool, reprocess: bool, scan_first: bool) -> None:
+def plan(
+    path: str | None,
+    recursive: bool,
+    reprocess: bool,
+    scan_first: bool,
+    auto_instructions: bool,
+) -> None:
     """
     Generate LLM organization suggestions for scanned documents.
 
@@ -702,6 +717,7 @@ def plan(path: str | None, recursive: bool, reprocess: bool, scan_first: bool) -
         -r, --recursive: Recursively process subdirectories when PATH is a directory.
         --reprocess: Reprocess all files, including those already organized or ignored.
         --scan: Scan for new documents before generating suggestions.
+        --auto-instructions: Generate instructions from folder definitions instead of instructions.md.
 
     Examples:
         - 'docman plan': Generate suggestions for all unorganized documents
@@ -709,6 +725,7 @@ def plan(path: str | None, recursive: bool, reprocess: bool, scan_first: bool) -
         - 'docman plan docs/': Generate suggestions for docs directory
         - 'docman plan docs/ -r': Generate suggestions for docs directory recursively
         - 'docman plan --reprocess': Reprocess all documents, including organized ones
+        - 'docman plan --auto-instructions': Use folder definitions to generate instructions
 
     Note: Run 'docman scan' first to discover and extract content from new documents.
     """
@@ -798,14 +815,35 @@ def plan(path: str | None, recursive: bool, reprocess: bool, scan_first: bool) -
         raise click.Abort()
 
 
-    # Check if document organization instructions exist (required)
-    organization_instructions = load_organization_instructions(repo_root)
-    if not organization_instructions:
+    # Load organization instructions based on mode
+    folder_definitions = None  # Track folder definitions for hash computation
+    organization_instructions: str  # Will be set in either branch below
+
+    if auto_instructions:
+        # Generate instructions from folder definitions
+        folder_definitions = get_folder_definitions(repo_root)
+        if not folder_definitions:
+            click.echo()
+            click.secho(
+                "Error: No folder definitions found. Cannot use --auto-instructions.",
+                fg="red",
+            )
+            click.echo()
+            click.echo("Run 'docman define <path> --desc \"description\"' to create folder definitions.")
+            raise click.Abort()
+
+        organization_instructions = generate_instructions_from_folders(folder_definitions)
+        click.echo("Using auto-generated instructions from folder definitions")
         click.echo()
-        click.secho("Error: Document organization instructions are required.", fg="red")
-        click.echo()
-        click.echo("Run 'docman config set-instructions' to create them.")
-        raise click.Abort()
+    else:
+        # Load instructions from instructions.md (existing behavior)
+        organization_instructions = load_organization_instructions(repo_root)
+        if not organization_instructions:
+            click.echo()
+            click.secho("Error: Document organization instructions are required.", fg="red")
+            click.echo()
+            click.echo("Run 'docman config set-instructions' to create them.")
+            raise click.Abort()
 
     # Build prompts for LLM (done once for entire repository)
     # Use structured output if provider supports it
@@ -817,7 +855,20 @@ def plan(path: str | None, recursive: bool, reprocess: bool, scan_first: bool) -
     model_name = active_provider.model if active_provider else None
 
     # Compute prompt hash for caching (based on system prompt + organization instructions + model)
-    current_prompt_hash = compute_prompt_hash(system_prompt, organization_instructions, model_name)
+    # When using auto-instructions, include serialized folder definitions in the hash
+    prompt_components = system_prompt
+    if organization_instructions:
+        prompt_components += "\n" + organization_instructions
+    if model_name:
+        prompt_components += "\n" + model_name
+    if folder_definitions:
+        # Include serialized folder definitions to detect structure changes
+        prompt_components += "\n" + serialize_folder_definitions(folder_definitions)
+
+    import hashlib
+    sha256_hash = hashlib.sha256()
+    sha256_hash.update(prompt_components.encode("utf-8"))
+    current_prompt_hash = sha256_hash.hexdigest()
 
     # Get database session
     session_gen = get_session()
@@ -1529,10 +1580,14 @@ def _regenerate_suggestion(
         api_key = get_api_key(active_provider.name)
         llm_provider_instance = get_llm_provider(active_provider, api_key)
 
-        # Load organization instructions
-        organization_instructions = load_organization_instructions(repo_root)
+        # Load organization instructions (from file or folder definitions)
+        organization_instructions = load_or_generate_instructions(repo_root)
         if not organization_instructions:
-            click.secho("  Error: Organization instructions not found", fg="red")
+            click.secho(
+                "  Error: Organization instructions not found. "
+                "Create instructions.md or define folder structure with 'docman define'.",
+                fg="red"
+            )
             return False, None
 
         # Build system prompt (user prompt is already provided)
@@ -1584,15 +1639,31 @@ def _persist_reprocessed_suggestion(
     """
     # Get active provider and compute prompt hash for tracking
     active_provider = get_active_provider()
-    organization_instructions = load_organization_instructions(repo_root)
+    organization_instructions = load_or_generate_instructions(repo_root)
     llm_provider_instance = get_llm_provider(active_provider, get_api_key(active_provider.name))
     system_prompt = build_system_prompt(
         use_structured_output=llm_provider_instance.supports_structured_output
     )
     model_name = active_provider.model
-    current_prompt_hash = compute_prompt_hash(
-        system_prompt, organization_instructions, model_name
-    )
+
+    # Load folder definitions to include in hash computation (if applicable)
+    folder_definitions = get_folder_definitions(repo_root)
+
+    # Compute prompt hash the same way plan command does
+    # Include serialized folder definitions to maintain hash consistency
+    prompt_components = system_prompt
+    if organization_instructions:
+        prompt_components += "\n" + organization_instructions
+    if model_name:
+        prompt_components += "\n" + model_name
+    if folder_definitions:
+        # Include serialized folder definitions to detect structure changes
+        prompt_components += "\n" + serialize_folder_definitions(folder_definitions)
+
+    import hashlib
+    sha256_hash = hashlib.sha256()
+    sha256_hash.update(prompt_components.encode("utf-8"))
+    current_prompt_hash = sha256_hash.hexdigest()
 
     # Update operation with in-memory suggestion
     pending_op.suggested_directory_path = in_memory_suggestion["suggested_directory_path"]
@@ -2013,10 +2084,14 @@ def _handle_interactive_review(
 
                 # Initialize base user prompt on first re-process
                 if current_user_prompt is None:
-                    # Load organization instructions
-                    organization_instructions = load_organization_instructions(repo_root)
+                    # Load organization instructions (from file or folder definitions)
+                    organization_instructions = load_or_generate_instructions(repo_root)
                     if not organization_instructions:
-                        click.secho("  Error: Organization instructions not found", fg="red")
+                        click.secho(
+                            "  Error: Organization instructions not found. "
+                            "Create instructions.md or define folder structure with 'docman define'.",
+                            fg="red"
+                        )
                         continue
 
                     # Build base user prompt
