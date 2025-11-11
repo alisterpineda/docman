@@ -311,7 +311,7 @@ class TestDocmanDedupe:
         )
 
         # Run dedupe with docs/ filter
-        result = cli_runner.invoke(main, ["dedupe", "docs/", "-y"], catch_exceptions=False)
+        result = cli_runner.invoke(main, ["dedupe", "docs/", "-r", "-y"], catch_exceptions=False)
 
         assert result.exit_code == 0
         # Only docs duplicates should be processed
