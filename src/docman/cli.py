@@ -3834,12 +3834,9 @@ def pattern_add(name: str, desc: str, path: str) -> None:
     Example:
         docman pattern add year --desc "4-digit year in YYYY format"
     """
-    repo_root = Path(path).resolve()
-
-    # Check if we're in a repository
-    if not (repo_root / ".docman").exists():
-        click.secho("Error: Not in a docman repository", fg="red", err=True)
-        click.echo("Run 'docman init' to initialize a repository.")
+    try:
+        repo_root = get_repository_root(start_path=Path(path).resolve())
+    except RepositoryError:
         raise click.Abort()
 
     try:
@@ -3866,12 +3863,9 @@ def pattern_add(name: str, desc: str, path: str) -> None:
 @click.option("--path", type=str, default=".", help="Repository path (default: current directory)")
 def pattern_list(path: str) -> None:
     """List all defined variable patterns."""
-    repo_root = Path(path).resolve()
-
-    # Check if we're in a repository
-    if not (repo_root / ".docman").exists():
-        click.secho("Error: Not in a docman repository", fg="red", err=True)
-        click.echo("Run 'docman init' to initialize a repository.")
+    try:
+        repo_root = get_repository_root(start_path=Path(path).resolve())
+    except RepositoryError:
         raise click.Abort()
 
     try:
@@ -3907,12 +3901,9 @@ def pattern_list(path: str) -> None:
 @click.option("--path", type=str, default=".", help="Repository path (default: current directory)")
 def pattern_show(name: str, path: str) -> None:
     """Show details of a specific variable pattern."""
-    repo_root = Path(path).resolve()
-
-    # Check if we're in a repository
-    if not (repo_root / ".docman").exists():
-        click.secho("Error: Not in a docman repository", fg="red", err=True)
-        click.echo("Run 'docman init' to initialize a repository.")
+    try:
+        repo_root = get_repository_root(start_path=Path(path).resolve())
+    except RepositoryError:
         raise click.Abort()
 
     try:
@@ -3946,12 +3937,9 @@ def pattern_show(name: str, path: str) -> None:
 @click.option("--path", type=str, default=".", help="Repository path (default: current directory)")
 def pattern_remove(name: str, yes: bool, path: str) -> None:
     """Remove a variable pattern definition."""
-    repo_root = Path(path).resolve()
-
-    # Check if we're in a repository
-    if not (repo_root / ".docman").exists():
-        click.secho("Error: Not in a docman repository", fg="red", err=True)
-        click.echo("Run 'docman init' to initialize a repository.")
+    try:
+        repo_root = get_repository_root(start_path=Path(path).resolve())
+    except RepositoryError:
         raise click.Abort()
 
     try:
