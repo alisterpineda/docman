@@ -9,6 +9,7 @@ from docman.repo_config import (
     FolderDefinition,
     add_folder_definition,
     edit_instructions_interactive,
+    get_default_filename_convention,
     get_folder_definitions,
     get_instructions_path,
     get_repo_config_path,
@@ -16,6 +17,7 @@ from docman.repo_config import (
     load_repo_config,
     save_instructions,
     save_repo_config,
+    set_default_filename_convention,
 )
 
 
@@ -261,6 +263,67 @@ class TestFolderDefinition:
 
         assert folder.folders == {}
 
+    def test_to_dict_with_filename_convention(self) -> None:
+        """Test to_dict with filename_convention field."""
+        folder = FolderDefinition(
+            description="Test folder",
+            filename_convention="{year}-{month}-invoice"
+        )
+        result = folder.to_dict()
+
+        assert result == {
+            "description": "Test folder",
+            "filename_convention": "{year}-{month}-invoice",
+        }
+
+    def test_to_dict_without_filename_convention(self) -> None:
+        """Test to_dict without filename_convention (should not include field)."""
+        folder = FolderDefinition(description="Test folder")
+        result = folder.to_dict()
+
+        assert result == {"description": "Test folder"}
+        assert "filename_convention" not in result
+
+    def test_from_dict_with_filename_convention(self) -> None:
+        """Test from_dict with filename_convention field."""
+        data = {
+            "description": "Test folder",
+            "filename_convention": "{company}-{date}",
+        }
+        folder = FolderDefinition.from_dict(data)
+
+        assert folder.description == "Test folder"
+        assert folder.filename_convention == "{company}-{date}"
+
+    def test_from_dict_missing_filename_convention(self) -> None:
+        """Test from_dict without filename_convention (should default to None)."""
+        data = {"description": "Test folder"}
+        folder = FolderDefinition.from_dict(data)
+
+        assert folder.filename_convention is None
+
+    def test_roundtrip_with_filename_convention(self) -> None:
+        """Test serialization round-trip with filename_convention."""
+        original = FolderDefinition(
+            description="Financial",
+            filename_convention="{year}-{month}-{description}",
+            folders={
+                "invoices": FolderDefinition(
+                    description="Invoices",
+                    filename_convention="{company}-invoice",
+                )
+            },
+        )
+
+        # Convert to dict and back
+        data = original.to_dict()
+        restored = FolderDefinition.from_dict(data)
+
+        assert restored.description == original.description
+        assert restored.filename_convention == original.filename_convention
+        assert "invoices" in restored.folders
+        assert restored.folders["invoices"].filename_convention == "{company}-invoice"
+
 
 class TestGetRepoConfigPath:
     """Tests for get_repo_config_path function."""
@@ -472,3 +535,110 @@ class TestAddFolderDefinition:
         assert "receipts" in folders["Financial"].folders
         assert folders["Financial"].folders["invoices"].description == "Invoices"
         assert folders["Financial"].folders["receipts"].description == "Receipts"
+
+    def test_add_with_filename_convention(self, tmp_path: Path) -> None:
+        """Test adding folder with filename convention."""
+        add_folder_definition(
+            tmp_path,
+            "Financial/invoices",
+            "Customer invoices",
+            filename_convention="{year}-{month}-invoice"
+        )
+
+        folders = get_folder_definitions(tmp_path)
+        assert folders["Financial"].folders["invoices"].filename_convention == "{year}-{month}-invoice"
+
+    def test_update_filename_convention(self, tmp_path: Path) -> None:
+        """Test updating filename convention for existing folder."""
+        add_folder_definition(tmp_path, "Financial", "Financial documents")
+        add_folder_definition(
+            tmp_path,
+            "Financial",
+            "Financial documents",
+            filename_convention="{year}-{category}"
+        )
+
+        folders = get_folder_definitions(tmp_path)
+        assert folders["Financial"].filename_convention == "{year}-{category}"
+
+
+class TestGetDefaultFilenameConvention:
+    """Tests for get_default_filename_convention function."""
+
+    def test_returns_none_when_not_set(self, tmp_path: Path) -> None:
+        """Test that function returns None when default convention not set."""
+        result = get_default_filename_convention(tmp_path)
+        assert result is None
+
+    def test_returns_none_with_empty_config(self, tmp_path: Path) -> None:
+        """Test that function returns None with empty config file."""
+        config_path = get_repo_config_path(tmp_path)
+        config_path.parent.mkdir(parents=True, exist_ok=True)
+        config_path.write_text("")
+
+        result = get_default_filename_convention(tmp_path)
+        assert result is None
+
+    def test_returns_convention_when_set(self, tmp_path: Path) -> None:
+        """Test that function returns convention when set."""
+        from docman.repo_config import set_default_filename_convention
+
+        convention = "{year}-{month}-{description}"
+        set_default_filename_convention(tmp_path, convention)
+
+        result = get_default_filename_convention(tmp_path)
+        assert result == convention
+
+
+class TestSetDefaultFilenameConvention:
+    """Tests for set_default_filename_convention function."""
+
+    def test_sets_convention_in_new_config(self, tmp_path: Path) -> None:
+        """Test setting convention in new config file."""
+        convention = "{year}-{month}-{description}"
+        set_default_filename_convention(tmp_path, convention)
+
+        # Verify convention was set
+        result = get_default_filename_convention(tmp_path)
+        assert result == convention
+
+    def test_sets_convention_in_existing_config(self, tmp_path: Path) -> None:
+        """Test setting convention in existing config file."""
+        # Create existing config with folder definitions
+        add_folder_definition(tmp_path, "Financial", "Financial documents")
+
+        # Set default convention
+        convention = "{date}-{company}"
+        set_default_filename_convention(tmp_path, convention)
+
+        # Verify convention was set and folders preserved
+        result = get_default_filename_convention(tmp_path)
+        assert result == convention
+
+        folders = get_folder_definitions(tmp_path)
+        assert "Financial" in folders
+
+    def test_updates_existing_convention(self, tmp_path: Path) -> None:
+        """Test updating existing convention."""
+        set_default_filename_convention(tmp_path, "{year}-{month}")
+        set_default_filename_convention(tmp_path, "{company}-{date}")
+
+        result = get_default_filename_convention(tmp_path)
+        assert result == "{company}-{date}"
+
+    def test_strips_whitespace(self, tmp_path: Path) -> None:
+        """Test that whitespace is stripped from convention."""
+        set_default_filename_convention(tmp_path, "  {year}-{month}  ")
+
+        result = get_default_filename_convention(tmp_path)
+        assert result == "{year}-{month}"
+
+    def test_empty_convention_raises_error(self, tmp_path: Path) -> None:
+        """Test that empty convention raises ValueError."""
+        with pytest.raises(ValueError, match="Filename convention cannot be empty"):
+            set_default_filename_convention(tmp_path, "")
+
+    def test_whitespace_only_convention_raises_error(self, tmp_path: Path) -> None:
+        """Test that whitespace-only convention raises ValueError."""
+        with pytest.raises(ValueError, match="Filename convention cannot be empty"):
+            set_default_filename_convention(tmp_path, "   ")

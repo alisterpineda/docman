@@ -32,18 +32,25 @@ class FolderDefinition:
     Attributes:
         description: Human-readable description of what belongs in this folder.
         folders: Dictionary mapping folder names to their FolderDefinition objects.
+        filename_convention: Optional filename template pattern for files in this folder.
+            Uses variable placeholders like {year}, {month}, {description}, etc.
+            If None, inherits from parent folder or uses repository default.
+            Example: "{year}-{month}-invoice" (extension preserved automatically)
     """
 
     description: str
     folders: dict[str, "FolderDefinition"] = field(default_factory=dict)
+    filename_convention: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
         """Convert to dictionary representation for YAML serialization.
 
         Returns:
-            Dictionary with 'description' and 'folders' keys.
+            Dictionary with 'description', optional 'filename_convention', and 'folders' keys.
         """
         result: dict[str, Any] = {"description": self.description}
+        if self.filename_convention is not None:
+            result["filename_convention"] = self.filename_convention
         if self.folders:
             result["folders"] = {
                 name: folder.to_dict() for name, folder in self.folders.items()
@@ -55,18 +62,23 @@ class FolderDefinition:
         """Create FolderDefinition from dictionary representation.
 
         Args:
-            data: Dictionary with 'description' and optional 'folders' keys.
+            data: Dictionary with 'description', optional 'filename_convention', and optional 'folders' keys.
 
         Returns:
             FolderDefinition instance.
         """
         description = data.get("description", "")
+        filename_convention = data.get("filename_convention")
         folders_data = data.get("folders", {})
         folders = {
             name: cls.from_dict(folder_data)
             for name, folder_data in folders_data.items()
         }
-        return cls(description=description, folders=folders)
+        return cls(
+            description=description,
+            folders=folders,
+            filename_convention=filename_convention,
+        )
 
 
 def get_repo_config_path(repo_root: Path) -> Path:
@@ -157,16 +169,22 @@ def get_folder_definitions(repo_root: Path) -> dict[str, FolderDefinition]:
     }
 
 
-def add_folder_definition(repo_root: Path, path: str, description: str) -> None:
+def add_folder_definition(
+    repo_root: Path,
+    path: str,
+    description: str,
+    filename_convention: str | None = None,
+) -> None:
     """Add or update a folder definition.
 
     Parses the path (e.g., "Financial/invoices/{year}") and creates/updates
-    the nested folder structure with the given description.
+    the nested folder structure with the given description and optional filename convention.
 
     Args:
         repo_root: The repository root directory.
         path: Folder path, using '/' as separator (e.g., "Financial/invoices/{year}").
         description: Human-readable description of the folder.
+        filename_convention: Optional filename template pattern for this folder.
 
     Raises:
         ValueError: If path is empty or invalid.
@@ -196,14 +214,58 @@ def add_folder_definition(repo_root: Path, path: str, description: str) -> None:
             # Create new folder entry
             current_level[part] = {"description": "", "folders": {}}
 
-        # If this is the last part, update description
+        # If this is the last part, update description and filename_convention
         if i == len(parts) - 1:
             current_level[part]["description"] = description
+            if filename_convention is not None:
+                current_level[part]["filename_convention"] = filename_convention
         else:
             # Ensure folders key exists for navigation
             if "folders" not in current_level[part]:
                 current_level[part]["folders"] = {}
             current_level = current_level[part]["folders"]
+
+    # Save updated config
+    save_repo_config(repo_root, config)
+
+
+def get_default_filename_convention(repo_root: Path) -> str | None:
+    """Get the default filename convention for the repository.
+
+    Args:
+        repo_root: The repository root directory.
+
+    Returns:
+        Default filename convention string, or None if not set.
+    """
+    config = load_repo_config(repo_root)
+    organization = config.get("organization", {})
+    return organization.get("default_filename_convention")
+
+
+def set_default_filename_convention(repo_root: Path, convention: str) -> None:
+    """Set the default filename convention for the repository.
+
+    Args:
+        repo_root: The repository root directory.
+        convention: Filename convention template pattern (e.g., "{year}-{month}-{description}").
+
+    Raises:
+        ValueError: If convention is empty.
+        OSError: If config file cannot be written.
+    """
+    if not convention or not convention.strip():
+        raise ValueError("Filename convention cannot be empty")
+
+    # Load existing config
+    config = load_repo_config(repo_root)
+
+    # Ensure organization structure exists
+    if "organization" not in config:
+        config["organization"] = {}
+
+    # Set default convention
+    config["organization"]["default_filename_convention"] = convention.strip()
 
     # Save updated config
     save_repo_config(repo_root, config)

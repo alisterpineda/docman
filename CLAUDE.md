@@ -296,73 +296,105 @@ docman unmark archives/ -r -y   # Reset to unorganized to re-process
 
 ### Folder Definition System
 
-**Overview**: Provides structured way for users to define document organization hierarchies without writing full instructions manually. Definitions are stored in `.docman/config.yaml` as recursive tree structure.
+**Overview**: Provides structured way for users to define document organization hierarchies and filename conventions without writing full instructions manually. Definitions are stored in `.docman/config.yaml` as recursive tree structure.
 
 **Architecture** (`repo_config.py`):
-- **`FolderDefinition`**: Dataclass with `description` and nested `folders` dict
+- **`FolderDefinition`**: Dataclass with `description`, `filename_convention`, and nested `folders` dict
 - **Storage**: YAML format in `.docman/config.yaml` under `organization.folders`
-- **Variable patterns**: Supports placeholders like `{year}`, `{company}`, `{family_member}`
+- **Variable patterns**: Supports placeholders like `{year}`, `{company}`, `{family_member}` in both folder paths and filename conventions
+- **Default filename convention**: Repository-level default stored at `organization.default_filename_convention`
+- **Filename convention inheritance**: Folders inherit default convention unless overridden with folder-specific convention
+- **Extension preservation**: Filename conventions apply to base name only; original extension always preserved
 - **YAML error handling**: Detects malformed config (e.g., merge conflicts) with actionable error messages
-- **Tree operations**: Functions for loading (`get_folder_definitions`), saving (`add_folder_definition`), and displaying
+- **Tree operations**: Functions for loading (`get_folder_definitions`, `get_default_filename_convention`), saving (`add_folder_definition`, `set_default_filename_convention`), and displaying
 
 **Commands**:
-- `docman define <path> --desc "description"`: Define/update folder with description
+- `docman define <path> --desc "description" [--filename-convention "pattern"]`: Define/update folder with description and optional filename convention
   - Path uses `/` separator (e.g., `Financial/invoices/{year}`)
   - Creates nested structure automatically
   - Updates existing folders without losing children
-- `docman config list-dirs`: Display folder tree with box-drawing characters
+  - `--filename-convention` sets folder-specific naming pattern (e.g., `{year}-{month}-invoice`)
+- `docman config set-default-filename-convention "<pattern>"`: Set repository-wide default filename convention
+  - Pattern uses variable placeholders (e.g., `{year}-{month}-{description}`)
+  - Applied to all folders unless overridden by folder-specific convention
+- `docman config show-instructions`: Display organization instructions and default filename convention
+- `docman config list-dirs`: Display folder tree with box-drawing characters and filename conventions
   - `--path` option to specify repository location
-  - Visual tree structure with proper indentation
+  - Shows default convention at top if set
+  - Visual tree structure shows folder-specific conventions
 
 **Example Usage**:
 ```bash
+# Set default filename convention for repository
+docman config set-default-filename-convention "{year}-{month}-{description}"
+
 # Define top-level folder
 docman define Financial --desc "Financial documents"
 
-# Define nested structure with variable
-docman define Financial/invoices/{year} --desc "Invoices by year (YYYY format)"
+# Define nested structure with folder-specific filename convention
+docman define Financial/invoices/{year} \
+  --desc "Invoices by year (YYYY format)" \
+  --filename-convention "{company}-invoice-{year}-{month}"
 
-# Define parallel structure
+# Define parallel structure using default convention
 docman define Financial/receipts/{category} --desc "Personal receipts by category"
 
-# View defined structure
+# View defined structure with conventions
 docman config list-dirs
 # Output:
+# Default Filename Convention:
+#   {year}-{month}-{description}
+#
+# Folder Structure:
 # Financial
-# ├─ invoices
+# ├─ invoices [filename: {company}-invoice-{year}-{month}]
 # │  └─ {year}
 # └─ receipts
 #    └─ {category}
 ```
 
 **LLM Integration** (`prompt_builder.py`):
-- **Auto-generated instructions**: Folder definitions can be used to automatically generate organization instructions
-- **`generate_instructions_from_folders()`**: Converts folder structure to markdown instructions for LLM
+- **Auto-generated instructions**: Folder definitions and filename conventions can be used to automatically generate organization instructions
+- **`generate_instructions_from_folders()`**: Converts folder structure and filename conventions to markdown instructions for LLM
+  - Accepts `default_filename_convention` parameter for repository-level default
+  - Generates three sections: folder hierarchy, filename conventions, and variable pattern extraction guidance
 - **`load_or_generate_instructions()`**: Helper that tries both instruction sources (file then folder definitions)
   - Used by regeneration flows (PROCESS action in review command) to work with either source
   - Ensures feature works consistently across all code paths
 - **Generated content includes**:
   - Folder hierarchy tree with descriptions
+  - Default filename convention (if set) with inheritance rules
+  - Folder-specific filename conventions (overrides)
   - Variable pattern extraction guidance (how to extract `{year}`, `{category}`, etc. from documents)
+  - Extension preservation rules
 - **Prompt hash consistency**: All operations use same hash computation logic
-  - Includes: system prompt + organization instructions + model name + serialized folder definitions (if applicable)
+  - Includes: system prompt + organization instructions + model name + serialized folder definitions (including filename conventions)
   - Hash computed consistently across plan command, regeneration, and reprocessing flows
-  - Changes to folder structure automatically invalidate existing operations
+  - Changes to folder structure or filename conventions automatically invalidate existing operations
   - Prevents false invalidations when reprocessing auto-instruction operations
 - **Usage**: Run `docman plan --auto-instructions` to use folder definitions instead of `instructions.md`
 
 **Example Workflow with Auto-Instructions**:
 ```bash
-# Define folder structure
-docman define Financial/invoices/{year} --desc "Invoices by year (YYYY format)"
+# Set default filename convention
+docman config set-default-filename-convention "{year}-{month}-{description}"
+
+# Define folder structure with specific conventions
+docman define Financial/invoices/{year} \
+  --desc "Invoices by year (YYYY format)" \
+  --filename-convention "{company}-invoice-{year}-{month}"
 docman define Financial/receipts/{category} --desc "Receipts by category"
 
 # Use folder definitions to generate instructions automatically
 docman scan -r
 docman plan --auto-instructions
 
-# Folder definitions are automatically converted to LLM instructions
-# including folder hierarchy and guidance on extracting {year} and {category} from document content
+# Folder definitions and filename conventions are automatically converted to LLM instructions:
+# - Folder hierarchy with descriptions
+# - Default filename convention: {year}-{month}-{description}
+# - Folder-specific override for invoices: {company}-invoice-{year}-{month}
+# - Variable extraction guidance for {year}, {month}, {company}, {category}, {description}
+# - Extension preservation rules
 ```
 
 ### CLI Structure (`cli.py`)

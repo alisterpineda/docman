@@ -570,7 +570,7 @@ class TestSerializeFolderDefinitions:
     def test_empty_folders(self) -> None:
         """Test serialization of empty folder dict."""
         result = serialize_folder_definitions({})
-        assert result == "{}"
+        assert result == '{"folders": {}}'
 
     def test_simple_folder(self) -> None:
         """Test serialization of simple folder structure."""
@@ -583,8 +583,9 @@ class TestSerializeFolderDefinitions:
         # Should be valid JSON
         import json
         parsed = json.loads(result)
-        assert "Documents" in parsed
-        assert parsed["Documents"]["description"] == "All documents"
+        assert "folders" in parsed
+        assert "Documents" in parsed["folders"]
+        assert parsed["folders"]["Documents"]["description"] == "All documents"
 
     def test_nested_folders(self) -> None:
         """Test serialization of nested folder structure."""
@@ -601,8 +602,9 @@ class TestSerializeFolderDefinitions:
         import json
         parsed = json.loads(result)
 
-        assert "Financial" in parsed
-        assert "invoices" in parsed["Financial"]["folders"]
+        assert "folders" in parsed
+        assert "Financial" in parsed["folders"]
+        assert "invoices" in parsed["folders"]["Financial"]["folders"]
 
     def test_deterministic_output(self) -> None:
         """Test that serialization is deterministic (same input = same output)."""

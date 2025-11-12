@@ -98,26 +98,32 @@ def load_or_generate_instructions(repo_root: Path) -> str | None:
         return instructions
 
     # Fall back to generating from folder definitions
-    from docman.repo_config import get_folder_definitions
+    from docman.repo_config import (
+        get_default_filename_convention,
+        get_folder_definitions,
+    )
 
     folder_definitions = get_folder_definitions(repo_root)
     if folder_definitions:
-        return generate_instructions_from_folders(folder_definitions)
+        default_convention = get_default_filename_convention(repo_root)
+        return generate_instructions_from_folders(folder_definitions, default_convention)
 
     # Both sources failed
     return None
 
 
 def generate_instructions_from_folders(
-    folders: dict[str, FolderDefinition]
+    folders: dict[str, FolderDefinition],
+    default_filename_convention: str | None = None,
 ) -> str:
     """Generate organization instructions from folder definitions.
 
-    Creates markdown instructions for the LLM including folder hierarchy
-    and variable pattern guidance.
+    Creates markdown instructions for the LLM including folder hierarchy,
+    filename conventions, and variable pattern guidance.
 
     Args:
         folders: Dictionary mapping top-level folder names to FolderDefinition objects.
+        default_filename_convention: Optional default filename convention for the repository.
 
     Returns:
         Markdown-formatted instruction text for LLM consumption.
@@ -134,12 +140,34 @@ def generate_instructions_from_folders(
     )
     sections.append(_render_folder_hierarchy(folders, indent=0))
 
-    # Section 2: Variable Pattern Guidance
-    variable_patterns = _extract_variable_patterns(folders)
+    # Section 2: Filename Conventions
+    filename_patterns = _extract_filename_patterns(folders, default_filename_convention)
+    if filename_patterns or default_filename_convention:
+        sections.append("\n# Filename Conventions\n")
+        sections.append(
+            "Files should be renamed according to the following conventions. "
+            "The original file extension must be preserved.\n"
+        )
+
+        # Add default convention if set
+        if default_filename_convention:
+            sections.append(f"\n**Default Convention**: `{default_filename_convention}`")
+            sections.append(
+                "\n  - This convention applies to all folders unless overridden below"
+            )
+
+        # Add folder-specific conventions
+        if filename_patterns:
+            sections.append("\n**Folder-Specific Conventions**:")
+            for folder_path, convention in filename_patterns.items():
+                sections.append(f"\n  - `{folder_path}`: `{convention}`")
+
+    # Section 3: Variable Pattern Guidance
+    variable_patterns = _extract_variable_patterns(folders, default_filename_convention)
     if variable_patterns:
         sections.append("\n# Variable Pattern Extraction\n")
         sections.append(
-            "Some folders use variable patterns (indicated by curly braces like {year}). "
+            "Some folders and filename conventions use variable patterns (indicated by curly braces like {year}). "
             "Extract these values from the document content:\n"
         )
         for pattern, examples in variable_patterns.items():
@@ -175,17 +203,55 @@ def _render_folder_hierarchy(
     return "\n".join(lines)
 
 
-def _extract_variable_patterns(
-    folders: dict[str, FolderDefinition]
+def _extract_filename_patterns(
+    folders: dict[str, FolderDefinition],
+    default_convention: str | None = None,
 ) -> dict[str, str]:
-    """Extract all variable patterns from folder definitions with usage guidance.
+    """Extract folder-specific filename conventions.
 
     Args:
         folders: Dictionary of folder names to FolderDefinition objects.
+        default_convention: Default filename convention (not included in output).
+
+    Returns:
+        Dictionary mapping folder paths to their filename conventions.
+    """
+    patterns = {}
+
+    def collect_patterns(
+        folder_dict: dict[str, FolderDefinition], path_prefix: str = ""
+    ) -> None:
+        """Recursively collect filename conventions from folder structure."""
+        for name, definition in folder_dict.items():
+            current_path = f"{path_prefix}/{name}" if path_prefix else name
+
+            # Add filename convention if set
+            if definition.filename_convention:
+                patterns[current_path] = definition.filename_convention
+
+            # Recurse into subfolders
+            if definition.folders:
+                collect_patterns(definition.folders, current_path)
+
+    collect_patterns(folders)
+    return patterns
+
+
+def _extract_variable_patterns(
+    folders: dict[str, FolderDefinition],
+    default_filename_convention: str | None = None,
+) -> dict[str, str]:
+    """Extract all variable patterns from folder definitions and filename conventions.
+
+    Args:
+        folders: Dictionary of folder names to FolderDefinition objects.
+        default_filename_convention: Optional default filename convention.
 
     Returns:
         Dictionary mapping variable patterns to extraction guidance.
     """
+    import re
+
     patterns = {}
 
     def collect_patterns(folder_dict: dict[str, FolderDefinition]) -> None:
@@ -194,9 +260,14 @@ def _extract_variable_patterns(
             # Check if folder name contains variables (e.g., {year}, {category})
             if "{" in name and "}" in name:
                 # Extract variable name
-                import re
-
                 matches = re.findall(r"\{(\w+)\}", name)
+                for var_name in matches:
+                    if var_name not in patterns:
+                        patterns[var_name] = _get_pattern_guidance(var_name)
+
+            # Check if filename convention contains variables
+            if definition.filename_convention and "{" in definition.filename_convention:
+                matches = re.findall(r"\{(\w+)\}", definition.filename_convention)
                 for var_name in matches:
                     if var_name not in patterns:
                         patterns[var_name] = _get_pattern_guidance(var_name)
@@ -205,7 +276,16 @@ def _extract_variable_patterns(
             if definition.folders:
                 collect_patterns(definition.folders)
 
+    # Collect from folder structure
     collect_patterns(folders)
+
+    # Also check default filename convention
+    if default_filename_convention and "{" in default_filename_convention:
+        matches = re.findall(r"\{(\w+)\}", default_filename_convention)
+        for var_name in matches:
+            if var_name not in patterns:
+                patterns[var_name] = _get_pattern_guidance(var_name)
+
     return patterns
 
 
@@ -262,17 +342,27 @@ def _get_pattern_guidance(variable_name: str) -> str:
     )
 
 
-def serialize_folder_definitions(folders: dict[str, FolderDefinition]) -> str:
+def serialize_folder_definitions(
+    folders: dict[str, FolderDefinition],
+    default_filename_convention: str | None = None,
+) -> str:
     """Serialize folder definitions to JSON for hashing purposes.
 
     Args:
         folders: Dictionary mapping folder names to FolderDefinition objects.
+        default_filename_convention: Optional default filename convention.
 
     Returns:
-        JSON string representation of folder structure.
+        JSON string representation of folder structure and default convention.
     """
     # Convert FolderDefinitions to dict representation
-    serializable = {name: folder.to_dict() for name, folder in folders.items()}
+    serializable = {
+        "folders": {name: folder.to_dict() for name, folder in folders.items()},
+    }
+
+    # Include default convention if set
+    if default_filename_convention:
+        serializable["default_filename_convention"] = default_filename_convention
 
     # Convert to JSON with sorted keys for stable hashing
     return json.dumps(serializable, sort_keys=True)

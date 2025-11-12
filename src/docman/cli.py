@@ -817,10 +817,13 @@ def plan(
 
     # Load organization instructions based on mode
     folder_definitions = None  # Track folder definitions for hash computation
+    default_filename_convention = None  # Track default convention for hash computation
     organization_instructions: str  # Will be set in either branch below
 
     if auto_instructions:
         # Generate instructions from folder definitions
+        from docman.repo_config import get_default_filename_convention
+
         folder_definitions = get_folder_definitions(repo_root)
         if not folder_definitions:
             click.echo()
@@ -832,7 +835,10 @@ def plan(
             click.echo("Run 'docman define <path> --desc \"description\"' to create folder definitions.")
             raise click.Abort()
 
-        organization_instructions = generate_instructions_from_folders(folder_definitions)
+        default_filename_convention = get_default_filename_convention(repo_root)
+        organization_instructions = generate_instructions_from_folders(
+            folder_definitions, default_filename_convention
+        )
         click.echo("Using auto-generated instructions from folder definitions")
         click.echo()
     else:
@@ -863,7 +869,9 @@ def plan(
         prompt_components += "\n" + model_name
     if folder_definitions:
         # Include serialized folder definitions to detect structure changes
-        prompt_components += "\n" + serialize_folder_definitions(folder_definitions)
+        prompt_components += "\n" + serialize_folder_definitions(
+            folder_definitions, default_filename_convention
+        )
 
     import hashlib
     sha256_hash = hashlib.sha256()
@@ -1646,8 +1654,11 @@ def _persist_reprocessed_suggestion(
     )
     model_name = active_provider.model
 
-    # Load folder definitions to include in hash computation (if applicable)
+    # Load folder definitions and default convention to include in hash computation (if applicable)
+    from docman.repo_config import get_default_filename_convention
+
     folder_definitions = get_folder_definitions(repo_root)
+    default_filename_convention = get_default_filename_convention(repo_root)
 
     # Compute prompt hash the same way plan command does
     # Include serialized folder definitions to maintain hash consistency
@@ -1658,7 +1669,9 @@ def _persist_reprocessed_suggestion(
         prompt_components += "\n" + model_name
     if folder_definitions:
         # Include serialized folder definitions to detect structure changes
-        prompt_components += "\n" + serialize_folder_definitions(folder_definitions)
+        prompt_components += "\n" + serialize_folder_definitions(
+            folder_definitions, default_filename_convention
+        )
 
     import hashlib
     sha256_hash = hashlib.sha256()
@@ -3271,7 +3284,13 @@ def dedupe(path: str | None, yes: bool, dry_run: bool, recursive: bool) -> None:
 @main.command()
 @click.argument("path", type=str)
 @click.option("--desc", type=str, required=True, help="Description of the folder")
-def define(path: str, desc: str) -> None:
+@click.option(
+    "--filename-convention",
+    type=str,
+    default=None,
+    help="Optional filename template pattern (e.g., '{year}-{month}-invoice')",
+)
+def define(path: str, desc: str, filename_convention: str | None) -> None:
     """Define a folder with its description in the organization structure.
 
     Creates or updates a folder definition in the repository configuration.
@@ -3282,10 +3301,13 @@ def define(path: str, desc: str) -> None:
 
     Options:
         --desc: Human-readable description of what belongs in this folder
+        --filename-convention: Optional filename template with variables like {year}, {month}, etc.
+                              File extensions are preserved automatically.
 
     Examples:
         - 'docman define Financial --desc "Financial documents"'
         - 'docman define Financial/invoices/{year} --desc "Invoices by year (YYYY format)"'
+        - 'docman define Financial/invoices/{year} --desc "Invoices" --filename-convention "{company}-invoice-{year}-{month}"'
         - 'docman define Personal/medical/{family_member} --desc "Medical records by family member"'
     """
     # Find repository root
@@ -3297,8 +3319,11 @@ def define(path: str, desc: str) -> None:
 
     # Add folder definition
     try:
-        add_folder_definition(repo_root, path, desc)
-        click.secho(f"✓ Defined folder: {path}", fg="green")
+        add_folder_definition(repo_root, path, desc, filename_convention)
+        success_msg = f"✓ Defined folder: {path}"
+        if filename_convention:
+            success_msg += f"\n  Filename convention: {filename_convention}"
+        click.secho(success_msg, fg="green")
     except ValueError as e:
         click.secho(f"Error: {e}", fg="red", err=True)
         raise click.Abort()
@@ -3590,31 +3615,82 @@ def config_set_instructions(text: str | None, path: str) -> None:
 def config_show_instructions(path: str) -> None:
     """Show document organization instructions for a repository.
 
-    Displays the current document organization instructions for the repository.
+    Displays the current document organization instructions and default filename
+    convention for the repository.
 
     Examples:
         docman config show-instructions
         docman config show-instructions --path /path/to/repo
     """
+    from docman.repo_config import get_default_filename_convention
+
     # Find repository root
     try:
         repo_root = get_repository_root(start_path=Path(path).resolve())
     except RepositoryError:
         raise click.Abort()
 
+    # Load default filename convention
+    default_convention = get_default_filename_convention(repo_root)
+
+    # Display default filename convention if set
+    if default_convention:
+        click.echo()
+        click.secho("Default Filename Convention:", bold=True)
+        click.echo(f"  {default_convention}")
+        click.echo()
+
     # Load instructions
     instructions = load_instructions(repo_root)
 
     if instructions:
-        click.echo()
         click.secho("Document Organization Instructions:", bold=True)
         click.echo()
         click.echo(instructions)
         click.echo()
     else:
+        if not default_convention:
+            click.echo()
         click.echo("No document organization instructions found for this repository.")
         click.echo()
         click.echo("Run 'docman config set-instructions' to create them.")
+
+
+@config.command(name="set-default-filename-convention")
+@click.argument("convention", type=str)
+@click.option("--path", type=str, default=".", help="Repository path (default: current directory)")
+def config_set_default_filename_convention(convention: str, path: str) -> None:
+    """Set the default filename convention for the repository.
+
+    The convention is a template pattern using variables like {year}, {month},
+    {description}, etc. File extensions are preserved automatically.
+
+    Arguments:
+        CONVENTION: Filename template pattern (e.g., "{year}-{month}-{description}")
+
+    Examples:
+        docman config set-default-filename-convention "{year}-{month}-{description}"
+        docman config set-default-filename-convention "{date}-{company}-{type}"
+    """
+    from docman.repo_config import set_default_filename_convention
+
+    # Find repository root
+    try:
+        repo_root = get_repository_root(start_path=Path(path).resolve())
+    except RepositoryError:
+        click.secho("Error: Not in a docman repository. Run 'docman init' first.", fg="red", err=True)
+        raise click.Abort()
+
+    # Set default convention
+    try:
+        set_default_filename_convention(repo_root, convention)
+        click.secho(f"✓ Set default filename convention: {convention}", fg="green")
+    except ValueError as e:
+        click.secho(f"Error: {e}", fg="red", err=True)
+        raise click.Abort()
+    except OSError as e:
+        click.secho(f"Error: Failed to save configuration: {e}", fg="red", err=True)
+        raise click.Abort()
 
 
 def _render_folder_tree(folders: dict, prefix: str = "", is_root: bool = True) -> list[str]:
@@ -3644,8 +3720,11 @@ def _render_folder_tree(folders: dict, prefix: str = "", is_root: bool = True) -
             # Child folders get branch characters
             branch = "└─ " if is_last_item else "├─ "
 
-        # Add this folder
-        lines.append(f"{prefix}{branch}{name}")
+        # Add this folder with filename convention if set
+        folder_line = f"{prefix}{branch}{name}"
+        if isinstance(folder_def, FolderDefinition) and folder_def.filename_convention:
+            folder_line += f" [filename: {folder_def.filename_convention}]"
+        lines.append(folder_line)
 
         # Recursively add children if any
         if isinstance(folder_def, FolderDefinition) and folder_def.folders:
@@ -3671,20 +3750,23 @@ def config_list_dirs(path: str) -> None:
     """List all defined folder structures in the repository.
 
     Displays the folder hierarchy defined in the repository configuration
-    as a tree structure.
+    as a tree structure, including filename conventions if set.
 
     Examples:
         docman config list-dirs
         docman config list-dirs --path /path/to/repo
     """
+    from docman.repo_config import get_default_filename_convention
+
     # Find repository root
     try:
         repo_root = get_repository_root(start_path=Path(path).resolve())
     except RepositoryError:
         raise click.Abort()
 
-    # Load folder definitions
+    # Load default filename convention and folder definitions
     try:
+        default_convention = get_default_filename_convention(repo_root)
         folders = get_folder_definitions(repo_root)
     except ValueError as e:
         click.secho(f"Error: {e}", fg="red", err=True)
@@ -3696,8 +3778,15 @@ def config_list_dirs(path: str) -> None:
         click.echo("Run 'docman define <path> --desc \"description\"' to define folders.")
         return
 
-    # Render tree
+    # Display default filename convention if set
     click.echo()
+    if default_convention:
+        click.secho("Default Filename Convention:", bold=True)
+        click.echo(f"  {default_convention}")
+        click.echo()
+
+    # Render tree
+    click.secho("Folder Structure:", bold=True)
     tree_lines = _render_folder_tree(folders)
     for line in tree_lines:
         click.echo(line)
