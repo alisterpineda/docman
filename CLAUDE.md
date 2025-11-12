@@ -302,6 +302,9 @@ docman unmark archives/ -r -y   # Reset to unorganized to re-process
 - **`FolderDefinition`**: Dataclass with `description`, `filename_convention`, and nested `folders` dict
 - **Storage**: YAML format in `.docman/config.yaml` under `organization.folders`
 - **Variable patterns**: Supports placeholders like `{year}`, `{company}`, `{family_member}` in both folder paths and filename conventions
+  - **User-defined**: All variable patterns must be explicitly defined before use
+  - **Storage**: Patterns stored in `.docman/config.yaml` under `organization.variable_patterns` as `{name: description}` mapping
+  - **Functions**: `get_variable_patterns()`, `set_variable_pattern()`, `remove_variable_pattern()`
 - **Default filename convention**: Repository-level default stored at `organization.default_filename_convention`
 - **Filename convention inheritance**: Folders inherit default convention unless overridden with folder-specific convention
 - **Extension preservation**: Filename conventions apply to base name only; original extension always preserved
@@ -309,14 +312,22 @@ docman unmark archives/ -r -y   # Reset to unorganized to re-process
 - **Tree operations**: Functions for loading (`get_folder_definitions`, `get_default_filename_convention`), saving (`add_folder_definition`, `set_default_filename_convention`), and displaying
 
 **Commands**:
+- `docman pattern add <name> --desc "description"`: Add or update a variable pattern definition
+  - Example: `docman pattern add year --desc "4-digit year in YYYY format"`
+  - Patterns must be defined before use in folder paths or filename conventions
+- `docman pattern list`: List all defined variable patterns with descriptions
+- `docman pattern show <name>`: Show details of a specific variable pattern
+- `docman pattern remove <name>`: Remove a variable pattern (requires confirmation or `-y` flag)
 - `docman define <path> --desc "description" [--filename-convention "pattern"]`: Define/update folder with description and optional filename convention
   - Path uses `/` separator (e.g., `Financial/invoices/{year}`)
   - Creates nested structure automatically
   - Updates existing folders without losing children
   - `--filename-convention` sets folder-specific naming pattern (e.g., `{year}-{month}-invoice`)
+  - **Note**: All variables used must be defined first via `docman pattern add`
 - `docman config set-default-filename-convention "<pattern>"`: Set repository-wide default filename convention
   - Pattern uses variable placeholders (e.g., `{year}-{month}-{description}`)
   - Applied to all folders unless overridden by folder-specific convention
+  - **Note**: All variables used must be defined first via `docman pattern add`
 - `docman config show-instructions`: Display organization instructions and default filename convention
 - `docman config list-dirs`: Display folder tree with box-drawing characters and filename conventions
   - `--path` option to specify repository location
@@ -325,21 +336,28 @@ docman unmark archives/ -r -y   # Reset to unorganized to re-process
 
 **Example Usage**:
 ```bash
-# Set default filename convention for repository
+# Step 1: Define variable patterns (required before use in folder paths or filename conventions)
+docman pattern add year --desc "4-digit year in YYYY format"
+docman pattern add month --desc "2-digit month in MM format (01-12)"
+docman pattern add description --desc "Brief description of document content"
+docman pattern add company --desc "Company name extracted from document"
+docman pattern add category --desc "Document category (e.g., utilities, office-supplies)"
+
+# Step 2: Set default filename convention for repository
 docman config set-default-filename-convention "{year}-{month}-{description}"
 
-# Define top-level folder
+# Step 3: Define top-level folder
 docman define Financial --desc "Financial documents"
 
-# Define nested structure with folder-specific filename convention
+# Step 4: Define nested structure with folder-specific filename convention
 docman define Financial/invoices/{year} \
   --desc "Invoices by year (YYYY format)" \
   --filename-convention "{company}-invoice-{year}-{month}"
 
-# Define parallel structure using default convention
+# Step 5: Define parallel structure using default convention
 docman define Financial/receipts/{category} --desc "Personal receipts by category"
 
-# View defined structure with conventions
+# Step 6: View defined structure with conventions
 docman config list-dirs
 # Output:
 # Default Filename Convention:
@@ -356,8 +374,10 @@ docman config list-dirs
 **LLM Integration** (`prompt_builder.py`):
 - **Auto-generated instructions**: Folder definitions and filename conventions can be used to automatically generate organization instructions
 - **`generate_instructions_from_folders()`**: Converts folder structure and filename conventions to markdown instructions for LLM
+  - Accepts `repo_root` parameter to load user-defined variable patterns
   - Accepts `default_filename_convention` parameter for repository-level default
   - Generates three sections: folder hierarchy, filename conventions, and variable pattern extraction guidance
+  - **Strict validation**: Raises `ValueError` if undefined variable patterns are used
 - **`load_or_generate_instructions()`**: Helper that tries both instruction sources (file then folder definitions)
   - Used by regeneration flows (PROCESS action in review command) to work with either source
   - Ensures feature works consistently across all code paths
@@ -365,27 +385,39 @@ docman config list-dirs
   - Folder hierarchy tree with descriptions
   - Default filename convention (if set) with inheritance rules
   - Folder-specific filename conventions (overrides)
-  - Variable pattern extraction guidance (how to extract `{year}`, `{category}`, etc. from documents)
+  - User-defined variable pattern descriptions (loaded from `.docman/config.yaml`)
   - Extension preservation rules
+- **Variable Pattern System**:
+  - **User-defined only**: No hard-coded patterns; all variables must be explicitly defined via `docman pattern add`
+  - **Storage**: Patterns stored in `.docman/config.yaml` under `organization.variable_patterns`
+  - **Structure**: Simple `{name: description}` mapping
+  - **Validation**: Using undefined variables in folder paths or filename conventions triggers clear error message
 - **Prompt hash consistency**: All operations use same hash computation logic
   - Includes: system prompt + organization instructions + model name + serialized folder definitions (including filename conventions)
   - Hash computed consistently across plan command, regeneration, and reprocessing flows
-  - Changes to folder structure or filename conventions automatically invalidate existing operations
+  - Changes to folder structure, filename conventions, or variable patterns automatically invalidate existing operations
   - Prevents false invalidations when reprocessing auto-instruction operations
 - **Usage**: Run `docman plan --auto-instructions` to use folder definitions instead of `instructions.md`
 
 **Example Workflow with Auto-Instructions**:
 ```bash
-# Set default filename convention
+# Step 1: Define variable patterns first (required for use in folder paths and filename conventions)
+docman pattern add year --desc "4-digit year in YYYY format"
+docman pattern add month --desc "2-digit month in MM format (01-12)"
+docman pattern add company --desc "Company name extracted from invoice header"
+docman pattern add category --desc "Document category (e.g., utilities, office-supplies)"
+docman pattern add description --desc "Brief description of document content"
+
+# Step 2: Set default filename convention
 docman config set-default-filename-convention "{year}-{month}-{description}"
 
-# Define folder structure with specific conventions
+# Step 3: Define folder structure with specific conventions
 docman define Financial/invoices/{year} \
   --desc "Invoices by year (YYYY format)" \
   --filename-convention "{company}-invoice-{year}-{month}"
 docman define Financial/receipts/{category} --desc "Receipts by category"
 
-# Use folder definitions to generate instructions automatically
+# Step 4: Use folder definitions to generate instructions automatically
 docman scan -r
 docman plan --auto-instructions
 
@@ -393,7 +425,7 @@ docman plan --auto-instructions
 # - Folder hierarchy with descriptions
 # - Default filename convention: {year}-{month}-{description}
 # - Folder-specific override for invoices: {company}-invoice-{year}-{month}
-# - Variable extraction guidance for {year}, {month}, {company}, {category}, {description}
+# - Variable pattern descriptions from user-defined patterns
 # - Extension preservation rules
 ```
 
@@ -427,8 +459,13 @@ Main commands:
   - Bulk mode (`-y`): Auto-delete duplicates, keep first copy
   - `--dry-run`: Preview changes without deleting files
 - `docman define <path> --desc "description"`: Define folder hierarchies for document organization
-  - Supports variable patterns like `{year}`, `{company}`
+  - Supports variable patterns like `{year}`, `{company}` (must be defined first using `docman pattern add`)
   - Stores definitions in `.docman/config.yaml`
+- `docman pattern`: Manage variable pattern definitions for use in folder paths and filename conventions
+  - `pattern add <name> --desc "description"`: Add or update a variable pattern
+  - `pattern list`: List all defined variable patterns
+  - `pattern show <name>`: Show details of a specific pattern
+  - `pattern remove <name>`: Remove a variable pattern (requires confirmation or `-y` flag)
 - `docman unmark [path]`: Reset organization status to 'unorganized' for specified files
   - `--all`: Unmark all files in repository
   - `-r`: Recursively unmark files in subdirectories

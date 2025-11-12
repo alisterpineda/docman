@@ -271,6 +271,85 @@ def set_default_filename_convention(repo_root: Path, convention: str) -> None:
     save_repo_config(repo_root, config)
 
 
+def get_variable_patterns(repo_root: Path) -> dict[str, str]:
+    """Get variable pattern definitions from repository config.
+
+    Args:
+        repo_root: The repository root directory.
+
+    Returns:
+        Dictionary mapping variable names to descriptions.
+        Returns empty dict if no patterns defined.
+    """
+    config = load_repo_config(repo_root)
+    organization = config.get("organization", {})
+    return organization.get("variable_patterns", {})
+
+
+def set_variable_pattern(repo_root: Path, name: str, description: str) -> None:
+    """Add or update a variable pattern definition.
+
+    Args:
+        repo_root: The repository root directory.
+        name: Variable name (e.g., "year", "category").
+        description: Human-readable description of the variable.
+
+    Raises:
+        ValueError: If name or description is empty.
+        OSError: If config file cannot be written.
+    """
+    if not name or not name.strip():
+        raise ValueError("Variable name cannot be empty")
+    if not description or not description.strip():
+        raise ValueError("Variable description cannot be empty")
+
+    # Load existing config
+    config = load_repo_config(repo_root)
+
+    # Ensure organization.variable_patterns structure exists
+    if "organization" not in config:
+        config["organization"] = {}
+    if "variable_patterns" not in config["organization"]:
+        config["organization"]["variable_patterns"] = {}
+
+    # Set pattern
+    config["organization"]["variable_patterns"][name.strip()] = description.strip()
+
+    # Save updated config
+    save_repo_config(repo_root, config)
+
+
+def remove_variable_pattern(repo_root: Path, name: str) -> None:
+    """Remove a variable pattern definition.
+
+    Args:
+        repo_root: The repository root directory.
+        name: Variable name to remove.
+
+    Raises:
+        ValueError: If pattern doesn't exist.
+        OSError: If config file cannot be written.
+    """
+    if not name or not name.strip():
+        raise ValueError("Variable name cannot be empty")
+
+    # Load existing config
+    config = load_repo_config(repo_root)
+
+    # Check if pattern exists
+    organization = config.get("organization", {})
+    patterns = organization.get("variable_patterns", {})
+
+    if name.strip() not in patterns:
+        raise ValueError(f"Variable pattern '{name}' not found")
+
+    # Remove pattern
+    del config["organization"]["variable_patterns"][name.strip()]
+
+    # Save updated config
+    save_repo_config(repo_root, config)
+
+
 def get_instructions_path(repo_root: Path) -> Path:
     """Get the path to the repository's document organization instructions file.
 

@@ -836,9 +836,13 @@ def plan(
             raise click.Abort()
 
         default_filename_convention = get_default_filename_convention(repo_root)
-        organization_instructions = generate_instructions_from_folders(
-            folder_definitions, default_filename_convention
-        )
+        try:
+            organization_instructions = generate_instructions_from_folders(
+                folder_definitions, repo_root, default_filename_convention
+            )
+        except ValueError as e:
+            click.secho(f"Error: {e}", fg="red")
+            raise click.Abort()
         click.echo("Using auto-generated instructions from folder definitions")
         click.echo()
     else:
@@ -1956,7 +1960,17 @@ def _handle_interactive_review(
                     # If there's an in-memory suggestion from re-processing, persist it to the database NOW
                     # (after successful file move)
                     if in_memory_suggestion:
-                        _persist_reprocessed_suggestion(pending_op, doc_copy, in_memory_suggestion, repo_root)
+                        try:
+                            _persist_reprocessed_suggestion(pending_op, doc_copy, in_memory_suggestion, repo_root)
+                        except ValueError as e:
+                            # Undefined variable pattern - file was moved but we can't compute proper prompt hash
+                            click.secho(f"  ⚠️  Warning: {e}", fg="yellow")
+                            click.echo("  File moved successfully, but operation metadata may be incomplete.")
+                            # Update operation with in-memory suggestion, but use placeholder for prompt hash
+                            pending_op.suggested_directory_path = in_memory_suggestion["suggested_directory_path"]
+                            pending_op.suggested_filename = in_memory_suggestion["suggested_filename"]
+                            pending_op.reason = in_memory_suggestion["reason"]
+                            # Leave prompt_hash, document_content_hash, model_name unchanged
 
                     # Mark the file as organized and accept the operation
                     pending_op.status = OperationStatus.ACCEPTED
@@ -2098,7 +2112,14 @@ def _handle_interactive_review(
                 # Initialize base user prompt on first re-process
                 if current_user_prompt is None:
                     # Load organization instructions (from file or folder definitions)
-                    organization_instructions = load_or_generate_instructions(repo_root)
+                    try:
+                        organization_instructions = load_or_generate_instructions(repo_root)
+                    except ValueError as e:
+                        # Undefined variable pattern used in folder definitions
+                        click.secho(f"  Error: {e}", fg="red")
+                        click.echo("  Cannot re-process until all variable patterns are defined.")
+                        continue
+
                     if not organization_instructions:
                         click.secho(
                             "  Error: Organization instructions not found. "
@@ -3791,6 +3812,180 @@ def config_list_dirs(path: str) -> None:
     for line in tree_lines:
         click.echo(line)
     click.echo()
+
+
+@main.group()
+def pattern() -> None:
+    """Manage variable pattern definitions."""
+    pass
+
+
+@pattern.command(name="add")
+@click.argument("name")
+@click.option("--desc", required=True, help="Description of the variable pattern")
+@click.option("--path", type=str, default=".", help="Repository path (default: current directory)")
+def pattern_add(name: str, desc: str, path: str) -> None:
+    """Add or update a variable pattern definition.
+
+    Variable patterns define how to extract values like {year}, {category},
+    or {company} from documents. These patterns are used in folder paths and
+    filename conventions.
+
+    Example:
+        docman pattern add year --desc "4-digit year in YYYY format"
+    """
+    repo_root = Path(path).resolve()
+
+    # Check if we're in a repository
+    if not (repo_root / ".docman").exists():
+        click.secho("Error: Not in a docman repository", fg="red", err=True)
+        click.echo("Run 'docman init' to initialize a repository.")
+        raise click.Abort()
+
+    try:
+        from docman.repo_config import set_variable_pattern
+
+        set_variable_pattern(repo_root, name, desc)
+
+        click.secho(f"✓ Variable pattern '{name}' saved", fg="green")
+        click.echo()
+        click.echo(f"  Description: {desc}")
+        click.echo()
+        click.echo("You can now use this pattern in folder paths and filename conventions:")
+        click.echo(f"  docman define path/{{name}}/... --desc '...'")
+
+    except ValueError as e:
+        click.secho(f"Error: {e}", fg="red", err=True)
+        raise click.Abort()
+    except Exception as e:
+        click.secho(f"Error: Failed to save variable pattern: {e}", fg="red", err=True)
+        raise click.Abort()
+
+
+@pattern.command(name="list")
+@click.option("--path", type=str, default=".", help="Repository path (default: current directory)")
+def pattern_list(path: str) -> None:
+    """List all defined variable patterns."""
+    repo_root = Path(path).resolve()
+
+    # Check if we're in a repository
+    if not (repo_root / ".docman").exists():
+        click.secho("Error: Not in a docman repository", fg="red", err=True)
+        click.echo("Run 'docman init' to initialize a repository.")
+        raise click.Abort()
+
+    try:
+        from docman.repo_config import get_variable_patterns
+
+        patterns = get_variable_patterns(repo_root)
+
+        if not patterns:
+            click.echo("No variable patterns defined for this repository.")
+            click.echo()
+            click.echo("Run 'docman pattern add <name> --desc \"description\"' to define patterns.")
+            return
+
+        click.echo()
+        click.secho("Variable Patterns:", bold=True)
+        click.echo()
+
+        for name, description in sorted(patterns.items()):
+            click.secho(f"  {name}:", fg="cyan", bold=True)
+            click.echo(f"    {description}")
+            click.echo()
+
+    except ValueError as e:
+        click.secho(f"Error: {e}", fg="red", err=True)
+        raise click.Abort()
+    except Exception as e:
+        click.secho(f"Error: Failed to load variable patterns: {e}", fg="red", err=True)
+        raise click.Abort()
+
+
+@pattern.command(name="show")
+@click.argument("name")
+@click.option("--path", type=str, default=".", help="Repository path (default: current directory)")
+def pattern_show(name: str, path: str) -> None:
+    """Show details of a specific variable pattern."""
+    repo_root = Path(path).resolve()
+
+    # Check if we're in a repository
+    if not (repo_root / ".docman").exists():
+        click.secho("Error: Not in a docman repository", fg="red", err=True)
+        click.echo("Run 'docman init' to initialize a repository.")
+        raise click.Abort()
+
+    try:
+        from docman.repo_config import get_variable_patterns
+
+        patterns = get_variable_patterns(repo_root)
+
+        if name not in patterns:
+            click.secho(f"Error: Variable pattern '{name}' not found", fg="red", err=True)
+            click.echo()
+            click.echo("Run 'docman pattern list' to see all defined patterns.")
+            raise click.Abort()
+
+        click.echo()
+        click.secho(f"Pattern: {name}", bold=True)
+        click.echo()
+        click.echo(f"  Description: {patterns[name]}")
+        click.echo()
+
+    except ValueError as e:
+        click.secho(f"Error: {e}", fg="red", err=True)
+        raise click.Abort()
+    except Exception as e:
+        click.secho(f"Error: Failed to load variable pattern: {e}", fg="red", err=True)
+        raise click.Abort()
+
+
+@pattern.command(name="remove")
+@click.argument("name")
+@click.option("-y", "--yes", is_flag=True, help="Skip confirmation prompt")
+@click.option("--path", type=str, default=".", help="Repository path (default: current directory)")
+def pattern_remove(name: str, yes: bool, path: str) -> None:
+    """Remove a variable pattern definition."""
+    repo_root = Path(path).resolve()
+
+    # Check if we're in a repository
+    if not (repo_root / ".docman").exists():
+        click.secho("Error: Not in a docman repository", fg="red", err=True)
+        click.echo("Run 'docman init' to initialize a repository.")
+        raise click.Abort()
+
+    try:
+        from docman.repo_config import get_variable_patterns, remove_variable_pattern
+
+        # Check if pattern exists
+        patterns = get_variable_patterns(repo_root)
+        if name not in patterns:
+            click.secho(f"Error: Variable pattern '{name}' not found", fg="red", err=True)
+            click.echo()
+            click.echo("Run 'docman pattern list' to see all defined patterns.")
+            raise click.Abort()
+
+        # Confirm deletion
+        if not yes:
+            click.echo()
+            click.secho(f"Pattern: {name}", bold=True)
+            click.echo(f"  Description: {patterns[name]}")
+            click.echo()
+            if not click.confirm(f"Remove variable pattern '{name}'?", default=False):
+                click.echo("Cancelled.")
+                return
+
+        # Remove pattern
+        remove_variable_pattern(repo_root, name)
+
+        click.secho(f"✓ Variable pattern '{name}' removed", fg="green")
+
+    except ValueError as e:
+        click.secho(f"Error: {e}", fg="red", err=True)
+        raise click.Abort()
+    except Exception as e:
+        click.secho(f"Error: Failed to remove variable pattern: {e}", fg="red", err=True)
+        raise click.Abort()
 
 
 if __name__ == "__main__":

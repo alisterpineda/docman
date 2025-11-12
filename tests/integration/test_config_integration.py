@@ -367,3 +367,187 @@ class TestDocmanConfigListDirs:
             assert "Error" in result.output
             assert "invalid YAML syntax" in result.output
             assert "config.yaml" in result.output
+
+
+class TestPatternCommands:
+    """Integration tests for pattern management commands."""
+
+    def test_pattern_add(self, cli_runner: CliRunner, tmp_path: Path) -> None:
+        """Test adding a variable pattern."""
+        # Initialize repository
+        cli_runner.invoke(main, ["init", str(tmp_path)], input="n\n")
+
+        # Add a variable pattern
+        result = cli_runner.invoke(
+            main,
+            ["pattern", "add", "year", "--desc", "4-digit year in YYYY format", "--path", str(tmp_path)],
+        )
+
+        assert result.exit_code == 0
+        assert "Variable pattern 'year' saved" in result.output
+        assert "4-digit year in YYYY format" in result.output
+
+        # Verify pattern was saved
+        from docman.repo_config import get_variable_patterns
+
+        patterns = get_variable_patterns(tmp_path)
+        assert "year" in patterns
+        assert patterns["year"] == "4-digit year in YYYY format"
+
+    def test_pattern_add_updates_existing(
+        self, cli_runner: CliRunner, tmp_path: Path
+    ) -> None:
+        """Test that adding a pattern with existing name updates it."""
+        # Initialize repository
+        cli_runner.invoke(main, ["init", str(tmp_path)], input="n\n")
+
+        # Add pattern first time
+        cli_runner.invoke(
+            main, ["pattern", "add", "year", "--desc", "Old description", "--path", str(tmp_path)]
+        )
+
+        # Update pattern
+        result = cli_runner.invoke(
+            main, ["pattern", "add", "year", "--desc", "New description", "--path", str(tmp_path)]
+        )
+
+        assert result.exit_code == 0
+        assert "Variable pattern 'year' saved" in result.output
+
+        # Verify pattern was updated
+        from docman.repo_config import get_variable_patterns
+
+        patterns = get_variable_patterns(tmp_path)
+        assert patterns["year"] == "New description"
+
+    def test_pattern_list_empty(self, cli_runner: CliRunner, tmp_path: Path) -> None:
+        """Test listing patterns when none are defined."""
+        # Initialize repository
+        cli_runner.invoke(main, ["init", str(tmp_path)], input="n\n")
+
+        # List patterns
+        result = cli_runner.invoke(main, ["pattern", "list", "--path", str(tmp_path)])
+
+        assert result.exit_code == 0
+        assert "No variable patterns defined" in result.output
+
+    def test_pattern_list_shows_patterns(
+        self, cli_runner: CliRunner, tmp_path: Path
+    ) -> None:
+        """Test listing patterns shows all defined patterns."""
+        # Initialize repository
+        cli_runner.invoke(main, ["init", str(tmp_path)], input="n\n")
+
+        # Add multiple patterns
+        cli_runner.invoke(
+            main,
+            ["pattern", "add", "year", "--desc", "4-digit year in YYYY format", "--path", str(tmp_path)],
+        )
+        cli_runner.invoke(
+            main, ["pattern", "add", "category", "--desc", "Document category", "--path", str(tmp_path)]
+        )
+
+        # List patterns
+        result = cli_runner.invoke(main, ["pattern", "list", "--path", str(tmp_path)])
+
+        assert result.exit_code == 0
+        assert "Variable Patterns:" in result.output
+        assert "year:" in result.output
+        assert "4-digit year in YYYY format" in result.output
+        assert "category:" in result.output
+        assert "Document category" in result.output
+
+    def test_pattern_show(self, cli_runner: CliRunner, tmp_path: Path) -> None:
+        """Test showing details of a specific pattern."""
+        # Initialize repository
+        cli_runner.invoke(main, ["init", str(tmp_path)], input="n\n")
+
+        # Add pattern
+        cli_runner.invoke(
+            main,
+            ["pattern", "add", "year", "--desc", "4-digit year in YYYY format", "--path", str(tmp_path)],
+        )
+
+        # Show pattern
+        result = cli_runner.invoke(main, ["pattern", "show", "year", "--path", str(tmp_path)])
+
+        assert result.exit_code == 0
+        assert "Pattern: year" in result.output
+        assert "4-digit year in YYYY format" in result.output
+
+    def test_pattern_show_not_found(
+        self, cli_runner: CliRunner, tmp_path: Path
+    ) -> None:
+        """Test showing a non-existent pattern."""
+        # Initialize repository
+        cli_runner.invoke(main, ["init", str(tmp_path)], input="n\n")
+
+        # Show pattern that doesn't exist
+        result = cli_runner.invoke(main, ["pattern", "show", "year", "--path", str(tmp_path)])
+
+        assert result.exit_code == 1
+        assert "Variable pattern 'year' not found" in result.output
+
+    def test_pattern_remove(self, cli_runner: CliRunner, tmp_path: Path) -> None:
+        """Test removing a variable pattern."""
+        # Initialize repository
+        cli_runner.invoke(main, ["init", str(tmp_path)], input="n\n")
+
+        # Add pattern
+        cli_runner.invoke(
+            main,
+            ["pattern", "add", "year", "--desc", "4-digit year in YYYY format", "--path", str(tmp_path)],
+        )
+
+        # Remove pattern (with -y to skip confirmation)
+        result = cli_runner.invoke(main, ["pattern", "remove", "year", "-y", "--path", str(tmp_path)])
+
+        assert result.exit_code == 0
+        assert "Variable pattern 'year' removed" in result.output
+
+        # Verify pattern was removed
+        from docman.repo_config import get_variable_patterns
+
+        patterns = get_variable_patterns(tmp_path)
+        assert "year" not in patterns
+
+    def test_pattern_remove_not_found(
+        self, cli_runner: CliRunner, tmp_path: Path
+    ) -> None:
+        """Test removing a non-existent pattern."""
+        # Initialize repository
+        cli_runner.invoke(main, ["init", str(tmp_path)], input="n\n")
+
+        # Try to remove pattern that doesn't exist
+        result = cli_runner.invoke(main, ["pattern", "remove", "year", "-y", "--path", str(tmp_path)])
+
+        assert result.exit_code == 1
+        assert "Variable pattern 'year' not found" in result.output
+
+    def test_pattern_remove_requires_confirmation(
+        self, cli_runner: CliRunner, tmp_path: Path
+    ) -> None:
+        """Test that pattern removal requires confirmation without -y flag."""
+        # Initialize repository
+        cli_runner.invoke(main, ["init", str(tmp_path)], input="n\n")
+
+        # Add pattern
+        cli_runner.invoke(
+            main,
+            ["pattern", "add", "year", "--desc", "4-digit year in YYYY format", "--path", str(tmp_path)],
+        )
+
+        # Try to remove without -y, answer 'n' to cancel
+        result = cli_runner.invoke(
+            main, ["pattern", "remove", "year", "--path", str(tmp_path)], input="n\n"
+        )
+
+        assert result.exit_code == 0
+        assert "Remove variable pattern 'year'?" in result.output
+        assert "Cancelled" in result.output
+
+        # Verify pattern was NOT removed
+        from docman.repo_config import get_variable_patterns
+
+        patterns = get_variable_patterns(tmp_path)
+        assert "year" in patterns

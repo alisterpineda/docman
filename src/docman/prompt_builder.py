@@ -91,6 +91,9 @@ def load_or_generate_instructions(repo_root: Path) -> str | None:
 
     Returns:
         Organization instructions content, or None if neither source is available.
+
+    Raises:
+        ValueError: If folder definitions use undefined variable patterns.
     """
     # First try to load from instructions.md
     instructions = load_organization_instructions(repo_root)
@@ -106,7 +109,9 @@ def load_or_generate_instructions(repo_root: Path) -> str | None:
     folder_definitions = get_folder_definitions(repo_root)
     if folder_definitions:
         default_convention = get_default_filename_convention(repo_root)
-        return generate_instructions_from_folders(folder_definitions, default_convention)
+        return generate_instructions_from_folders(
+            folder_definitions, repo_root, default_convention
+        )
 
     # Both sources failed
     return None
@@ -114,6 +119,7 @@ def load_or_generate_instructions(repo_root: Path) -> str | None:
 
 def generate_instructions_from_folders(
     folders: dict[str, FolderDefinition],
+    repo_root: Path,
     default_filename_convention: str | None = None,
 ) -> str:
     """Generate organization instructions from folder definitions.
@@ -123,10 +129,14 @@ def generate_instructions_from_folders(
 
     Args:
         folders: Dictionary mapping top-level folder names to FolderDefinition objects.
+        repo_root: The repository root directory.
         default_filename_convention: Optional default filename convention for the repository.
 
     Returns:
         Markdown-formatted instruction text for LLM consumption.
+
+    Raises:
+        ValueError: If any variable pattern is not defined in config.
     """
     if not folders:
         return ""
@@ -163,7 +173,9 @@ def generate_instructions_from_folders(
                 sections.append(f"\n  - `{folder_path}`: `{convention}`")
 
     # Section 3: Variable Pattern Guidance
-    variable_patterns = _extract_variable_patterns(folders, default_filename_convention)
+    variable_patterns = _extract_variable_patterns(
+        folders, repo_root, default_filename_convention
+    )
     if variable_patterns:
         sections.append("\n# Variable Pattern Extraction\n")
         sections.append(
@@ -239,16 +251,21 @@ def _extract_filename_patterns(
 
 def _extract_variable_patterns(
     folders: dict[str, FolderDefinition],
+    repo_root: Path,
     default_filename_convention: str | None = None,
 ) -> dict[str, str]:
     """Extract all variable patterns from folder definitions and filename conventions.
 
     Args:
         folders: Dictionary of folder names to FolderDefinition objects.
+        repo_root: The repository root directory.
         default_filename_convention: Optional default filename convention.
 
     Returns:
         Dictionary mapping variable patterns to extraction guidance.
+
+    Raises:
+        ValueError: If any variable pattern is not defined in config.
     """
     import re
 
@@ -263,14 +280,14 @@ def _extract_variable_patterns(
                 matches = re.findall(r"\{(\w+)\}", name)
                 for var_name in matches:
                     if var_name not in patterns:
-                        patterns[var_name] = _get_pattern_guidance(var_name)
+                        patterns[var_name] = _get_pattern_guidance(var_name, repo_root)
 
             # Check if filename convention contains variables
             if definition.filename_convention and "{" in definition.filename_convention:
                 matches = re.findall(r"\{(\w+)\}", definition.filename_convention)
                 for var_name in matches:
                     if var_name not in patterns:
-                        patterns[var_name] = _get_pattern_guidance(var_name)
+                        patterns[var_name] = _get_pattern_guidance(var_name, repo_root)
 
             # Recurse into subfolders
             if definition.folders:
@@ -284,62 +301,42 @@ def _extract_variable_patterns(
         matches = re.findall(r"\{(\w+)\}", default_filename_convention)
         for var_name in matches:
             if var_name not in patterns:
-                patterns[var_name] = _get_pattern_guidance(var_name)
+                patterns[var_name] = _get_pattern_guidance(var_name, repo_root)
 
     return patterns
 
 
-def _get_pattern_guidance(variable_name: str) -> str:
+def _get_pattern_guidance(variable_name: str, repo_root: Path) -> str:
     """Generate extraction guidance for a specific variable pattern.
+
+    Loads user-defined pattern from repository config. Raises error if pattern
+    not defined (strict validation approach).
 
     Args:
         variable_name: The variable name (e.g., "year", "category").
+        repo_root: The repository root directory.
 
     Returns:
         Guidance text for extracting this variable.
-    """
-    # Common pattern guidance
-    guidance_map = {
-        "year": (
-            "\n  - Extract 4-digit year (YYYY format) from document content or metadata"
-            "\n  - Examples: 2024, 2025"
-            "\n  - Check document dates, invoice dates, fiscal year references"
-        ),
-        "month": (
-            "\n  - Extract 2-digit month (MM format) from document content or metadata"
-            "\n  - Examples: 01 for January, 12 for December"
-            "\n  - Use leading zeros (e.g., 01 not 1)"
-        ),
-        "category": (
-            "\n  - Determine category based on document type and content"
-            "\n  - Use lowercase with hyphens for multi-word categories"
-            "\n  - Examples: office-supplies, utilities, travel, meals"
-        ),
-        "company": (
-            "\n  - Extract company name from document header, sender, or subject"
-            "\n  - Use lowercase with hyphens for multi-word names"
-            "\n  - Remove Inc., LLC, Ltd. suffixes"
-            "\n  - Examples: acme-corp, global-tech"
-        ),
-        "client": (
-            "\n  - Extract client/customer name from document"
-            "\n  - Use lowercase with hyphens for multi-word names"
-            "\n  - Examples: smith-industries, jones-llc"
-        ),
-        "project": (
-            "\n  - Extract project name or code from document"
-            "\n  - Use lowercase with hyphens"
-            "\n  - Examples: website-redesign, mobile-app, q4-campaign"
-        ),
-    }
 
-    # Return specific guidance or generic guidance
-    return guidance_map.get(
-        variable_name.lower(),
-        f"\n  - Extract {variable_name} value from document content"
-        "\n  - Use lowercase with hyphens for multi-word values"
-        "\n  - Be consistent with naming",
-    )
+    Raises:
+        ValueError: If variable pattern is not defined in config.
+    """
+    from docman.repo_config import get_variable_patterns
+
+    # Load user-defined patterns
+    patterns = get_variable_patterns(repo_root)
+
+    # Check if pattern is defined
+    if variable_name not in patterns:
+        raise ValueError(
+            f"Variable pattern '{variable_name}' is used but not defined. "
+            f"Please define it using: docman pattern add {variable_name} --desc '...'"
+        )
+
+    # Return pattern description formatted as guidance
+    description = patterns[variable_name]
+    return f"\n  - {description}"
 
 
 def serialize_folder_definitions(

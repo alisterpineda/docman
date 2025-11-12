@@ -324,18 +324,18 @@ class TestBuildUserPrompt:
 class TestGenerateInstructionsFromFolders:
     """Tests for generate_instructions_from_folders function."""
 
-    def test_empty_folders_returns_empty_string(self) -> None:
+    def test_empty_folders_returns_empty_string(self, tmp_path: Path) -> None:
         """Test that empty folder dict returns empty string."""
-        result = generate_instructions_from_folders({})
+        result = generate_instructions_from_folders({}, tmp_path)
         assert result == ""
 
-    def test_simple_folder_structure(self) -> None:
+    def test_simple_folder_structure(self, tmp_path: Path) -> None:
         """Test generation with simple folder structure."""
         folders = {
             "Documents": FolderDefinition(description="All documents", folders={}),
         }
 
-        result = generate_instructions_from_folders(folders)
+        result = generate_instructions_from_folders(folders, tmp_path)
 
         # Should contain folder name and description
         assert "Documents" in result
@@ -344,7 +344,7 @@ class TestGenerateInstructionsFromFolders:
         # Should have markdown structure
         assert "# Document Organization Structure" in result
 
-    def test_nested_folder_structure(self) -> None:
+    def test_nested_folder_structure(self, tmp_path: Path) -> None:
         """Test generation with nested folders."""
         folders = {
             "Financial": FolderDefinition(
@@ -362,7 +362,7 @@ class TestGenerateInstructionsFromFolders:
             ),
         }
 
-        result = generate_instructions_from_folders(folders)
+        result = generate_instructions_from_folders(folders, tmp_path)
 
         # Should contain all folder names and descriptions
         assert "Financial" in result
@@ -372,8 +372,12 @@ class TestGenerateInstructionsFromFolders:
         assert "receipts" in result
         assert "Personal receipts" in result
 
-    def test_variable_pattern_extraction(self) -> None:
+    def test_variable_pattern_extraction(self, tmp_path: Path) -> None:
         """Test that variable patterns are detected and documented."""
+        from docman.repo_config import set_variable_pattern
+
+        set_variable_pattern(tmp_path, "year", "4-digit year in YYYY format")
+
         folders = {
             "Financial": FolderDefinition(
                 description="Financial documents",
@@ -386,16 +390,21 @@ class TestGenerateInstructionsFromFolders:
             ),
         }
 
-        result = generate_instructions_from_folders(folders)
+        result = generate_instructions_from_folders(folders, tmp_path)
 
         # Should have variable pattern section
         assert "# Variable Pattern Extraction" in result
         assert "{year}" in result or "year" in result
-        # Should contain guidance about extracting year
-        assert "YYYY" in result or "4-digit" in result.lower()
+        # Should contain user-defined guidance
+        assert "4-digit year in YYYY format" in result
 
-    def test_multiple_variable_patterns(self) -> None:
+    def test_multiple_variable_patterns(self, tmp_path: Path) -> None:
         """Test that multiple variable patterns are documented."""
+        from docman.repo_config import set_variable_pattern
+
+        set_variable_pattern(tmp_path, "year", "4-digit year in YYYY format")
+        set_variable_pattern(tmp_path, "category", "Document category")
+
         folders = {
             "Financial": FolderDefinition(
                 description="Financial documents",
@@ -406,11 +415,29 @@ class TestGenerateInstructionsFromFolders:
             ),
         }
 
-        result = generate_instructions_from_folders(folders)
+        result = generate_instructions_from_folders(folders, tmp_path)
 
         # Should document both patterns
         assert "year" in result.lower()
         assert "category" in result.lower()
+        assert "4-digit year" in result
+        assert "Document category" in result
+
+    def test_undefined_variable_raises_error(self, tmp_path: Path) -> None:
+        """Test that using undefined variable raises ValueError."""
+        import pytest
+
+        folders = {
+            "Financial": FolderDefinition(
+                description="Financial documents",
+                folders={
+                    "{year}": FolderDefinition(description="By year", folders={}),
+                },
+            ),
+        }
+
+        with pytest.raises(ValueError, match="Variable pattern 'year' is used but not defined"):
+            generate_instructions_from_folders(folders, tmp_path)
 
 
 
@@ -470,38 +497,53 @@ class TestRenderFolderHierarchy:
 class TestExtractVariablePatterns:
     """Tests for _extract_variable_patterns function."""
 
-    def test_no_variables(self) -> None:
+    def test_no_variables(self, tmp_path: Path) -> None:
         """Test extraction when no variable patterns exist."""
         folders = {
             "Documents": FolderDefinition(description="All documents", folders={}),
         }
 
-        result = _extract_variable_patterns(folders)
+        result = _extract_variable_patterns(folders, tmp_path)
         assert result == {}
 
-    def test_single_variable(self) -> None:
+    def test_single_variable(self, tmp_path: Path) -> None:
         """Test extraction of single variable pattern."""
+        from docman.repo_config import set_variable_pattern
+
+        set_variable_pattern(tmp_path, "year", "4-digit year in YYYY format")
+
         folders = {
             "{year}": FolderDefinition(description="By year", folders={}),
         }
 
-        result = _extract_variable_patterns(folders)
+        result = _extract_variable_patterns(folders, tmp_path)
         assert "year" in result
         assert isinstance(result["year"], str)
+        assert "4-digit year" in result["year"]
 
-    def test_multiple_variables(self) -> None:
+    def test_multiple_variables(self, tmp_path: Path) -> None:
         """Test extraction of multiple variable patterns."""
+        from docman.repo_config import set_variable_pattern
+
+        set_variable_pattern(tmp_path, "year", "4-digit year in YYYY format")
+        set_variable_pattern(tmp_path, "category", "Document category")
+
         folders = {
             "{year}": FolderDefinition(description="By year", folders={}),
             "{category}": FolderDefinition(description="By category", folders={}),
         }
 
-        result = _extract_variable_patterns(folders)
+        result = _extract_variable_patterns(folders, tmp_path)
         assert "year" in result
         assert "category" in result
 
-    def test_nested_variables(self) -> None:
+    def test_nested_variables(self, tmp_path: Path) -> None:
         """Test extraction of variables in nested structure."""
+        from docman.repo_config import set_variable_pattern
+
+        set_variable_pattern(tmp_path, "year", "4-digit year in YYYY format")
+        set_variable_pattern(tmp_path, "month", "2-digit month in MM format")
+
         folders = {
             "Financial": FolderDefinition(
                 description="Financial docs",
@@ -516,52 +558,64 @@ class TestExtractVariablePatterns:
             ),
         }
 
-        result = _extract_variable_patterns(folders)
+        result = _extract_variable_patterns(folders, tmp_path)
         assert "year" in result
         assert "month" in result
+
+    def test_undefined_variable_raises_error(self, tmp_path: Path) -> None:
+        """Test that using undefined variable raises ValueError."""
+        import pytest
+
+        folders = {
+            "{year}": FolderDefinition(description="By year", folders={}),
+        }
+
+        with pytest.raises(ValueError, match="Variable pattern 'year' is used but not defined"):
+            _extract_variable_patterns(folders, tmp_path)
 
 
 class TestGetPatternGuidance:
     """Tests for _get_pattern_guidance function."""
 
-    def test_known_pattern_year(self) -> None:
-        """Test guidance for 'year' pattern."""
-        result = _get_pattern_guidance("year")
-        assert "YYYY" in result or "4-digit" in result.lower()
-        assert "2024" in result or "2025" in result
+    def test_defined_pattern(self, tmp_path: Path) -> None:
+        """Test guidance for defined pattern."""
+        from docman.repo_config import set_variable_pattern
 
-    def test_known_pattern_month(self) -> None:
-        """Test guidance for 'month' pattern."""
-        result = _get_pattern_guidance("month")
-        assert "MM" in result or "2-digit" in result.lower()
-        assert "01" in result or "12" in result
+        set_variable_pattern(tmp_path, "year", "4-digit year in YYYY format")
 
-    def test_known_pattern_category(self) -> None:
-        """Test guidance for 'category' pattern."""
-        result = _get_pattern_guidance("category")
-        assert "lowercase" in result.lower()
-        assert "hyphen" in result.lower()
+        result = _get_pattern_guidance("year", tmp_path)
+        assert "4-digit year in YYYY format" in result
 
-    def test_known_pattern_company(self) -> None:
-        """Test guidance for 'company' pattern."""
-        result = _get_pattern_guidance("company")
-        assert "lowercase" in result.lower()
-        assert "hyphen" in result.lower()
+    def test_multiple_patterns(self, tmp_path: Path) -> None:
+        """Test guidance for multiple defined patterns."""
+        from docman.repo_config import set_variable_pattern
 
-    def test_unknown_pattern(self) -> None:
-        """Test guidance for unknown pattern."""
-        result = _get_pattern_guidance("custom_pattern")
-        assert "custom_pattern" in result
-        assert "lowercase" in result.lower()
+        set_variable_pattern(tmp_path, "year", "4-digit year in YYYY format")
+        set_variable_pattern(tmp_path, "category", "Document category")
 
-    def test_case_insensitive(self) -> None:
-        """Test that pattern matching is case-insensitive."""
-        result1 = _get_pattern_guidance("Year")
-        result2 = _get_pattern_guidance("YEAR")
-        result3 = _get_pattern_guidance("year")
+        result_year = _get_pattern_guidance("year", tmp_path)
+        result_category = _get_pattern_guidance("category", tmp_path)
 
-        # All should return same guidance
-        assert result1 == result2 == result3
+        assert "4-digit year" in result_year
+        assert "Document category" in result_category
+
+    def test_undefined_pattern_raises_error(self, tmp_path: Path) -> None:
+        """Test that undefined pattern raises ValueError."""
+        import pytest
+
+        with pytest.raises(ValueError, match="Variable pattern 'year' is used but not defined"):
+            _get_pattern_guidance("year", tmp_path)
+
+    def test_pattern_description_formatting(self, tmp_path: Path) -> None:
+        """Test that pattern description is formatted correctly."""
+        from docman.repo_config import set_variable_pattern
+
+        set_variable_pattern(tmp_path, "custom", "Extract custom value from document")
+
+        result = _get_pattern_guidance("custom", tmp_path)
+        # Should be formatted as a bullet point
+        assert result.startswith("\n  -")
+        assert "Extract custom value from document" in result
 
 
 class TestSerializeFolderDefinitions:
