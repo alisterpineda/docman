@@ -43,13 +43,13 @@ from docman.models import (
     Operation,
     OperationStatus,
     OrganizationStatus,
+    file_needs_rehashing,
     get_utc_now,
 )
 from docman.path_security import PathSecurityError, validate_target_path
 from docman.prompt_builder import (
     build_system_prompt,
     build_user_prompt,
-    compute_prompt_hash,
     generate_instructions_from_folders,
     load_or_generate_instructions,
     load_organization_instructions,
@@ -3383,16 +3383,25 @@ def debug_prompt(file_path: str, auto_instructions: bool) -> None:
         ).scalar_one_or_none()
 
         document_content = None
+        needs_rescan = False
 
         # Check if we can reuse existing content from database
         if copy and copy.document and copy.document.content is not None:
-            # Use existing content from database
-            document_content = copy.document.content
-            click.echo(f"Using existing content from database for: {file_path_str}\n")
-        else:
+            # Check if file has changed since last scan
+            if file_needs_rehashing(copy, target_path):
+                # File has changed, need to re-extract content
+                click.echo(f"File has changed since last scan, re-extracting content from: {file_path_str}\n")
+                needs_rescan = True
+            else:
+                # File unchanged, use existing content from database
+                document_content = copy.document.content
+                click.echo(f"Using existing content from database for: {file_path_str}\n")
+
+        if document_content is None:
             # Need to extract content from file
-            # Determine if this is a retry of a failed extraction
-            needs_rescan = copy and copy.document and copy.document.content is None
+            # Determine if this is a retry of a failed extraction (only if not already set due to stale content)
+            if not needs_rescan:
+                needs_rescan = copy and copy.document and copy.document.content is None
 
             if needs_rescan:
                 click.echo(f"Re-extracting content (previous extraction failed) for: {file_path_str}\n")

@@ -48,11 +48,22 @@ class TestDocmanDebugPrompt:
             session.add(doc)
             session.flush()
 
-            # Create document copy
+            # Get actual file metadata if file exists
+            full_path = Path(repo_path) / file_path
+            stored_size = None
+            stored_mtime = None
+            if full_path.exists():
+                stat = full_path.stat()
+                stored_size = stat.st_size
+                stored_mtime = stat.st_mtime
+
+            # Create document copy with metadata
             copy = DocumentCopy(
                 document_id=doc.id,
                 repository_path=repo_path,
                 file_path=file_path,
+                stored_size=stored_size,
+                stored_mtime=stored_mtime,
             )
             session.add(copy)
             session.commit()
