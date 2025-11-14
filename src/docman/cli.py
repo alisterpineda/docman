@@ -3302,6 +3302,240 @@ def dedupe(path: str | None, yes: bool, dry_run: bool, recursive: bool) -> None:
             pass
 
 
+@main.command("debug-prompt")
+@click.argument("file_path", type=str)
+@click.option(
+    "--auto-instructions",
+    is_flag=True,
+    default=False,
+    help="Generate instructions from folder definitions instead of using instructions.md",
+)
+@require_database
+def debug_prompt(file_path: str, auto_instructions: bool) -> None:
+    """
+    Generate and display the LLM prompt for a specific file.
+
+    This debugging command shows the exact prompt that would be sent to the LLM
+    for organizing the specified document. Useful for testing and debugging
+    prompt templates.
+
+    Arguments:
+        FILE_PATH: Path to the document file (relative to current directory).
+
+    Options:
+        --auto-instructions: Generate instructions from folder definitions instead of instructions.md.
+
+    Examples:
+        - 'docman debug-prompt invoice.pdf': Show prompt for invoice.pdf
+        - 'docman debug-prompt docs/report.pdf --auto-instructions': Use folder definitions
+    """
+    from docman.processor import ProcessingResult, process_document_file
+    from sqlalchemy import select
+
+    # Find the repository root
+    try:
+        repo_root = get_repository_root(start_path=Path.cwd())
+    except RepositoryError:
+        click.secho("Error: Not in a docman repository.", fg="red", err=True)
+        click.echo("Run 'docman init' to initialize a repository.")
+        raise click.Abort()
+
+    # Resolve the file path
+    target_path = Path(file_path).resolve()
+
+    # Validate file exists
+    if not target_path.exists():
+        click.secho(f"Error: File '{file_path}' does not exist", fg="red", err=True)
+        raise click.Abort()
+
+    # Validate file is within repository
+    try:
+        rel_path = target_path.relative_to(repo_root)
+    except ValueError:
+        click.secho(
+            f"Error: File '{file_path}' is outside the repository at {repo_root}",
+            fg="red",
+            err=True,
+        )
+        raise click.Abort()
+
+    # Validate file type
+    if target_path.suffix.lower() not in SUPPORTED_EXTENSIONS:
+        click.secho(
+            f"Error: Unsupported file type '{target_path.suffix}'. "
+            f"Supported extensions: {', '.join(sorted(SUPPORTED_EXTENSIONS))}",
+            fg="red",
+            err=True,
+        )
+        raise click.Abort()
+
+    # Get database session
+    session_gen = get_session()
+    session = next(session_gen)
+
+    try:
+        # Try to find existing document in database first
+        file_path_str = str(rel_path)
+        copy = session.execute(
+            select(DocumentCopy)
+            .where(DocumentCopy.repository_path == str(repo_root))
+            .where(DocumentCopy.file_path == file_path_str)
+        ).scalar_one_or_none()
+
+        document_content = None
+
+        # Check if we can reuse existing content from database
+        if copy and copy.document and copy.document.content is not None:
+            # Use existing content from database
+            document_content = copy.document.content
+            click.echo(f"Using existing content from database for: {file_path_str}\n")
+        else:
+            # Need to extract content from file
+            # Determine if this is a retry of a failed extraction
+            needs_rescan = copy and copy.document and copy.document.content is None
+
+            if needs_rescan:
+                click.echo(f"Re-extracting content (previous extraction failed) for: {file_path_str}\n")
+            else:
+                click.echo(f"Extracting content from: {file_path_str}\n")
+
+            try:
+                # Force rescan if we're retrying a failed extraction, otherwise process_document_file
+                # will see unchanged metadata and return REUSED_COPY without re-extracting
+                copy, result = process_document_file(
+                    session, repo_root, rel_path, str(repo_root), rescan=needs_rescan
+                )
+
+                if result in (ProcessingResult.NEW_DOCUMENT, ProcessingResult.DUPLICATE_DOCUMENT,
+                             ProcessingResult.CONTENT_UPDATED, ProcessingResult.REUSED_COPY) and copy and copy.document:
+                    document_content = copy.document.content
+
+                    # Guard against None content even after successful processing result
+                    if document_content is None:
+                        click.secho(
+                            "Error: Document content is empty after extraction",
+                            fg="red",
+                            err=True,
+                        )
+                        raise click.Abort()
+                else:
+                    error_msg = "Failed to extract content from file"
+                    if result == ProcessingResult.EXTRACTION_FAILED:
+                        error_msg = "Content extraction failed"
+                    elif result == ProcessingResult.HASH_FAILED:
+                        error_msg = "Failed to compute content hash"
+
+                    click.secho(
+                        f"Error: {error_msg}",
+                        fg="red",
+                        err=True,
+                    )
+                    raise click.Abort()
+            except Exception as e:
+                click.secho(f"Error: Failed to process document: {e}", fg="red", err=True)
+                raise click.Abort()
+
+        # Check if LLM provider is configured
+        active_provider = get_active_provider()
+        if not active_provider:
+            click.secho(
+                "Warning: No LLM provider configured. Using default settings.",
+                fg="yellow",
+            )
+            click.echo("Run 'docman llm add' to configure an LLM provider.")
+            click.echo()
+            # Use default: structured output = True (like Gemini)
+            supports_structured_output = True
+        else:
+            # Get provider settings
+            try:
+                api_key = get_api_key(active_provider.name)
+                if api_key:
+                    llm_provider_instance = get_llm_provider(active_provider, api_key)
+                    supports_structured_output = llm_provider_instance.supports_structured_output
+                else:
+                    supports_structured_output = True
+            except Exception:
+                supports_structured_output = True
+
+        # Load organization instructions
+        folder_definitions = None
+        default_filename_convention = None
+
+        if auto_instructions:
+            from docman.repo_config import get_default_filename_convention
+
+            folder_definitions = get_folder_definitions(repo_root)
+            if not folder_definitions:
+                click.secho(
+                    "Error: No folder definitions found. Cannot use --auto-instructions.",
+                    fg="red",
+                    err=True,
+                )
+                click.echo("Run 'docman define <path> --desc \"description\"' to create folder definitions.")
+                raise click.Abort()
+
+            default_filename_convention = get_default_filename_convention(repo_root)
+            try:
+                organization_instructions = generate_instructions_from_folders(
+                    folder_definitions, repo_root, default_filename_convention
+                )
+            except ValueError as e:
+                click.secho(f"Error: {e}", fg="red", err=True)
+                raise click.Abort()
+        else:
+            organization_instructions = load_organization_instructions(repo_root)
+            if not organization_instructions:
+                click.secho(
+                    "Error: Document organization instructions are required.",
+                    fg="red",
+                    err=True,
+                )
+                click.echo("Run 'docman config set-instructions' to create them.")
+                raise click.Abort()
+
+        # Build prompts
+        system_prompt = build_system_prompt(use_structured_output=supports_structured_output)
+        user_prompt = build_user_prompt(file_path_str, document_content, organization_instructions)
+
+        # Display the prompts with nice formatting
+        click.echo("=" * 80)
+        click.secho("DEBUG PROMPT OUTPUT", bold=True, fg="cyan")
+        click.echo("=" * 80)
+        click.echo()
+        click.secho(f"File: {file_path_str}", bold=True)
+        click.echo(f"Content length: {len(document_content)} characters")
+        if active_provider:
+            click.echo(f"Provider: {active_provider.name}")
+            click.echo(f"Model: {active_provider.model}")
+        click.echo(f"Structured output: {supports_structured_output}")
+        click.echo()
+
+        # System prompt section
+        click.echo("=" * 80)
+        click.secho("SYSTEM PROMPT", bold=True, fg="yellow")
+        click.echo("=" * 80)
+        click.echo()
+        click.echo(system_prompt)
+        click.echo()
+
+        # User prompt section
+        click.echo("=" * 80)
+        click.secho("USER PROMPT", bold=True, fg="green")
+        click.echo("=" * 80)
+        click.echo()
+        click.echo(user_prompt)
+        click.echo()
+        click.echo("=" * 80)
+
+    finally:
+        # Close the session
+        try:
+            next(session_gen)
+        except StopIteration:
+            pass
+
+
 @main.command()
 @click.argument("path", type=str)
 @click.option("--desc", type=str, required=True, help="Description of the folder")
