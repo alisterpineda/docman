@@ -311,6 +311,18 @@ docman unmark archives/ -r -y   # Reset to unorganized to re-process
 - **YAML error handling**: Detects malformed config (e.g., merge conflicts) with actionable error messages
 - **Tree operations**: Functions for loading (`get_folder_definitions`, `get_default_filename_convention`), saving (`add_folder_definition`, `set_default_filename_convention`), and displaying
 
+**Validation Rules**:
+- **Single variable pattern per level**: At any given level in the hierarchy, only ONE unique variable pattern is allowed as a sibling
+  - ✓ Allowed: `Parent/{child}` and `Parent/{child}/subdir` (same variable, extending path)
+  - ✗ Rejected: `Parent/{child}` and `Parent/{child_alt}` (different variables at same level)
+  - ✓ Allowed: `Financial/{year}` and `Personal/{category}` (different parents, no conflict)
+  - ✓ Allowed: `Parent/literal` and `Parent/{variable}` (mixing literals with variables is permitted)
+- **Validation timing**: Enforced both when adding definitions (`docman define`) AND when loading config from disk
+  - On add: Validates before creating new folder entries
+  - On load: Validates entire tree structure via `get_folder_definitions()`
+- **Error messages**: Clear, actionable errors indicating which variable pattern conflicts and at what path
+  - Example: `"Cannot define 'Parent/{child_alt}': Multiple different variable patterns are not allowed at the same level. '{child}' already exists as a sibling."`
+
 **Commands**:
 - `docman pattern add <name> --desc "description"`: Add or update a variable pattern definition
   - Example: `docman pattern add year --desc "4-digit year in YYYY format"`

@@ -1,7 +1,6 @@
 """Unit tests for repo_config module."""
 
 from pathlib import Path
-from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -414,6 +413,117 @@ class TestAddFolderDefinition:
 
         folders = get_folder_definitions(tmp_path)
         assert folders["Financial"].description is None
+
+
+class TestVariablePatternValidation:
+    """Tests for variable pattern validation in folder definitions."""
+
+    def test_reject_multiple_different_variables_at_same_level(
+        self, tmp_path: Path
+    ) -> None:
+        """Test that multiple different variable patterns are rejected."""
+        # Add first variable pattern
+        add_folder_definition(tmp_path, "Parent/{child}", "Child folders")
+
+        # Try to add different variable pattern at same level
+        with pytest.raises(ValueError) as exc_info:
+            add_folder_definition(tmp_path, "Parent/{child_alt}", "Alternative child")
+
+        assert "Multiple different variable patterns" in str(exc_info.value)
+        assert "{child}" in str(exc_info.value)
+        assert "Parent/{child_alt}" in str(exc_info.value)
+
+    def test_allow_same_variable_extension(self, tmp_path: Path) -> None:
+        """Test that extending the same variable pattern is allowed."""
+        # Add first variable pattern
+        add_folder_definition(tmp_path, "Parent/{child}", "Child folders")
+
+        # Extend with same variable - should succeed
+        add_folder_definition(
+            tmp_path, "Parent/{child}/subdir", "Subdirectory under child"
+        )
+
+        folders = get_folder_definitions(tmp_path)
+        assert "Parent" in folders
+        assert "{child}" in folders["Parent"].folders
+        assert "subdir" in folders["Parent"].folders["{child}"].folders
+
+    def test_allow_mixing_literals_and_variables(self, tmp_path: Path) -> None:
+        """Test that mixing literal folders with variable patterns is allowed."""
+        # Add literal folder
+        add_folder_definition(tmp_path, "Parent/literal", "Literal folder")
+
+        # Add variable pattern at same level - should succeed
+        add_folder_definition(tmp_path, "Parent/{variable}", "Variable folder")
+
+        folders = get_folder_definitions(tmp_path)
+        assert "Parent" in folders
+        assert "literal" in folders["Parent"].folders
+        assert "{variable}" in folders["Parent"].folders
+
+    def test_allow_different_variables_under_different_parents(
+        self, tmp_path: Path
+    ) -> None:
+        """Test that different variables under different parents are allowed."""
+        # Add variable under Financial
+        add_folder_definition(tmp_path, "Financial/{year}", "Financial by year")
+
+        # Add different variable under Personal - should succeed
+        add_folder_definition(tmp_path, "Personal/{category}", "Personal by category")
+
+        folders = get_folder_definitions(tmp_path)
+        assert "Financial" in folders
+        assert "Personal" in folders
+        assert "{year}" in folders["Financial"].folders
+        assert "{category}" in folders["Personal"].folders
+
+    def test_reject_nested_duplicate_variables(self, tmp_path: Path) -> None:
+        """Test that duplicate variables are rejected at nested levels too."""
+        # Add nested structure with variable
+        add_folder_definition(tmp_path, "A/B/{var1}", "First variable")
+
+        # Try to add different variable at same nested level
+        with pytest.raises(ValueError) as exc_info:
+            add_folder_definition(tmp_path, "A/B/{var2}", "Second variable")
+
+        assert "Multiple different variable patterns" in str(exc_info.value)
+        assert "{var1}" in str(exc_info.value)
+
+    def test_validation_on_config_load(self, tmp_path: Path) -> None:
+        """Test that validation runs when loading config from disk."""
+        # Manually create invalid config (bypassing normal API)
+        config = {
+            "organization": {
+                "folders": {
+                    "Parent": {
+                        "folders": {
+                            "{child}": {"description": "Child 1"},
+                            "{child_alt}": {"description": "Child 2"},
+                        }
+                    }
+                }
+            }
+        }
+        save_repo_config(tmp_path, config)
+
+        # Loading should raise validation error
+        with pytest.raises(ValueError) as exc_info:
+            get_folder_definitions(tmp_path)
+
+        assert "Multiple different variable patterns" in str(exc_info.value)
+        assert "{child}" in str(exc_info.value)
+        assert "{child_alt}" in str(exc_info.value)
+
+    def test_allow_multiple_literal_siblings(self, tmp_path: Path) -> None:
+        """Test that multiple literal folders at same level are allowed."""
+        add_folder_definition(tmp_path, "Financial/invoices", "Invoices")
+        add_folder_definition(tmp_path, "Financial/receipts", "Receipts")
+        add_folder_definition(tmp_path, "Financial/statements", "Statements")
+
+        folders = get_folder_definitions(tmp_path)
+        assert "invoices" in folders["Financial"].folders
+        assert "receipts" in folders["Financial"].folders
+        assert "statements" in folders["Financial"].folders
 
 
 class TestGetDefaultFilenameConvention:

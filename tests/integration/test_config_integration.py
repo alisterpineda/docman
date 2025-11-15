@@ -580,3 +580,104 @@ class TestPatternCommands:
 
         patterns = get_variable_patterns(tmp_path)
         assert "year" in patterns
+
+
+class TestVariablePatternValidationIntegration:
+    """Integration tests for variable pattern validation in define command."""
+
+    def test_cli_rejects_duplicate_variables(
+        self, cli_runner: CliRunner, tmp_path: Path
+    ) -> None:
+        """Test that CLI rejects duplicate variable patterns with clear error."""
+        # Initialize repository
+        cli_runner.invoke(main, ["init", str(tmp_path)], input="n\n")
+
+        # Define first variable pattern
+        with cli_runner.isolated_filesystem(temp_dir=tmp_path):
+            result1 = cli_runner.invoke(
+                main, ["define", "Parent/{child}", "--desc", "Child folders"]
+            )
+            assert result1.exit_code == 0
+
+            # Try to define different variable at same level
+            result2 = cli_runner.invoke(
+                main, ["define", "Parent/{child_alt}", "--desc", "Alternative child"]
+            )
+            assert result2.exit_code == 1
+            assert "Multiple different variable patterns" in result2.output
+            assert "{child}" in result2.output
+
+    def test_cli_allows_same_variable_extension(
+        self, cli_runner: CliRunner, tmp_path: Path
+    ) -> None:
+        """Test that CLI allows extending the same variable pattern."""
+        # Initialize repository
+        cli_runner.invoke(main, ["init", str(tmp_path)], input="n\n")
+
+        # Define first variable pattern
+        with cli_runner.isolated_filesystem(temp_dir=tmp_path):
+            result1 = cli_runner.invoke(
+                main, ["define", "Parent/{child}", "--desc", "Child folders"]
+            )
+            assert result1.exit_code == 0
+
+            # Extend with same variable - should succeed
+            result2 = cli_runner.invoke(
+                main,
+                ["define", "Parent/{child}/subdir", "--desc", "Subdirectory under child"],
+            )
+            assert result2.exit_code == 0
+            assert "✓ Defined folder: Parent/{child}/subdir" in result2.output
+
+    def test_cli_allows_mixing_literals_and_variables(
+        self, cli_runner: CliRunner, tmp_path: Path
+    ) -> None:
+        """Test that CLI allows mixing literals with variables."""
+        # Initialize repository
+        cli_runner.invoke(main, ["init", str(tmp_path)], input="n\n")
+
+        # Define literal folder
+        with cli_runner.isolated_filesystem(temp_dir=tmp_path):
+            result1 = cli_runner.invoke(
+                main, ["define", "Parent/literal", "--desc", "Literal folder"]
+            )
+            assert result1.exit_code == 0
+
+            # Add variable at same level - should succeed
+            result2 = cli_runner.invoke(
+                main, ["define", "Parent/{variable}", "--desc", "Variable folder"]
+            )
+            assert result2.exit_code == 0
+            assert "✓ Defined folder: Parent/{variable}" in result2.output
+
+    def test_multi_step_scenario(self, cli_runner: CliRunner, tmp_path: Path) -> None:
+        """Test a multi-step scenario with validation."""
+        # Initialize repository
+        cli_runner.invoke(main, ["init", str(tmp_path)], input="n\n")
+
+        with cli_runner.isolated_filesystem(temp_dir=tmp_path):
+            # Step 1: Define structure under Financial
+            result1 = cli_runner.invoke(
+                main, ["define", "Financial/{year}", "--desc", "Financial by year"]
+            )
+            assert result1.exit_code == 0
+
+            # Step 2: Try to add different variable under Financial - should fail
+            result2 = cli_runner.invoke(
+                main, ["define", "Financial/{period}", "--desc", "Financial by period"]
+            )
+            assert result2.exit_code == 1
+            assert "Multiple different variable patterns" in result2.output
+
+            # Step 3: Define structure under Personal - should succeed (different parent)
+            result3 = cli_runner.invoke(
+                main, ["define", "Personal/{category}", "--desc", "Personal by category"]
+            )
+            assert result3.exit_code == 0
+
+            # Step 4: Extend Financial/{year} - should succeed (same variable)
+            result4 = cli_runner.invoke(
+                main,
+                ["define", "Financial/{year}/invoices", "--desc", "Invoices by year"],
+            )
+            assert result4.exit_code == 0

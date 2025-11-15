@@ -144,6 +144,79 @@ def save_repo_config(repo_root: Path, config: dict[str, Any]) -> None:
     config_path.write_text(content)
 
 
+def _validate_no_duplicate_variable_siblings(
+    siblings: dict[str, Any], new_part: str, full_path: str
+) -> None:
+    """Validate that adding new_part doesn't create duplicate variable patterns.
+
+    At any given level, you cannot have multiple DIFFERENT variable patterns
+    as siblings. The same variable pattern is allowed (for extending paths),
+    and mixing literals with variables is allowed.
+
+    Args:
+        siblings: Dictionary of existing siblings at this level.
+        new_part: The new folder name to add.
+        full_path: Full path being defined (for error messages).
+
+    Raises:
+        ValueError: If adding new_part would create duplicate variable patterns.
+    """
+    is_variable = new_part.startswith("{") and new_part.endswith("}")
+
+    if not is_variable:
+        return  # Literals don't create conflicts
+
+    # Find any existing variable siblings
+    variable_siblings = [
+        k for k in siblings.keys() if k.startswith("{") and k.endswith("}")
+    ]
+
+    if variable_siblings:
+        # There's already a variable sibling
+        if variable_siblings[0] != new_part:
+            # Different variable pattern - not allowed
+            raise ValueError(
+                f"Cannot define '{full_path}': Multiple different variable patterns "
+                f"are not allowed at the same level. '{variable_siblings[0]}' already "
+                f"exists as a sibling."
+            )
+
+
+def _validate_folder_tree(folders_data: dict[str, Any], path_prefix: str = "") -> None:
+    """Recursively validate folder tree for duplicate variable patterns.
+
+    Ensures that at any level, there are no multiple different variable patterns
+    as siblings.
+
+    Args:
+        folders_data: Dictionary of folder definitions at this level.
+        path_prefix: Current path prefix for error messages (e.g., "Financial/invoices").
+
+    Raises:
+        ValueError: If duplicate variable patterns are found at any level.
+    """
+    # Check for duplicate variable patterns at this level
+    variable_folders = [
+        name for name in folders_data.keys() if name.startswith("{") and name.endswith("}")
+    ]
+
+    if len(variable_folders) > 1:
+        # Multiple different variable patterns at same level
+        path_display = path_prefix if path_prefix else "root level"
+        raise ValueError(
+            f"Invalid folder structure at '{path_display}': Multiple different "
+            f"variable patterns are not allowed at the same level. "
+            f"Found: {', '.join(variable_folders)}"
+        )
+
+    # Recursively validate subfolders
+    for folder_name, folder_data in folders_data.items():
+        if "folders" in folder_data and folder_data["folders"]:
+            # Build path for nested validation
+            current_path = f"{path_prefix}/{folder_name}" if path_prefix else folder_name
+            _validate_folder_tree(folder_data["folders"], current_path)
+
+
 def get_folder_definitions(repo_root: Path) -> dict[str, FolderDefinition]:
     """Get folder definitions from repository config.
 
@@ -153,10 +226,17 @@ def get_folder_definitions(repo_root: Path) -> dict[str, FolderDefinition]:
     Returns:
         Dictionary mapping top-level folder names to FolderDefinition objects.
         Returns empty dict if no folders defined.
+
+    Raises:
+        ValueError: If the folder structure contains duplicate variable patterns.
     """
     config = load_repo_config(repo_root)
     organization = config.get("organization", {})
     folders_data = organization.get("folders", {})
+
+    # Validate folder structure before returning
+    if folders_data:
+        _validate_folder_tree(folders_data)
 
     return {
         name: FolderDefinition.from_dict(folder_data)
@@ -207,6 +287,8 @@ def add_folder_definition(
     current_level = config["organization"]["folders"]
     for i, part in enumerate(parts):
         if part not in current_level:
+            # Validate no duplicate variable siblings before creating
+            _validate_no_duplicate_variable_siblings(current_level, part, path)
             # Create new folder entry without description (will be added if provided)
             current_level[part] = {"folders": {}}
 
@@ -238,7 +320,8 @@ def get_default_filename_convention(repo_root: Path) -> str | None:
     """
     config = load_repo_config(repo_root)
     organization = config.get("organization", {})
-    return organization.get("default_filename_convention")
+    convention = organization.get("default_filename_convention")
+    return convention if isinstance(convention, str) else None
 
 
 def set_default_filename_convention(repo_root: Path, convention: str) -> None:
@@ -281,7 +364,8 @@ def get_variable_patterns(repo_root: Path) -> dict[str, str]:
     """
     config = load_repo_config(repo_root)
     organization = config.get("organization", {})
-    return organization.get("variable_patterns", {})
+    patterns = organization.get("variable_patterns", {})
+    return patterns if isinstance(patterns, dict) else {}
 
 
 def set_variable_pattern(repo_root: Path, name: str, description: str) -> None:
