@@ -841,6 +841,7 @@ def plan(
                 folder_definitions, repo_root, default_filename_convention
             )
         except ValueError as e:
+            # Catch YAML syntax errors from load_repo_config()
             click.secho(f"Error: {e}", fg="red")
             raise click.Abort()
         click.echo("Using auto-generated instructions from folder definitions")
@@ -1963,14 +1964,9 @@ def _handle_interactive_review(
                         try:
                             _persist_reprocessed_suggestion(pending_op, doc_copy, in_memory_suggestion, repo_root)
                         except ValueError as e:
-                            # Undefined variable pattern - file was moved but we can't compute proper prompt hash
+                            # Catch YAML syntax errors - file already moved, just warn
                             click.secho(f"  ⚠️  Warning: {e}", fg="yellow")
                             click.echo("  File moved successfully, but operation metadata may be incomplete.")
-                            # Update operation with in-memory suggestion, but use placeholder for prompt hash
-                            pending_op.suggested_directory_path = in_memory_suggestion["suggested_directory_path"]
-                            pending_op.suggested_filename = in_memory_suggestion["suggested_filename"]
-                            pending_op.reason = in_memory_suggestion["reason"]
-                            # Leave prompt_hash, document_content_hash, model_name unchanged
 
                     # Mark the file as organized and accept the operation
                     pending_op.status = OperationStatus.ACCEPTED
@@ -2019,7 +2015,12 @@ def _handle_interactive_review(
 
                             # If there's an in-memory suggestion from re-processing, persist it now
                             if in_memory_suggestion:
-                                _persist_reprocessed_suggestion(pending_op, doc_copy, in_memory_suggestion, repo_root)
+                                try:
+                                    _persist_reprocessed_suggestion(pending_op, doc_copy, in_memory_suggestion, repo_root)
+                                except ValueError as e:
+                                    # Catch YAML syntax errors - file already moved, just warn
+                                    click.secho(f"  ⚠️  Warning: {e}", fg="yellow")
+                                    click.echo("  File moved successfully, but operation metadata may be incomplete.")
 
                             pending_op.status = OperationStatus.ACCEPTED
                             doc_copy.accepted_operation_id = pending_op.id
@@ -2033,7 +2034,12 @@ def _handle_interactive_review(
 
                             # If there's an in-memory suggestion from re-processing, persist it now
                             if in_memory_suggestion:
-                                _persist_reprocessed_suggestion(pending_op, doc_copy, in_memory_suggestion, repo_root)
+                                try:
+                                    _persist_reprocessed_suggestion(pending_op, doc_copy, in_memory_suggestion, repo_root)
+                                except ValueError as e:
+                                    # Catch YAML syntax errors - file already moved, just warn
+                                    click.secho(f"  ⚠️  Warning: {e}", fg="yellow")
+                                    click.echo("  File moved successfully, but operation metadata may be incomplete.")
 
                             pending_op.status = OperationStatus.ACCEPTED
                             doc_copy.accepted_operation_id = pending_op.id
@@ -2115,9 +2121,8 @@ def _handle_interactive_review(
                     try:
                         organization_instructions = load_or_generate_instructions(repo_root)
                     except ValueError as e:
-                        # Undefined variable pattern used in folder definitions
+                        # Catch YAML syntax errors from load_repo_config()
                         click.secho(f"  Error: {e}", fg="red")
-                        click.echo("  Cannot re-process until all variable patterns are defined.")
                         continue
 
                     if not organization_instructions:

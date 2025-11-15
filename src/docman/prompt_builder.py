@@ -8,6 +8,7 @@ import functools
 import json
 from pathlib import Path
 
+import click
 from jinja2 import Environment, PackageLoader
 
 # Initialize Jinja2 template environment
@@ -86,14 +87,13 @@ def load_or_generate_instructions(repo_root: Path) -> str | None:
     This allows code paths like regeneration to work regardless of whether
     the user originally used instructions.md or --auto-instructions.
 
+    Displays warnings for undefined variable patterns and provides fallback guidance.
+
     Args:
         repo_root: The repository root directory.
 
     Returns:
         Organization instructions content, or None if neither source is available.
-
-    Raises:
-        ValueError: If folder definitions use undefined variable patterns.
     """
     # First try to load from instructions.md
     instructions = load_organization_instructions(repo_root)
@@ -125,7 +125,8 @@ def generate_instructions_from_folders(
     """Generate organization instructions from folder definitions.
 
     Creates markdown instructions for the LLM including folder hierarchy,
-    filename conventions, and variable pattern guidance.
+    filename conventions, and variable pattern guidance. Displays warnings for
+    undefined patterns and provides fallback guidance.
 
     Args:
         folders: Dictionary mapping top-level folder names to FolderDefinition objects.
@@ -134,9 +135,6 @@ def generate_instructions_from_folders(
 
     Returns:
         Markdown-formatted instruction text for LLM consumption.
-
-    Raises:
-        ValueError: If any variable pattern is not defined in config.
     """
     if not folders:
         return ""
@@ -259,6 +257,8 @@ def _extract_variable_patterns(
 ) -> dict[str, str]:
     """Extract all variable patterns from folder definitions and filename conventions.
 
+    Displays warnings for undefined patterns and provides fallback guidance.
+
     Args:
         folders: Dictionary of folder names to FolderDefinition objects.
         repo_root: The repository root directory.
@@ -266,9 +266,6 @@ def _extract_variable_patterns(
 
     Returns:
         Dictionary mapping variable patterns to extraction guidance.
-
-    Raises:
-        ValueError: If any variable pattern is not defined in config.
     """
     import re
 
@@ -312,18 +309,16 @@ def _extract_variable_patterns(
 def _get_pattern_guidance(variable_name: str, repo_root: Path) -> str:
     """Generate extraction guidance for a specific variable pattern.
 
-    Loads user-defined pattern from repository config. Raises error if pattern
-    not defined (strict validation approach).
+    Loads user-defined pattern from repository config. If pattern is not defined,
+    displays a warning to the user and returns LLM-friendly fallback guidance.
 
     Args:
         variable_name: The variable name (e.g., "year", "category").
         repo_root: The repository root directory.
 
     Returns:
-        Guidance text for extracting this variable.
-
-    Raises:
-        ValueError: If variable pattern is not defined in config.
+        Guidance text for extracting this variable. Either user-defined description
+        or fallback instruction to infer from context.
     """
     from docman.repo_config import get_variable_patterns
 
@@ -332,10 +327,17 @@ def _get_pattern_guidance(variable_name: str, repo_root: Path) -> str:
 
     # Check if pattern is defined
     if variable_name not in patterns:
-        raise ValueError(
-            f"Variable pattern '{variable_name}' is used but not defined. "
-            f"Please define it using: docman pattern add {variable_name} --desc '...'"
+        # Display user-facing warning
+        click.secho(
+            f"⚠️  Variable pattern '{variable_name}' is undefined - LLM will infer from context",
+            fg="yellow",
         )
+        click.echo(
+            f"    Tip: Define with: docman pattern add {variable_name} --desc '...'"
+        )
+
+        # Return LLM-friendly fallback guidance
+        return f"\n  - Infer {variable_name} from document context"
 
     # Return pattern description formatted as guidance
     description = patterns[variable_name]

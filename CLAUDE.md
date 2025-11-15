@@ -394,7 +394,7 @@ docman define Career/{FirstName}/{Year}
   - Accepts `repo_root` parameter to load user-defined variable patterns
   - Accepts `default_filename_convention` parameter for repository-level default
   - Generates three sections: folder hierarchy, filename conventions, and variable pattern extraction guidance
-  - **Strict validation**: Raises `ValueError` if undefined variable patterns are used
+  - **Permissive validation**: Displays warnings for undefined variable patterns but continues execution with fallback guidance
 - **`load_or_generate_instructions()`**: Helper that tries both instruction sources (file then folder definitions)
   - Used by regeneration flows (PROCESS action in review command) to work with either source
   - Ensures feature works consistently across all code paths
@@ -408,7 +408,7 @@ docman define Career/{FirstName}/{Year}
   - **User-defined only**: No hard-coded patterns; all variables must be explicitly defined via `docman pattern add`
   - **Storage**: Patterns stored in `.docman/config.yaml` under `organization.variable_patterns`
   - **Structure**: Simple `{name: description}` mapping
-  - **Validation**: Using undefined variables in folder paths or filename conventions triggers clear error message
+  - **Validation**: Using undefined variables in folder paths or filename conventions displays warnings and provides LLM-friendly fallback guidance ("Infer {variable} from document context")
 - **Prompt hash consistency**: All operations use same hash computation logic
   - Includes: system prompt + organization instructions + model name + serialized folder definitions (including filename conventions)
   - Hash computed consistently across plan command, regeneration, and reprocessing flows

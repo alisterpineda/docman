@@ -423,10 +423,8 @@ class TestGenerateInstructionsFromFolders:
         assert "4-digit year" in result
         assert "Document category" in result
 
-    def test_undefined_variable_raises_error(self, tmp_path: Path) -> None:
-        """Test that using undefined variable raises ValueError."""
-        import pytest
-
+    def test_undefined_variable_shows_warning(self, tmp_path: Path, capsys) -> None:
+        """Test that using undefined variable shows warning and continues."""
         folders = {
             "Financial": FolderDefinition(
                 description="Financial documents",
@@ -436,8 +434,17 @@ class TestGenerateInstructionsFromFolders:
             ),
         }
 
-        with pytest.raises(ValueError, match="Variable pattern 'year' is used but not defined"):
-            generate_instructions_from_folders(folders, tmp_path)
+        # Should not raise error, but display warning
+        result = generate_instructions_from_folders(folders, tmp_path)
+
+        # Verify warning was displayed
+        captured = capsys.readouterr()
+        assert "Variable pattern 'year' is undefined" in captured.out
+        assert "LLM will infer from context" in captured.out
+        assert "docman pattern add year" in captured.out
+
+        # Verify fallback guidance in generated instructions
+        assert "Infer year from document context" in result
 
 
 
@@ -562,16 +569,23 @@ class TestExtractVariablePatterns:
         assert "year" in result
         assert "month" in result
 
-    def test_undefined_variable_raises_error(self, tmp_path: Path) -> None:
-        """Test that using undefined variable raises ValueError."""
-        import pytest
-
+    def test_undefined_variable_shows_warning(self, tmp_path: Path, capsys) -> None:
+        """Test that using undefined variable shows warning and continues."""
         folders = {
             "{year}": FolderDefinition(description="By year", folders={}),
         }
 
-        with pytest.raises(ValueError, match="Variable pattern 'year' is used but not defined"):
-            _extract_variable_patterns(folders, tmp_path)
+        # Should not raise error, but display warning
+        result = _extract_variable_patterns(folders, tmp_path)
+
+        # Verify warning was displayed
+        captured = capsys.readouterr()
+        assert "Variable pattern 'year' is undefined" in captured.out
+        assert "LLM will infer from context" in captured.out
+
+        # Verify fallback guidance in result
+        assert "year" in result
+        assert "Infer year from document context" in result["year"]
 
 
 class TestGetPatternGuidance:
@@ -599,12 +613,19 @@ class TestGetPatternGuidance:
         assert "4-digit year" in result_year
         assert "Document category" in result_category
 
-    def test_undefined_pattern_raises_error(self, tmp_path: Path) -> None:
-        """Test that undefined pattern raises ValueError."""
-        import pytest
+    def test_undefined_pattern_shows_warning(self, tmp_path: Path, capsys) -> None:
+        """Test that undefined pattern shows warning and returns fallback guidance."""
+        # Should not raise error, but display warning
+        result = _get_pattern_guidance("year", tmp_path)
 
-        with pytest.raises(ValueError, match="Variable pattern 'year' is used but not defined"):
-            _get_pattern_guidance("year", tmp_path)
+        # Verify warning was displayed
+        captured = capsys.readouterr()
+        assert "Variable pattern 'year' is undefined" in captured.out
+        assert "LLM will infer from context" in captured.out
+        assert "docman pattern add year" in captured.out
+
+        # Verify fallback guidance is returned
+        assert "Infer year from document context" in result
 
     def test_pattern_description_formatting(self, tmp_path: Path) -> None:
         """Test that pattern description is formatted correctly."""
