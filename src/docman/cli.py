@@ -50,18 +50,12 @@ from docman.path_security import PathSecurityError, validate_target_path
 from docman.prompt_builder import (
     build_system_prompt,
     build_user_prompt,
-    generate_instructions_from_folders,
-    load_or_generate_instructions,
-    load_organization_instructions,
+    generate_instructions,
     serialize_folder_definitions,
 )
 from docman.repo_config import (
     add_folder_definition,
-    create_instructions_template,
-    edit_instructions_interactive,
     get_folder_definitions,
-    load_instructions,
-    save_instructions,
 )
 from docman.repository import (
     SUPPORTED_EXTENSIONS,
@@ -139,25 +133,14 @@ def init(directory: str) -> None:
         config_file = docman_dir / "config.yaml"
         config_file.touch()
 
-        # Create instructions template
-        create_instructions_template(target_path)
-
         click.echo(f"Initialized empty docman repository in {docman_dir}/")
         click.echo()
-
-        # Prompt to edit instructions
-        if click.confirm("Would you like to edit document organization instructions now?", default=True):
-            if edit_instructions_interactive(target_path):
-                click.secho("✓ Instructions updated!", fg="green")
-            else:
-                click.secho(
-                    "Warning: Could not open editor. Set $EDITOR or edit .docman/instructions.md manually.",
-                    fg="yellow"
-                )
-        else:
-            click.echo()
-            click.echo("Instructions template created at .docman/instructions.md")
-            click.echo("Edit this file before running 'docman plan'.")
+        click.echo("Next steps:")
+        click.echo("  1. Define variable patterns: docman pattern add <name> --desc \"description\"")
+        click.echo("  2. Define folder structure: docman define <path> --desc \"description\"")
+        click.echo("  3. Scan documents: docman scan -r")
+        click.echo("  4. Generate suggestions: docman plan")
+        click.echo()
 
     except PermissionError:
         click.secho(
@@ -689,19 +672,12 @@ def scan(path: str | None, recursive: bool, rescan: bool) -> None:
     default=False,
     help="Scan for new documents before generating suggestions",
 )
-@click.option(
-    "--auto-instructions",
-    is_flag=True,
-    default=False,
-    help="Generate instructions from folder definitions instead of using instructions.md",
-)
 @require_database
 def plan(
     path: str | None,
     recursive: bool,
     reprocess: bool,
     scan_first: bool,
-    auto_instructions: bool,
 ) -> None:
     """
     Generate LLM organization suggestions for scanned documents.
@@ -717,7 +693,6 @@ def plan(
         -r, --recursive: Recursively process subdirectories when PATH is a directory.
         --reprocess: Reprocess all files, including those already organized or ignored.
         --scan: Scan for new documents before generating suggestions.
-        --auto-instructions: Generate instructions from folder definitions instead of instructions.md.
 
     Examples:
         - 'docman plan': Generate suggestions for all unorganized documents
@@ -725,7 +700,6 @@ def plan(
         - 'docman plan docs/': Generate suggestions for docs directory
         - 'docman plan docs/ -r': Generate suggestions for docs directory recursively
         - 'docman plan --reprocess': Reprocess all documents, including organized ones
-        - 'docman plan --auto-instructions': Use folder definitions to generate instructions
 
     Note: Run 'docman scan' first to discover and extract content from new documents.
     """
@@ -815,46 +789,34 @@ def plan(
         raise click.Abort()
 
 
-    # Load organization instructions based on mode
-    folder_definitions = None  # Track folder definitions for hash computation
-    default_filename_convention = None  # Track default convention for hash computation
-    organization_instructions: str  # Will be set in either branch below
+    # Load organization instructions from folder definitions
+    from docman.repo_config import get_default_filename_convention
 
-    if auto_instructions:
-        # Generate instructions from folder definitions
-        from docman.repo_config import get_default_filename_convention
-
-        folder_definitions = get_folder_definitions(repo_root)
-        if not folder_definitions:
-            click.echo()
-            click.secho(
-                "Error: No folder definitions found. Cannot use --auto-instructions.",
-                fg="red",
-            )
-            click.echo()
-            click.echo("Run 'docman define <path> --desc \"description\"' to create folder definitions.")
-            raise click.Abort()
-
-        default_filename_convention = get_default_filename_convention(repo_root)
-        try:
-            organization_instructions = generate_instructions_from_folders(
-                folder_definitions, repo_root, default_filename_convention
-            )
-        except ValueError as e:
-            # Catch YAML syntax errors from load_repo_config()
-            click.secho(f"Error: {e}", fg="red")
-            raise click.Abort()
-        click.echo("Using auto-generated instructions from folder definitions")
+    folder_definitions = get_folder_definitions(repo_root)
+    if not folder_definitions:
         click.echo()
-    else:
-        # Load instructions from instructions.md (existing behavior)
-        organization_instructions = load_organization_instructions(repo_root)
+        click.secho(
+            "Error: No folder definitions found.",
+            fg="red",
+        )
+        click.echo()
+        click.echo("Run 'docman define <path> --desc \"description\"' to create folder definitions.")
+        click.echo("Or run 'docman pattern add <name> --desc \"description\"' to define variable patterns first.")
+        raise click.Abort()
+
+    default_filename_convention = get_default_filename_convention(repo_root)
+    try:
+        organization_instructions = generate_instructions(repo_root)
         if not organization_instructions:
             click.echo()
-            click.secho("Error: Document organization instructions are required.", fg="red")
-            click.echo()
-            click.echo("Run 'docman config set-instructions' to create them.")
+            click.secho("Error: Failed to generate instructions from folder definitions.", fg="red")
             raise click.Abort()
+    except ValueError as e:
+        # Catch YAML syntax errors from load_repo_config()
+        click.secho(f"Error: {e}", fg="red")
+        raise click.Abort()
+    click.echo("Using instructions generated from folder definitions")
+    click.echo()
 
     # Build prompts for LLM (done once for entire repository)
     # Use structured output if provider supports it
@@ -1593,14 +1555,14 @@ def _regenerate_suggestion(
         api_key = get_api_key(active_provider.name)
         llm_provider_instance = get_llm_provider(active_provider, api_key)
 
-        # Load organization instructions (from file or folder definitions)
-        organization_instructions = load_or_generate_instructions(repo_root)
+        # Load organization instructions from folder definitions
+        organization_instructions = generate_instructions(repo_root)
         if not organization_instructions:
             click.secho(
-                "  Error: Organization instructions not found. "
-                "Create instructions.md or define folder structure with 'docman define'.",
+                "  Error: No folder definitions found.",
                 fg="red"
             )
+            click.echo("  Run 'docman define <path> --desc \"description\"' to create folder definitions.")
             return False, None
 
         # Build system prompt (user prompt is already provided)
@@ -1652,7 +1614,7 @@ def _persist_reprocessed_suggestion(
     """
     # Get active provider and compute prompt hash for tracking
     active_provider = get_active_provider()
-    organization_instructions = load_or_generate_instructions(repo_root)
+    organization_instructions = generate_instructions(repo_root)
     llm_provider_instance = get_llm_provider(active_provider, get_api_key(active_provider.name))
     system_prompt = build_system_prompt(
         use_structured_output=llm_provider_instance.supports_structured_output
@@ -2117,9 +2079,9 @@ def _handle_interactive_review(
 
                 # Initialize base user prompt on first re-process
                 if current_user_prompt is None:
-                    # Load organization instructions (from file or folder definitions)
+                    # Load organization instructions from folder definitions
                     try:
-                        organization_instructions = load_or_generate_instructions(repo_root)
+                        organization_instructions = generate_instructions(repo_root)
                     except ValueError as e:
                         # Catch YAML syntax errors from load_repo_config()
                         click.secho(f"  Error: {e}", fg="red")
@@ -2127,10 +2089,10 @@ def _handle_interactive_review(
 
                     if not organization_instructions:
                         click.secho(
-                            "  Error: Organization instructions not found. "
-                            "Create instructions.md or define folder structure with 'docman define'.",
+                            "  Error: No folder definitions found.",
                             fg="red"
                         )
+                        click.echo("  Run 'docman define <path> --desc \"description\"' to create folder definitions.")
                         continue
 
                     # Build base user prompt
@@ -3309,14 +3271,8 @@ def dedupe(path: str | None, yes: bool, dry_run: bool, recursive: bool) -> None:
 
 @main.command("debug-prompt")
 @click.argument("file_path", type=str)
-@click.option(
-    "--auto-instructions",
-    is_flag=True,
-    default=False,
-    help="Generate instructions from folder definitions instead of using instructions.md",
-)
 @require_database
-def debug_prompt(file_path: str, auto_instructions: bool) -> None:
+def debug_prompt(file_path: str) -> None:
     """
     Generate and display the LLM prompt for a specific file.
 
@@ -3327,12 +3283,9 @@ def debug_prompt(file_path: str, auto_instructions: bool) -> None:
     Arguments:
         FILE_PATH: Path to the document file (relative to current directory).
 
-    Options:
-        --auto-instructions: Generate instructions from folder definitions instead of instructions.md.
-
     Examples:
         - 'docman debug-prompt invoice.pdf': Show prompt for invoice.pdf
-        - 'docman debug-prompt docs/report.pdf --auto-instructions': Use folder definitions
+        - 'docman debug-prompt docs/report.pdf': Show prompt for report.pdf
     """
     from docman.processor import ProcessingResult, process_document_file
     from sqlalchemy import select
@@ -3472,41 +3425,16 @@ def debug_prompt(file_path: str, auto_instructions: bool) -> None:
             except Exception:
                 supports_structured_output = True
 
-        # Load organization instructions
-        folder_definitions = None
-        default_filename_convention = None
-
-        if auto_instructions:
-            from docman.repo_config import get_default_filename_convention
-
-            folder_definitions = get_folder_definitions(repo_root)
-            if not folder_definitions:
-                click.secho(
-                    "Error: No folder definitions found. Cannot use --auto-instructions.",
-                    fg="red",
-                    err=True,
-                )
-                click.echo("Run 'docman define <path> --desc \"description\"' to create folder definitions.")
-                raise click.Abort()
-
-            default_filename_convention = get_default_filename_convention(repo_root)
-            try:
-                organization_instructions = generate_instructions_from_folders(
-                    folder_definitions, repo_root, default_filename_convention
-                )
-            except ValueError as e:
-                click.secho(f"Error: {e}", fg="red", err=True)
-                raise click.Abort()
-        else:
-            organization_instructions = load_organization_instructions(repo_root)
-            if not organization_instructions:
-                click.secho(
-                    "Error: Document organization instructions are required.",
-                    fg="red",
-                    err=True,
-                )
-                click.echo("Run 'docman config set-instructions' to create them.")
-                raise click.Abort()
+        # Load organization instructions from folder definitions
+        organization_instructions = generate_instructions(repo_root)
+        if not organization_instructions:
+            click.secho(
+                "Error: No folder definitions found.",
+                fg="red",
+                err=True,
+            )
+            click.echo("Run 'docman define <path> --desc \"description\"' to create folder definitions.")
+            raise click.Abort()
 
         # Build prompts
         system_prompt = build_system_prompt(use_structured_output=supports_structured_output)
@@ -3846,90 +3774,6 @@ def llm_test(name: str | None) -> None:
 def config() -> None:
     """Manage repository configuration."""
     pass
-
-
-@config.command(name="set-instructions")
-@click.option("--text", type=str, help="Set instructions directly from command line")
-@click.option("--path", type=str, default=".", help="Repository path (default: current directory)")
-def config_set_instructions(text: str | None, path: str) -> None:
-    """Set document organization instructions for a repository.
-
-    Opens the instructions file in your default editor ($EDITOR) if --text is not provided.
-    Use this to define how documents should be organized in your repository.
-
-    Examples:
-        docman config set-instructions
-        docman config set-instructions --text "Organize by date and category"
-        docman config set-instructions --path /path/to/repo
-    """
-    # Find repository root
-    try:
-        repo_root = get_repository_root(start_path=Path(path).resolve())
-    except RepositoryError:
-        raise click.Abort()
-
-    if text is not None:
-        # Set instructions directly from command line
-        try:
-            save_instructions(repo_root, text)
-            click.secho("✓ Instructions saved successfully!", fg="green")
-        except Exception as e:
-            click.secho(f"Error: Failed to save instructions: {e}", fg="red")
-            raise click.Abort()
-    else:
-        # Open editor
-        click.echo("Opening instructions file in editor...")
-        if edit_instructions_interactive(repo_root):
-            click.secho("✓ Instructions updated!", fg="green")
-        else:
-            click.secho("Error: Could not open editor. Set $EDITOR environment variable or use --text.", fg="red")
-            raise click.Abort()
-
-
-@config.command(name="show-instructions")
-@click.option("--path", type=str, default=".", help="Repository path (default: current directory)")
-def config_show_instructions(path: str) -> None:
-    """Show document organization instructions for a repository.
-
-    Displays the current document organization instructions and default filename
-    convention for the repository.
-
-    Examples:
-        docman config show-instructions
-        docman config show-instructions --path /path/to/repo
-    """
-    from docman.repo_config import get_default_filename_convention
-
-    # Find repository root
-    try:
-        repo_root = get_repository_root(start_path=Path(path).resolve())
-    except RepositoryError:
-        raise click.Abort()
-
-    # Load default filename convention
-    default_convention = get_default_filename_convention(repo_root)
-
-    # Display default filename convention if set
-    if default_convention:
-        click.echo()
-        click.secho("Default Filename Convention:", bold=True)
-        click.echo(f"  {default_convention}")
-        click.echo()
-
-    # Load instructions
-    instructions = load_instructions(repo_root)
-
-    if instructions:
-        click.secho("Document Organization Instructions:", bold=True)
-        click.echo()
-        click.echo(instructions)
-        click.echo()
-    else:
-        if not default_convention:
-            click.echo()
-        click.echo("No document organization instructions found for this repository.")
-        click.echo()
-        click.echo("Run 'docman config set-instructions' to create them.")
 
 
 @config.command(name="set-default-filename-convention")

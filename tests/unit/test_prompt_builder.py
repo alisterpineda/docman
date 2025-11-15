@@ -10,9 +10,8 @@ from docman.prompt_builder import (
     build_system_prompt,
     build_user_prompt,
     clear_prompt_cache,
+    generate_instructions,
     generate_instructions_from_folders,
-    load_or_generate_instructions,
-    load_organization_instructions,
     serialize_folder_definitions,
 )
 from docman.repo_config import FolderDefinition
@@ -70,131 +69,6 @@ class TestTruncateContentSmart:
                 f"for content length {content_len}"
             )
             assert was_truncated is True
-
-
-class TestLoadOrganizationInstructions:
-    """Tests for load_organization_instructions function."""
-
-    def test_no_instructions_file(self, tmp_path: Path) -> None:
-        """Test when instructions file doesn't exist."""
-        result = load_organization_instructions(tmp_path)
-        assert result is None
-
-    def test_empty_instructions_file(self, tmp_path: Path) -> None:
-        """Test when instructions file is empty."""
-        docman_dir = tmp_path / ".docman"
-        docman_dir.mkdir()
-        instructions_file = docman_dir / "instructions.md"
-        instructions_file.write_text("")
-
-        result = load_organization_instructions(tmp_path)
-        assert result is None
-
-    def test_whitespace_only_instructions(self, tmp_path: Path) -> None:
-        """Test when instructions file contains only whitespace."""
-        docman_dir = tmp_path / ".docman"
-        docman_dir.mkdir()
-        instructions_file = docman_dir / "instructions.md"
-        instructions_file.write_text("   \n\t\n   ")
-
-        result = load_organization_instructions(tmp_path)
-        assert result is None
-
-    def test_valid_instructions(self, tmp_path: Path) -> None:
-        """Test when instructions file has valid content."""
-        docman_dir = tmp_path / ".docman"
-        docman_dir.mkdir()
-        instructions_file = docman_dir / "instructions.md"
-        content = "Organize by date and category"
-        instructions_file.write_text(content)
-
-        result = load_organization_instructions(tmp_path)
-        assert result == content
-
-    def test_instructions_with_whitespace(self, tmp_path: Path) -> None:
-        """Test that leading/trailing whitespace is stripped."""
-        docman_dir = tmp_path / ".docman"
-        docman_dir.mkdir()
-        instructions_file = docman_dir / "instructions.md"
-        instructions_file.write_text("\n  Some instructions  \n")
-
-        result = load_organization_instructions(tmp_path)
-        assert result == "Some instructions"
-
-
-class TestLoadOrGenerateInstructions:
-    """Tests for load_or_generate_instructions function."""
-
-    def test_loads_from_file_when_available(self, tmp_path: Path) -> None:
-        """Test that instructions are loaded from file when available."""
-        docman_dir = tmp_path / ".docman"
-        docman_dir.mkdir()
-        instructions_file = docman_dir / "instructions.md"
-        instructions_file.write_text("Test instructions from file")
-
-        result = load_or_generate_instructions(tmp_path)
-        assert result == "Test instructions from file"
-
-    def test_generates_from_folders_when_file_missing(self, tmp_path: Path) -> None:
-        """Test that instructions are generated from folder definitions when file is missing."""
-        docman_dir = tmp_path / ".docman"
-        docman_dir.mkdir()
-        config_file = docman_dir / "config.yaml"
-        config_file.write_text(
-            """
-organization:
-  folders:
-    Documents:
-      description: "All documents"
-"""
-        )
-
-        result = load_or_generate_instructions(tmp_path)
-        assert result is not None
-        assert "Documents" in result
-        assert "All documents" in result
-
-    def test_prefers_file_over_folder_definitions(self, tmp_path: Path) -> None:
-        """Test that file is preferred when both file and folder definitions exist."""
-        docman_dir = tmp_path / ".docman"
-        docman_dir.mkdir()
-
-        # Create both instructions.md and folder definitions
-        instructions_file = docman_dir / "instructions.md"
-        instructions_file.write_text("Instructions from file")
-
-        config_file = docman_dir / "config.yaml"
-        config_file.write_text(
-            """
-organization:
-  folders:
-    Documents:
-      description: "All documents"
-"""
-        )
-
-        result = load_or_generate_instructions(tmp_path)
-        # Should get content from file, not generated from folders
-        assert result == "Instructions from file"
-
-    def test_returns_none_when_both_missing(self, tmp_path: Path) -> None:
-        """Test that None is returned when neither source is available."""
-        # Create .docman directory but no instructions or folder definitions
-        docman_dir = tmp_path / ".docman"
-        docman_dir.mkdir()
-
-        result = load_or_generate_instructions(tmp_path)
-        assert result is None
-
-    def test_handles_empty_folder_definitions(self, tmp_path: Path) -> None:
-        """Test that None is returned when folder definitions are empty."""
-        docman_dir = tmp_path / ".docman"
-        docman_dir.mkdir()
-        config_file = docman_dir / "config.yaml"
-        config_file.write_text("organization:\n  folders: {}\n")
-
-        result = load_or_generate_instructions(tmp_path)
-        assert result is None
 
 
 class TestBuildSystemPrompt:

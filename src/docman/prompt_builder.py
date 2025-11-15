@@ -54,38 +54,8 @@ def _truncate_content_smart(
     return f"{truncated}{marker}", True
 
 
-def load_organization_instructions(repo_root: Path) -> str | None:
-    """Load document organization instructions from repository config.
-
-    Args:
-        repo_root: The repository root directory.
-
-    Returns:
-        Document organization instructions content, or None if not found.
-    """
-    instructions_path = repo_root / ".docman" / "instructions.md"
-
-    if not instructions_path.exists():
-        return None
-
-    try:
-        content = instructions_path.read_text().strip()
-        return content if content else None
-    except Exception:
-        # If we can't read the file, treat as if it doesn't exist
-        return None
-
-
-def load_or_generate_instructions(repo_root: Path) -> str | None:
-    """Load instructions from file or generate from folder definitions.
-
-    This helper function tries multiple sources for organization instructions:
-    1. First tries to load from instructions.md file
-    2. If that fails, tries to generate from folder definitions
-    3. Returns None only if both approaches fail
-
-    This allows code paths like regeneration to work regardless of whether
-    the user originally used instructions.md or --auto-instructions.
+def generate_instructions(repo_root: Path) -> str | None:
+    """Generate organization instructions from folder definitions.
 
     Displays warnings for undefined variable patterns and provides fallback guidance.
 
@@ -93,28 +63,21 @@ def load_or_generate_instructions(repo_root: Path) -> str | None:
         repo_root: The repository root directory.
 
     Returns:
-        Organization instructions content, or None if neither source is available.
+        Organization instructions content, or None if no folder definitions exist.
     """
-    # First try to load from instructions.md
-    instructions = load_organization_instructions(repo_root)
-    if instructions:
-        return instructions
-
-    # Fall back to generating from folder definitions
     from docman.repo_config import (
         get_default_filename_convention,
         get_folder_definitions,
     )
 
     folder_definitions = get_folder_definitions(repo_root)
-    if folder_definitions:
-        default_convention = get_default_filename_convention(repo_root)
-        return generate_instructions_from_folders(
-            folder_definitions, repo_root, default_convention
-        )
+    if not folder_definitions:
+        return None
 
-    # Both sources failed
-    return None
+    default_convention = get_default_filename_convention(repo_root)
+    return generate_instructions_from_folders(
+        folder_definitions, repo_root, default_convention
+    )
 
 
 def generate_instructions_from_folders(

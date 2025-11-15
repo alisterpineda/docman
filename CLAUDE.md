@@ -71,8 +71,7 @@ alembic -c src/docman/alembic.ini history
    - Test override: `DOCMAN_APP_CONFIG_DIR` environment variable
 
 2. **Repository-level config**: Project-specific settings stored in `<project>/.docman/`
-   - `config.yaml`: Repository configuration (stores folder definitions)
-   - `instructions.md`: Document organization instructions (required for LLM prompts)
+   - `config.yaml`: Repository configuration (stores folder definitions and variable patterns)
 
 ### Database Schema (SQLAlchemy + Alembic)
 
@@ -169,7 +168,7 @@ Three main tables model document tracking and operations:
    - Regenerates if any changed
 
 7. **LLM Suggestion** (`cli.py` `plan` command):
-   - Load organization instructions from `.docman/instructions.md`
+   - Generate organization instructions from folder definitions
    - Build prompts using `prompt_builder.py`
    - Call LLM provider for suggestions
    - Store in `Operation` with all tracking fields
@@ -274,9 +273,9 @@ docman scan new_folder/        # Scan only new documents
 docman plan                    # Generate suggestions for newly scanned files
 ```
 
-*Re-organize after instruction changes*:
+*Re-organize after folder definition changes*:
 ```bash
-# Edit .docman/instructions.md with new organization rules
+# Update folder definitions or variable patterns in .docman/config.yaml
 docman plan              # Auto-resets organized files to unorganized (prompt changed)
                         # Generates new suggestions for all files
 ```
@@ -330,7 +329,6 @@ docman unmark archives/ -r -y   # Reset to unorganized to re-process
   - Pattern uses variable placeholders (e.g., `{year}-{month}-{description}`)
   - Applied to all folders unless overridden by folder-specific convention
   - **Note**: All variables used must be defined first via `docman pattern add`
-- `docman config show-instructions`: Display organization instructions and default filename convention
 - `docman config list-dirs`: Display folder tree with box-drawing characters and filename conventions
   - `--path` option to specify repository location
   - Shows default convention at top if set
@@ -395,9 +393,6 @@ docman define Career/{FirstName}/{Year}
   - Accepts `default_filename_convention` parameter for repository-level default
   - Generates three sections: folder hierarchy, filename conventions, and variable pattern extraction guidance
   - **Permissive validation**: Displays warnings for undefined variable patterns but continues execution with fallback guidance
-- **`load_or_generate_instructions()`**: Helper that tries both instruction sources (file then folder definitions)
-  - Used by regeneration flows (PROCESS action in review command) to work with either source
-  - Ensures feature works consistently across all code paths
 - **Generated content includes**:
   - Folder hierarchy tree with descriptions
   - Default filename convention (if set) with inheritance rules
@@ -413,10 +408,8 @@ docman define Career/{FirstName}/{Year}
   - Includes: system prompt + organization instructions + model name + serialized folder definitions (including filename conventions)
   - Hash computed consistently across plan command, regeneration, and reprocessing flows
   - Changes to folder structure, filename conventions, or variable patterns automatically invalidate existing operations
-  - Prevents false invalidations when reprocessing auto-instruction operations
-- **Usage**: Run `docman plan --auto-instructions` to use folder definitions instead of `instructions.md`
 
-**Example Workflow with Auto-Instructions**:
+**Example Workflow**:
 ```bash
 # Step 1: Define variable patterns first (required for use in folder paths and filename conventions)
 docman pattern add year --desc "4-digit year in YYYY format"
@@ -436,7 +429,7 @@ docman define Financial/receipts/{category} --desc "Receipts by category"
 
 # Step 4: Use folder definitions to generate instructions automatically
 docman scan -r
-docman plan --auto-instructions
+docman plan
 
 # Folder definitions and filename conventions are automatically converted to LLM instructions:
 # - Folder hierarchy with descriptions
@@ -460,7 +453,6 @@ Main commands:
 - `docman plan [path]`: Generate LLM organization suggestions for scanned documents
   - `--reprocess`: Reprocess all files, including those already organized or ignored
   - `--scan`: Run scan first, then generate suggestions (combines both steps)
-  - `--auto-instructions`: Generate instructions from folder definitions instead of using `instructions.md`
   - Shows warnings when duplicates detected to save LLM costs
   - Shows warnings for unscanned files
   - **Note**: Requires documents to be scanned first via `docman scan` (or use `--scan` flag)

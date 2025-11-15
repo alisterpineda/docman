@@ -190,10 +190,10 @@ class TestDocmanDebugPrompt:
         assert "USER PROMPT" in result.output
         assert "new_document.md" in result.output
 
-    def test_debug_prompt_with_auto_instructions(
+    def test_debug_prompt_with_folder_definitions(
         self, cli_runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """Test debug-prompt with --auto-instructions flag."""
+        """Test debug-prompt generates instructions from folder definitions."""
         repo_dir = self.setup_isolated_env(tmp_path, monkeypatch)
         monkeypatch.chdir(repo_dir)
 
@@ -219,13 +219,13 @@ class TestDocmanDebugPrompt:
         # Add to database
         self.create_document_in_db(str(repo_dir), "test.txt", "Test content")
 
-        result = cli_runner.invoke(main, ["debug-prompt", "test.txt", "--auto-instructions"])
+        result = cli_runner.invoke(main, ["debug-prompt", "test.txt"])
 
         assert result.exit_code == 0
         assert "DEBUG PROMPT OUTPUT" in result.output
         assert "SYSTEM PROMPT" in result.output
         assert "USER PROMPT" in result.output
-        # Should include auto-generated instructions
+        # Should include auto-generated instructions from folder definitions
         assert "Financial" in result.output or "Invoices" in result.output
 
     def test_debug_prompt_shows_metadata(
