@@ -218,6 +218,14 @@ class TestFolderDefinition:
 
         assert result == {"description": "Test folder"}
 
+    def test_to_dict_without_description(self) -> None:
+        """Test to_dict without description (should omit description key)."""
+        folder = FolderDefinition()
+        result = folder.to_dict()
+
+        assert result == {}
+        assert "description" not in result
+
     def test_to_dict_with_subfolders(self) -> None:
         """Test to_dict with nested subfolders."""
         subfolder = FolderDefinition(description="Subfolder")
@@ -250,11 +258,18 @@ class TestFolderDefinition:
         assert folder.folders["sub"].description == "Subfolder"
 
     def test_from_dict_missing_description(self) -> None:
-        """Test from_dict with missing description (should default to empty)."""
+        """Test from_dict with missing description (should default to None)."""
         data: dict = {"folders": {}}
         folder = FolderDefinition.from_dict(data)
 
-        assert folder.description == ""
+        assert folder.description is None
+
+    def test_from_dict_empty_string_description(self) -> None:
+        """Test from_dict with empty string description (should normalize to None)."""
+        data = {"description": ""}
+        folder = FolderDefinition.from_dict(data)
+
+        assert folder.description is None
 
     def test_from_dict_missing_folders(self) -> None:
         """Test from_dict with missing folders (should default to empty dict)."""
@@ -560,6 +575,36 @@ class TestAddFolderDefinition:
 
         folders = get_folder_definitions(tmp_path)
         assert folders["Financial"].filename_convention == "{year}-{category}"
+
+    def test_add_folder_without_description(self, tmp_path: Path) -> None:
+        """Test adding folder without description."""
+        add_folder_definition(tmp_path, "Financial")
+
+        folders = get_folder_definitions(tmp_path)
+        assert "Financial" in folders
+        assert folders["Financial"].description is None
+
+    def test_preserve_existing_description_when_updating_without_desc(self, tmp_path: Path) -> None:
+        """Test that existing description is preserved when updating without providing new description."""
+        add_folder_definition(tmp_path, "Financial", "Financial documents")
+        add_folder_definition(tmp_path, "Financial", filename_convention="{year}-{month}")
+
+        folders = get_folder_definitions(tmp_path)
+        assert folders["Financial"].description == "Financial documents"
+        assert folders["Financial"].filename_convention == "{year}-{month}"
+
+    def test_can_clear_description_by_updating(self, tmp_path: Path) -> None:
+        """Test that description can be explicitly cleared (though not common use case)."""
+        add_folder_definition(tmp_path, "Financial", "Old description")
+        # Note: In practice, users would just not use --desc to preserve existing.
+        # This tests the data model's ability to have None descriptions after being set.
+        # Direct manipulation for testing purposes:
+        config = load_repo_config(tmp_path)
+        config["organization"]["folders"]["Financial"]["description"] = None
+        save_repo_config(tmp_path, config)
+
+        folders = get_folder_definitions(tmp_path)
+        assert folders["Financial"].description is None
 
 
 class TestGetDefaultFilenameConvention:

@@ -122,19 +122,48 @@ class TestDocmanDefine:
             assert result.exit_code == 1
             assert "Error" in result.output
 
-    def test_define_missing_desc_error(
+    def test_define_without_desc(
         self, cli_runner: CliRunner, tmp_path: Path
     ) -> None:
-        """Test that defining without --desc shows error."""
+        """Test that defining without --desc works (description is optional)."""
         # Initialize repository
         cli_runner.invoke(main, ["init", str(tmp_path)], input="n\n")
 
-        # Try to define without --desc from within repository
+        # Define without --desc from within repository
         with cli_runner.isolated_filesystem(temp_dir=tmp_path):
             result = cli_runner.invoke(main, ["define", "Financial"])
 
-            assert result.exit_code == 2  # Click parameter error
-            assert "Missing option" in result.output or "required" in result.output.lower()
+            assert result.exit_code == 0
+            assert "✓ Defined folder: Financial" in result.output
+
+        # Verify folder was created without description
+        folders = get_folder_definitions(tmp_path)
+        assert "Financial" in folders
+        assert folders["Financial"].description is None
+
+    def test_define_preserves_existing_desc_when_not_provided(
+        self, cli_runner: CliRunner, tmp_path: Path
+    ) -> None:
+        """Test that existing description is preserved when updating without providing --desc."""
+        # Initialize repository
+        cli_runner.invoke(main, ["init", str(tmp_path)], input="n\n")
+
+        # Define folder with description from within repository
+        with cli_runner.isolated_filesystem(temp_dir=tmp_path):
+            cli_runner.invoke(
+                main, ["define", "Financial", "--desc", "Financial documents"]
+            )
+
+            # Update with filename convention but no description
+            cli_runner.invoke(
+                main,
+                ["define", "Financial", "--filename-convention", "{year}-{month}"],
+            )
+
+        # Verify description was preserved
+        folders = get_folder_definitions(tmp_path)
+        assert folders["Financial"].description == "Financial documents"
+        assert folders["Financial"].filename_convention == "{year}-{month}"
 
     def test_define_not_in_repository(self, cli_runner: CliRunner, tmp_path: Path) -> None:
         """Test that define fails when not in a docman repository."""

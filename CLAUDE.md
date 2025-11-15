@@ -299,7 +299,8 @@ docman unmark archives/ -r -y   # Reset to unorganized to re-process
 **Overview**: Provides structured way for users to define document organization hierarchies and filename conventions without writing full instructions manually. Definitions are stored in `.docman/config.yaml` as recursive tree structure.
 
 **Architecture** (`repo_config.py`):
-- **`FolderDefinition`**: Dataclass with `description`, `filename_convention`, and nested `folders` dict
+- **`FolderDefinition`**: Dataclass with optional `description`, optional `filename_convention`, and nested `folders` dict
+  - `description` is optional and can be None for self-documenting structures (e.g., folders organized purely by variable patterns)
 - **Storage**: YAML format in `.docman/config.yaml` under `organization.folders`
 - **Variable patterns**: Supports placeholders like `{year}`, `{company}`, `{family_member}` in both folder paths and filename conventions
   - **User-defined**: All variable patterns must be explicitly defined before use
@@ -318,10 +319,11 @@ docman unmark archives/ -r -y   # Reset to unorganized to re-process
 - `docman pattern list`: List all defined variable patterns with descriptions
 - `docman pattern show <name>`: Show details of a specific variable pattern
 - `docman pattern remove <name>`: Remove a variable pattern (requires confirmation or `-y` flag)
-- `docman define <path> --desc "description" [--filename-convention "pattern"]`: Define/update folder with description and optional filename convention
+- `docman define <path> [--desc "description"] [--filename-convention "pattern"]`: Define/update folder with optional description and filename convention
   - Path uses `/` separator (e.g., `Financial/invoices/{year}`)
+  - `--desc` is optional - omit for self-documenting structures where variable patterns provide sufficient context
   - Creates nested structure automatically
-  - Updates existing folders without losing children
+  - Updates existing folders without losing children (preserves existing description if --desc not provided)
   - `--filename-convention` sets folder-specific naming pattern (e.g., `{year}-{month}-invoice`)
   - **Note**: All variables used must be defined first via `docman pattern add`
 - `docman config set-default-filename-convention "<pattern>"`: Set repository-wide default filename convention
@@ -369,6 +371,21 @@ docman config list-dirs
 # │  └─ {year}
 # └─ receipts
 #    └─ {category}
+
+# Example with optional descriptions (self-documenting structure):
+# Step 1: Define variable patterns first
+docman pattern add FirstName --desc "First name of family member"
+docman pattern add Year --desc "4-digit year in YYYY format"
+
+# Step 2: Define folders without descriptions (structure is self-explanatory via variable patterns)
+docman define Health
+docman define Health/{FirstName}
+docman define Health/{FirstName}/{Year}
+docman define Career
+docman define Career/{FirstName}/{Year}
+
+# The folder structure and variable pattern descriptions provide sufficient context for the LLM
+# to understand that Health and Career are top-level categories organized by person and year.
 ```
 
 **LLM Integration** (`prompt_builder.py`):

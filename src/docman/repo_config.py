@@ -31,6 +31,8 @@ class FolderDefinition:
 
     Attributes:
         description: Human-readable description of what belongs in this folder.
+            Optional - can be None if folder structure is self-documenting via
+            variable patterns and context.
         folders: Dictionary mapping folder names to their FolderDefinition objects.
         filename_convention: Optional filename template pattern for files in this folder.
             Uses variable placeholders like {year}, {month}, {description}, etc.
@@ -38,7 +40,7 @@ class FolderDefinition:
             Example: "{year}-{month}-invoice" (extension preserved automatically)
     """
 
-    description: str
+    description: str | None = None
     folders: dict[str, "FolderDefinition"] = field(default_factory=dict)
     filename_convention: str | None = None
 
@@ -46,9 +48,12 @@ class FolderDefinition:
         """Convert to dictionary representation for YAML serialization.
 
         Returns:
-            Dictionary with 'description', optional 'filename_convention', and 'folders' keys.
+            Dictionary with optional 'description', optional 'filename_convention',
+            and 'folders' keys. Description key is omitted if None for cleaner YAML.
         """
-        result: dict[str, Any] = {"description": self.description}
+        result: dict[str, Any] = {}
+        if self.description is not None:
+            result["description"] = self.description
         if self.filename_convention is not None:
             result["filename_convention"] = self.filename_convention
         if self.folders:
@@ -62,12 +67,16 @@ class FolderDefinition:
         """Create FolderDefinition from dictionary representation.
 
         Args:
-            data: Dictionary with 'description', optional 'filename_convention', and optional 'folders' keys.
+            data: Dictionary with optional 'description', optional 'filename_convention',
+                and optional 'folders' keys.
 
         Returns:
             FolderDefinition instance.
         """
-        description = data.get("description", "")
+        description = data.get("description")
+        # Normalize empty strings to None for backwards compatibility
+        if description == "":
+            description = None
         filename_convention = data.get("filename_convention")
         folders_data = data.get("folders", {})
         folders = {
@@ -172,7 +181,7 @@ def get_folder_definitions(repo_root: Path) -> dict[str, FolderDefinition]:
 def add_folder_definition(
     repo_root: Path,
     path: str,
-    description: str,
+    description: str | None = None,
     filename_convention: str | None = None,
 ) -> None:
     """Add or update a folder definition.
@@ -183,7 +192,8 @@ def add_folder_definition(
     Args:
         repo_root: The repository root directory.
         path: Folder path, using '/' as separator (e.g., "Financial/invoices/{year}").
-        description: Human-readable description of the folder.
+        description: Human-readable description of the folder. Optional - if None,
+            preserves existing description when updating or omits it for new folders.
         filename_convention: Optional filename template pattern for this folder.
 
     Raises:
@@ -211,12 +221,14 @@ def add_folder_definition(
     current_level = config["organization"]["folders"]
     for i, part in enumerate(parts):
         if part not in current_level:
-            # Create new folder entry
-            current_level[part] = {"description": "", "folders": {}}
+            # Create new folder entry without description (will be added if provided)
+            current_level[part] = {"folders": {}}
 
         # If this is the last part, update description and filename_convention
         if i == len(parts) - 1:
-            current_level[part]["description"] = description
+            # Only set description if explicitly provided (preserves existing or omits for new)
+            if description is not None:
+                current_level[part]["description"] = description
             if filename_convention is not None:
                 current_level[part]["filename_convention"] = filename_convention
         else:

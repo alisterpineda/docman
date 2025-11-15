@@ -205,8 +205,11 @@ def _render_folder_hierarchy(
     prefix = "  " * indent
 
     for name, definition in folders.items():
-        # Add folder name and description
-        lines.append(f"{prefix}- **{name}/** - {definition.description}")
+        # Add folder name and description (only if description is present)
+        if definition.description:
+            lines.append(f"{prefix}- **{name}/** - {definition.description}")
+        else:
+            lines.append(f"{prefix}- **{name}/**")
 
         # Recursively add subfolders
         if definition.folders:

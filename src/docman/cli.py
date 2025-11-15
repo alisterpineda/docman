@@ -3547,15 +3547,20 @@ def debug_prompt(file_path: str, auto_instructions: bool) -> None:
 
 @main.command()
 @click.argument("path", type=str)
-@click.option("--desc", type=str, required=True, help="Description of the folder")
+@click.option(
+    "--desc",
+    type=str,
+    default=None,
+    help="Description of the folder (optional - omit for self-documenting structure)",
+)
 @click.option(
     "--filename-convention",
     type=str,
     default=None,
     help="Optional filename template pattern (e.g., '{year}-{month}-invoice')",
 )
-def define(path: str, desc: str, filename_convention: str | None) -> None:
-    """Define a folder with its description in the organization structure.
+def define(path: str, desc: str | None, filename_convention: str | None) -> None:
+    """Define a folder with optional description in the organization structure.
 
     Creates or updates a folder definition in the repository configuration.
     Paths use '/' as separator and can include variable patterns like {year}.
@@ -3564,13 +3569,15 @@ def define(path: str, desc: str, filename_convention: str | None) -> None:
         PATH: Folder path (e.g., "Financial/invoices/{year}")
 
     Options:
-        --desc: Human-readable description of what belongs in this folder
+        --desc: Human-readable description of what belongs in this folder (optional).
+                Omit for self-documenting structures using variable patterns.
         --filename-convention: Optional filename template with variables like {year}, {month}, etc.
                               File extensions are preserved automatically.
 
     Examples:
         - 'docman define Financial --desc "Financial documents"'
         - 'docman define Financial/invoices/{year} --desc "Invoices by year (YYYY format)"'
+        - 'docman define Financial/invoices/{year}' (no description - structure is self-documenting)
         - 'docman define Financial/invoices/{year} --desc "Invoices" --filename-convention "{company}-invoice-{year}-{month}"'
         - 'docman define Personal/medical/{family_member} --desc "Medical records by family member"'
     """

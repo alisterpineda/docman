@@ -1681,6 +1681,9 @@ class TestDocmanPlanAutoInstructions:
         config_file = path / ".docman" / "config.yaml"
         config_content = """
 organization:
+  variable_patterns:
+    year: "4-digit year in YYYY format"
+    category: "Document category"
   folders:
     Financial:
       description: "Financial documents"
@@ -1889,6 +1892,9 @@ organization:
         config_file = repo_dir / ".docman" / "config.yaml"
         new_config_content = """
 organization:
+  variable_patterns:
+    year: "4-digit year in YYYY format"
+    month: "2-digit month in MM format"
   folders:
     Financial:
       description: "Updated financial documents"
