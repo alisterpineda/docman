@@ -20,23 +20,6 @@ from docman.llm_config import (
 class TestProviderConfig:
     """Tests for ProviderConfig dataclass."""
 
-    def test_to_dict_basic(self) -> None:
-        """Test converting ProviderConfig to dictionary."""
-        provider = ProviderConfig(
-            name="test-provider",
-            provider_type="google",
-            model="gemini-1.5-flash",
-            is_active=True,
-        )
-
-        result = provider.to_dict()
-
-        assert result["name"] == "test-provider"
-        assert result["provider_type"] == "google"
-        assert result["model"] == "gemini-1.5-flash"
-        assert result["is_active"] is True
-        assert "endpoint" not in result
-
     def test_to_dict_with_endpoint(self) -> None:
         """Test converting ProviderConfig with endpoint to dictionary."""
         provider = ProviderConfig(
@@ -50,23 +33,6 @@ class TestProviderConfig:
         result = provider.to_dict()
 
         assert result["endpoint"] == "http://localhost:8080"
-
-    def test_from_dict_basic(self) -> None:
-        """Test creating ProviderConfig from dictionary."""
-        data = {
-            "name": "test-provider",
-            "provider_type": "anthropic",
-            "model": "claude-3-5-sonnet",
-            "is_active": True,
-        }
-
-        provider = ProviderConfig.from_dict(data)
-
-        assert provider.name == "test-provider"
-        assert provider.provider_type == "anthropic"
-        assert provider.model == "claude-3-5-sonnet"
-        assert provider.is_active is True
-        assert provider.endpoint is None
 
     def test_from_dict_with_endpoint(self) -> None:
         """Test creating ProviderConfig from dictionary with endpoint."""

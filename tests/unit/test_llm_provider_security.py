@@ -10,7 +10,16 @@ import pytest
 from unittest.mock import Mock, patch
 
 from docman.llm_config import ProviderConfig
-from docman.llm_providers import GoogleGeminiProvider, OpenAICompatibleProvider
+from docman.llm_providers import (
+    GoogleGeminiProvider,
+    OpenAICompatibleProvider,
+    GeminiSafetyBlockError,
+    GeminiEmptyResponseError,
+    OpenAIAPIError,
+    OpenAIEmptyResponseError,
+    get_provider,
+    list_available_models,
+)
 
 
 class TestGoogleGeminiProviderSecurity:

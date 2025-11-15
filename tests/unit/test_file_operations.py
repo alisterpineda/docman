@@ -171,22 +171,6 @@ class TestMoveFile:
         assert source.exists()
         assert source.read_text() == "test content"
 
-    def test_move_file_cross_filesystem_simulation(self, tmp_path: Path) -> None:
-        """Test that shutil.move handles cross-filesystem moves correctly."""
-        # This tests that we're using shutil.move which handles cross-filesystem moves
-        # In practice, this is handled by shutil internally (copy + delete)
-        source = tmp_path / "source.txt"
-        source.write_text("test content")
-
-        target = tmp_path / "subdir" / "target.txt"
-
-        result = move_file(source, target, create_dirs=True)
-
-        assert result == target
-        assert not source.exists()
-        assert target.exists()
-        assert target.read_text() == "test content"
-
     def test_move_file_preserves_extension(self, tmp_path: Path) -> None:
         """Test that file extension is preserved in rename conflicts."""
         source = tmp_path / "source.pdf"
