@@ -71,10 +71,16 @@ testpaths = ["tests"]
 python_files = ["test_*.py"]
 python_classes = ["Test*"]
 python_functions = ["test_*"]
+markers = [
+    "slow: marks tests as slow (integration tests, document processing, etc.)",
+    "unit: marks tests as unit tests (fast, isolated tests)",
+    "integration: marks tests as integration tests (test multiple components together)",
+]
 addopts = [
     "--cov=docman",
     "--cov-report=term-missing",
     "--cov-report=html",
+    "-v",
 ]
 
 [tool.coverage.run]

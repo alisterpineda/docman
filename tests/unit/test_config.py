@@ -17,11 +17,6 @@ from docman.config import (
 class TestGetAppConfigDir:
     """Tests for get_app_config_dir function."""
 
-    def test_returns_path_object(self) -> None:
-        """Test that the function returns a Path object."""
-        result = get_app_config_dir()
-        assert isinstance(result, Path)
-
     def test_default_path_contains_docman(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """Test that the default path contains 'docman' directory."""
         # Clear the environment variable set by the autouse fixture to test default behavior
@@ -38,44 +33,18 @@ class TestGetAppConfigDir:
         result = get_app_config_dir()
         assert result == custom_dir
 
-    def test_env_var_not_set_uses_default(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        """Test that when env var is not set, default is used."""
-        monkeypatch.delenv("DOCMAN_APP_CONFIG_DIR", raising=False)
-
-        result = get_app_config_dir()
-        assert "docman" in str(result).lower()
-
 
 class TestGetAppConfigPath:
     """Tests for get_app_config_path function."""
 
-    def test_returns_path_object(self) -> None:
-        """Test that the function returns a Path object."""
-        result = get_app_config_path()
-        assert isinstance(result, Path)
-
-    def test_path_ends_with_config_yaml(self) -> None:
-        """Test that the path ends with config.yaml."""
-        result = get_app_config_path()
-        assert result.name == "config.yaml"
-
-    def test_path_contains_docman(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        """Test that the path contains 'docman' directory."""
-        # Clear the environment variable set by the autouse fixture to test default behavior
+    def test_path_structure(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Test that the path has correct structure."""
+        # Clear env var to test default
         monkeypatch.delenv("DOCMAN_APP_CONFIG_DIR", raising=False)
 
         result = get_app_config_path()
+        assert result.name == "config.yaml"
         assert "docman" in str(result).lower()
-
-    def test_env_var_override_affects_path(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        """Test that env var override affects the config path."""
-        custom_dir = tmp_path / "custom_config"
-        monkeypatch.setenv("DOCMAN_APP_CONFIG_DIR", str(custom_dir))
-
-        result = get_app_config_path()
-        assert result == custom_dir / "config.yaml"
 
 
 class TestEnsureAppConfig:

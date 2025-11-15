@@ -18,69 +18,37 @@ from docman.llm_config import (
 
 
 class TestProviderConfig:
-    """Tests for ProviderConfig dataclass."""
+    """Tests for ProviderConfig dataclass serialization."""
 
-    def test_to_dict_basic(self) -> None:
-        """Test converting ProviderConfig to dictionary."""
-        provider = ProviderConfig(
+    def test_serialization_roundtrip(self) -> None:
+        """Test ProviderConfig to_dict and from_dict roundtrip."""
+        # Test with all fields
+        provider1 = ProviderConfig(
             name="test-provider",
             provider_type="google",
             model="gemini-1.5-flash",
+            endpoint="http://localhost:8080",
             is_active=True,
         )
+        data1 = provider1.to_dict()
+        restored1 = ProviderConfig.from_dict(data1)
+        assert restored1.name == provider1.name
+        assert restored1.provider_type == provider1.provider_type
+        assert restored1.model == provider1.model
+        assert restored1.endpoint == provider1.endpoint
+        assert restored1.is_active == provider1.is_active
 
-        result = provider.to_dict()
-
-        assert result["name"] == "test-provider"
-        assert result["provider_type"] == "google"
-        assert result["model"] == "gemini-1.5-flash"
-        assert result["is_active"] is True
-        assert "endpoint" not in result
-
-    def test_to_dict_with_endpoint(self) -> None:
-        """Test converting ProviderConfig with endpoint to dictionary."""
-        provider = ProviderConfig(
-            name="test-provider",
-            provider_type="local",
-            model="llama-3",
-            endpoint="http://localhost:8080",
+        # Test without optional endpoint (default is None)
+        provider2 = ProviderConfig(
+            name="another",
+            provider_type="anthropic",
+            model="claude-3",
             is_active=False,
         )
-
-        result = provider.to_dict()
-
-        assert result["endpoint"] == "http://localhost:8080"
-
-    def test_from_dict_basic(self) -> None:
-        """Test creating ProviderConfig from dictionary."""
-        data = {
-            "name": "test-provider",
-            "provider_type": "anthropic",
-            "model": "claude-3-5-sonnet",
-            "is_active": True,
-        }
-
-        provider = ProviderConfig.from_dict(data)
-
-        assert provider.name == "test-provider"
-        assert provider.provider_type == "anthropic"
-        assert provider.model == "claude-3-5-sonnet"
-        assert provider.is_active is True
-        assert provider.endpoint is None
-
-    def test_from_dict_with_endpoint(self) -> None:
-        """Test creating ProviderConfig from dictionary with endpoint."""
-        data = {
-            "name": "test-provider",
-            "provider_type": "local",
-            "model": "llama-3",
-            "endpoint": "http://localhost:8080",
-        }
-
-        provider = ProviderConfig.from_dict(data)
-
-        assert provider.endpoint == "http://localhost:8080"
-        assert provider.is_active is False  # Default value
+        data2 = provider2.to_dict()
+        assert "endpoint" not in data2
+        restored2 = ProviderConfig.from_dict(data2)
+        assert restored2.endpoint is None
 
 
 class TestAddProvider:

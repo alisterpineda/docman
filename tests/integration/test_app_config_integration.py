@@ -11,28 +11,11 @@ from docman.config import get_app_config_path
 
 
 class TestAppConfigIntegration:
-    """Integration tests for app-level config initialization."""
+    """Integration tests for app-level config initialization.
 
-    def test_app_config_created_on_init_command(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        """Test that app config is created when running init command."""
-        # Set up custom config dir for testing
-        config_dir = tmp_path / "system_config"
-        monkeypatch.setenv("DOCMAN_APP_CONFIG_DIR", str(config_dir))
-
-        # Run init command
-        runner = CliRunner()
-        with runner.isolated_filesystem(temp_dir=tmp_path):
-            result = runner.invoke(main, ["init"], input="n\n")
-
-        # Verify command succeeded
-        assert result.exit_code == 0
-
-        # Verify app config was created
-        config_path = get_app_config_path()
-        assert config_path.exists()
-        assert config_path.is_file()
+    Note: Basic app config creation and persistence are tested in unit tests.
+    These integration tests focus on command-specific behaviors.
+    """
 
     def test_app_config_not_created_on_version_command(self, tmp_path: Path) -> None:
         """Test that app config is NOT created when running --version.
@@ -74,31 +57,6 @@ class TestAppConfigIntegration:
         config_path = config_dir / "config.yaml"
         assert not config_path.exists()
 
-    def test_app_config_not_recreated_if_exists(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        """Test that app config is not overwritten if it already exists."""
-        # Set up custom config dir for testing
-        config_dir = tmp_path / "system_config"
-        monkeypatch.setenv("DOCMAN_APP_CONFIG_DIR", str(config_dir))
-
-        # Create config with custom content
-        config_dir.mkdir(parents=True)
-        config_path = config_dir / "config.yaml"
-        original_content = "custom: data\npreserved: true\n"
-        config_path.write_text(original_content)
-
-        # Run init command
-        runner = CliRunner()
-        with runner.isolated_filesystem(temp_dir=tmp_path):
-            result = runner.invoke(main, ["init"], input="n\n")
-
-        # Verify command succeeded
-        assert result.exit_code == 0
-
-        # Verify original content was preserved
-        assert config_path.read_text() == original_content
-
     @pytest.mark.skipif(
         getattr(os, "geteuid", lambda: 1)() == 0, reason="Permission tests don't work as root"
     )
@@ -125,58 +83,6 @@ class TestAppConfigIntegration:
         finally:
             # Clean up: restore permissions
             config_dir.chmod(0o755)
-
-    def test_multiple_commands_use_same_config(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        """Test that multiple commands use the same app config."""
-        # Set up custom config dir for testing
-        config_dir = tmp_path / "system_config"
-        monkeypatch.setenv("DOCMAN_APP_CONFIG_DIR", str(config_dir))
-
-        runner = CliRunner()
-
-        # Run first command
-        with runner.isolated_filesystem(temp_dir=tmp_path):
-            result1 = runner.invoke(main, ["init"], input="n\n")
-        assert result1.exit_code == 0
-
-        config_path = get_app_config_path()
-        assert config_path.exists()
-
-        # Get modification time
-        mtime1 = config_path.stat().st_mtime
-
-        # Run second command
-        result2 = runner.invoke(main, ["--version"])
-        assert result2.exit_code == 0
-
-        # Config should still exist
-        assert config_path.exists()
-
-        # Modification time should be the same (not recreated)
-        mtime2 = config_path.stat().st_mtime
-        assert mtime1 == mtime2
-
-    def test_env_var_override_respected(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        """Test that DOCMAN_APP_CONFIG_DIR environment variable is respected."""
-        # Set up custom config dir
-        custom_dir = tmp_path / "my_custom_location"
-        monkeypatch.setenv("DOCMAN_APP_CONFIG_DIR", str(custom_dir))
-
-        # Run command
-        runner = CliRunner()
-        with runner.isolated_filesystem(temp_dir=tmp_path):
-            result = runner.invoke(main, ["init"], input="n\n")
-
-        assert result.exit_code == 0
-
-        # Verify config was created in custom location
-        expected_path = custom_dir / "config.yaml"
-        assert expected_path.exists()
-        assert expected_path.is_file()
 
     def test_system_and_project_configs_are_separate(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch

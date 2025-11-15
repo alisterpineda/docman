@@ -18,113 +18,69 @@ from docman.repo_config import (
 
 
 class TestFolderDefinition:
-    """Tests for FolderDefinition dataclass."""
+    """Tests for FolderDefinition dataclass serialization."""
 
-    def test_to_dict_simple(self) -> None:
-        """Test to_dict with simple folder (no subfolders)."""
-        folder = FolderDefinition(description="Test folder")
-        result = folder.to_dict()
+    def test_to_dict_comprehensive(self) -> None:
+        """Test to_dict with various combinations of fields."""
+        # Simple folder without description
+        folder1 = FolderDefinition()
+        assert folder1.to_dict() == {}
 
-        assert result == {"description": "Test folder"}
+        # Simple folder with description
+        folder2 = FolderDefinition(description="Test folder")
+        assert folder2.to_dict() == {"description": "Test folder"}
 
-    def test_to_dict_without_description(self) -> None:
-        """Test to_dict without description (should omit description key)."""
-        folder = FolderDefinition()
-        result = folder.to_dict()
-
-        assert result == {}
-        assert "description" not in result
-
-    def test_to_dict_with_subfolders(self) -> None:
-        """Test to_dict with nested subfolders."""
-        subfolder = FolderDefinition(description="Subfolder")
-        folder = FolderDefinition(description="Main folder", folders={"sub": subfolder})
-        result = folder.to_dict()
-
-        assert result == {
-            "description": "Main folder",
-            "folders": {"sub": {"description": "Subfolder"}},
-        }
-
-    def test_from_dict_simple(self) -> None:
-        """Test from_dict with simple folder data."""
-        data = {"description": "Test folder"}
-        folder = FolderDefinition.from_dict(data)
-
-        assert folder.description == "Test folder"
-        assert folder.folders == {}
-
-    def test_from_dict_with_subfolders(self) -> None:
-        """Test from_dict with nested subfolders."""
-        data = {
-            "description": "Main folder",
-            "folders": {"sub": {"description": "Subfolder"}},
-        }
-        folder = FolderDefinition.from_dict(data)
-
-        assert folder.description == "Main folder"
-        assert "sub" in folder.folders
-        assert folder.folders["sub"].description == "Subfolder"
-
-    def test_from_dict_missing_description(self) -> None:
-        """Test from_dict with missing description (should default to None)."""
-        data: dict = {"folders": {}}
-        folder = FolderDefinition.from_dict(data)
-
-        assert folder.description is None
-
-    def test_from_dict_empty_string_description(self) -> None:
-        """Test from_dict with empty string description (should normalize to None)."""
-        data = {"description": ""}
-        folder = FolderDefinition.from_dict(data)
-
-        assert folder.description is None
-
-    def test_from_dict_missing_folders(self) -> None:
-        """Test from_dict with missing folders (should default to empty dict)."""
-        data = {"description": "Test"}
-        folder = FolderDefinition.from_dict(data)
-
-        assert folder.folders == {}
-
-    def test_to_dict_with_filename_convention(self) -> None:
-        """Test to_dict with filename_convention field."""
-        folder = FolderDefinition(
-            description="Test folder",
-            filename_convention="{year}-{month}-invoice"
+        # With filename convention
+        folder3 = FolderDefinition(
+            description="Test",
+            filename_convention="{year}-{month}",
         )
-        result = folder.to_dict()
-
-        assert result == {
-            "description": "Test folder",
-            "filename_convention": "{year}-{month}-invoice",
+        assert folder3.to_dict() == {
+            "description": "Test",
+            "filename_convention": "{year}-{month}",
         }
 
-    def test_to_dict_without_filename_convention(self) -> None:
-        """Test to_dict without filename_convention (should not include field)."""
-        folder = FolderDefinition(description="Test folder")
-        result = folder.to_dict()
-
-        assert result == {"description": "Test folder"}
-        assert "filename_convention" not in result
-
-    def test_from_dict_with_filename_convention(self) -> None:
-        """Test from_dict with filename_convention field."""
-        data = {
-            "description": "Test folder",
-            "filename_convention": "{company}-{date}",
+        # With nested folders
+        subfolder = FolderDefinition(description="Subfolder")
+        folder4 = FolderDefinition(description="Main", folders={"sub": subfolder})
+        assert folder4.to_dict() == {
+            "description": "Main",
+            "folders": {"sub": {"description": "Subfolder"}},
         }
-        folder = FolderDefinition.from_dict(data)
 
-        assert folder.description == "Test folder"
-        assert folder.filename_convention == "{company}-{date}"
+    def test_from_dict_comprehensive(self) -> None:
+        """Test from_dict with various field combinations."""
+        # Simple folder
+        data1 = {"description": "Test folder"}
+        folder1 = FolderDefinition.from_dict(data1)
+        assert folder1.description == "Test folder"
+        assert folder1.folders == {}
+        assert folder1.filename_convention is None
 
-    def test_from_dict_missing_filename_convention(self) -> None:
-        """Test from_dict without filename_convention (should default to None)."""
-        data = {"description": "Test folder"}
-        folder = FolderDefinition.from_dict(data)
+        # Missing description defaults to None
+        data2: dict = {"folders": {}}
+        folder2 = FolderDefinition.from_dict(data2)
+        assert folder2.description is None
 
-        assert folder.filename_convention is None
+        # Empty string description normalized to None
+        data3 = {"description": ""}
+        folder3 = FolderDefinition.from_dict(data3)
+        assert folder3.description is None
+
+        # With filename convention
+        data4 = {"description": "Test", "filename_convention": "{company}-{date}"}
+        folder4 = FolderDefinition.from_dict(data4)
+        assert folder4.filename_convention == "{company}-{date}"
+
+        # With nested folders
+        data5 = {
+            "description": "Main",
+            "folders": {"sub": {"description": "Subfolder"}},
+        }
+        folder5 = FolderDefinition.from_dict(data5)
+        assert folder5.description == "Main"
+        assert "sub" in folder5.folders
+        assert folder5.folders["sub"].description == "Subfolder"
 
     def test_roundtrip_with_filename_convention(self) -> None:
         """Test serialization round-trip with filename_convention."""
