@@ -10,6 +10,7 @@ from docman.cli import main
 from docman.config import get_app_config_path
 
 
+@pytest.mark.integration
 class TestAppConfigIntegration:
     """Integration tests for app-level config initialization.
 

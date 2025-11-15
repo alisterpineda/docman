@@ -20,6 +20,7 @@ from docman.path_security import (
 )
 
 
+@pytest.mark.unit
 class TestValidatePathComponent:
     """Test individual path component validation."""
 
@@ -91,6 +92,7 @@ class TestValidatePathComponent:
         assert validate_path_component(".") == "."
 
 
+@pytest.mark.unit
 class TestValidateTargetPath:
     """Test complete target path validation and construction."""
 
@@ -187,6 +189,7 @@ class TestValidateTargetPath:
         assert "." not in result.parts or result.parts == (".",)
 
 
+@pytest.mark.unit
 class TestValidateRepositoryPath:
     """Test repository boundary validation."""
 
@@ -215,6 +218,7 @@ class TestValidateRepositoryPath:
             validate_repository_path(relative_path, tmp_path)
 
 
+@pytest.mark.unit
 class TestEdgeCases:
     """Test edge cases and corner scenarios."""
 
@@ -251,6 +255,7 @@ class TestEdgeCases:
         assert result.is_absolute()
 
 
+@pytest.mark.unit
 class TestSecurityAttackVectors:
     """Test specific attack vectors from security analysis."""
 

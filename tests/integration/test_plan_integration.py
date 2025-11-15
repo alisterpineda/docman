@@ -12,6 +12,8 @@ from docman.llm_config import ProviderConfig
 from docman.models import Document, DocumentCopy, Operation, OperationStatus, compute_content_hash
 
 
+@pytest.mark.integration
+@pytest.mark.slow
 class TestDocmanPlan:
     """Integration tests for docman plan command."""
 
@@ -1406,6 +1408,7 @@ organization:
                 pass
 
 
+@pytest.mark.integration
 class TestDocmanPlanPathSecurity:
     """Integration tests for path security in plan command."""
 

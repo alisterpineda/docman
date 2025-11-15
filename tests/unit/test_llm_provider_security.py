@@ -13,6 +13,7 @@ from docman.llm_config import ProviderConfig
 from docman.llm_providers import GoogleGeminiProvider, OpenAICompatibleProvider
 
 
+@pytest.mark.unit
 class TestGoogleGeminiProviderSecurity:
     """Test that GoogleGeminiProvider validates LLM responses."""
 
@@ -116,6 +117,7 @@ class TestGoogleGeminiProviderSecurity:
         assert result["suggested_filename"] == "annual_report.pdf"
 
 
+@pytest.mark.unit
 class TestOpenAICompatibleProviderSecurity:
     """Test that OpenAICompatibleProvider validates LLM responses."""
 

@@ -14,6 +14,7 @@ from docman.config import (
 )
 
 
+@pytest.mark.unit
 class TestGetAppConfigDir:
     """Tests for get_app_config_dir function."""
 
@@ -34,6 +35,7 @@ class TestGetAppConfigDir:
         assert result == custom_dir
 
 
+@pytest.mark.unit
 class TestGetAppConfigPath:
     """Tests for get_app_config_path function."""
 
@@ -47,6 +49,7 @@ class TestGetAppConfigPath:
         assert "docman" in str(result).lower()
 
 
+@pytest.mark.unit
 class TestEnsureAppConfig:
     """Tests for ensure_app_config function."""
 
@@ -118,6 +121,7 @@ class TestEnsureAppConfig:
         assert config_file.read_text() == original_content
 
 
+@pytest.mark.unit
 class TestLoadAppConfig:
     """Tests for load_app_config function."""
 
@@ -180,6 +184,7 @@ class TestLoadAppConfig:
             load_app_config()
 
 
+@pytest.mark.unit
 class TestSaveAppConfig:
     """Tests for save_app_config function."""
 

@@ -11,6 +11,7 @@ from docman.database import get_session
 from docman.models import Document, DocumentCopy
 
 
+@pytest.mark.integration
 class TestDocmanScan:
     """Integration tests for docman scan command."""
 

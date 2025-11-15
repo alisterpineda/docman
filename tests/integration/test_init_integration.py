@@ -6,8 +6,10 @@ from click.testing import CliRunner
 from conftest import assert_docman_initialized
 
 from docman.cli import main
+import pytest
 
 
+@pytest.mark.integration
 class TestDocmanInit:
     """Integration tests for docman init command with real filesystem operations."""
 

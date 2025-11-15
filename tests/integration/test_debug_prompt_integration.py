@@ -10,6 +10,7 @@ from docman.database import ensure_database, get_session
 from docman.models import Document, DocumentCopy
 
 
+@pytest.mark.integration
 class TestDocmanDebugPrompt:
     """Integration tests for docman debug-prompt command."""
 

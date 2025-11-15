@@ -10,6 +10,7 @@ from docman.cli import main
 from docman.llm_config import ProviderConfig, add_provider
 
 
+@pytest.mark.integration
 class TestLLMAdd:
     """Integration tests for 'docman llm add' command."""
 
@@ -268,6 +269,7 @@ class TestLLMAdd:
         assert "Provider 'first-provider' is now active." in result.output
 
 
+@pytest.mark.integration
 class TestLLMList:
     """Integration tests for 'docman llm list' command."""
 
@@ -409,6 +411,7 @@ class TestLLMList:
         assert inactive_markers == 1
 
 
+@pytest.mark.integration
 class TestLLMRemove:
     """Integration tests for 'docman llm remove' command."""
 
@@ -649,6 +652,7 @@ class TestLLMRemove:
         assert "Active provider is now: provider-2" in result.output
 
 
+@pytest.mark.integration
 class TestLLMSetActive:
     """Integration tests for 'docman llm set-active' command."""
 
@@ -747,6 +751,7 @@ class TestLLMSetActive:
         assert "Error: Provider 'nonexistent' not found." in result.output
 
 
+@pytest.mark.integration
 class TestLLMShow:
     """Integration tests for 'docman llm show' command."""
 
@@ -948,6 +953,7 @@ class TestLLMShow:
         assert "API Key: Not found ✗" in result.output
 
 
+@pytest.mark.integration
 class TestLLMTest:
     """Integration tests for 'docman llm test' command."""
 

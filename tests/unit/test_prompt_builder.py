@@ -15,8 +15,10 @@ from docman.prompt_builder import (
     serialize_folder_definitions,
 )
 from docman.repo_config import FolderDefinition
+import pytest
 
 
+@pytest.mark.unit
 class TestTruncateContentSmart:
     """Tests for _truncate_content_smart function."""
 
@@ -71,6 +73,7 @@ class TestTruncateContentSmart:
             assert was_truncated is True
 
 
+@pytest.mark.unit
 class TestBuildSystemPrompt:
     """Tests for build_system_prompt function."""
 
@@ -122,6 +125,7 @@ class TestBuildSystemPrompt:
         # Python may intern identical strings, especially long template strings
 
 
+@pytest.mark.unit
 class TestBuildUserPrompt:
     """Tests for build_user_prompt function."""
 
@@ -195,6 +199,7 @@ class TestBuildUserPrompt:
         assert "truncated" not in result.lower()
 
 
+@pytest.mark.unit
 class TestGenerateInstructionsFromFolders:
     """Tests for generate_instructions_from_folders function."""
 
@@ -322,6 +327,7 @@ class TestGenerateInstructionsFromFolders:
 
 
 
+@pytest.mark.unit
 class TestRenderFolderHierarchy:
     """Tests for _render_folder_hierarchy function."""
 
@@ -375,6 +381,7 @@ class TestRenderFolderHierarchy:
         assert lines[0].startswith("-") or lines[0].startswith("**")
 
 
+@pytest.mark.unit
 class TestExtractVariablePatterns:
     """Tests for _extract_variable_patterns function."""
 
@@ -462,6 +469,7 @@ class TestExtractVariablePatterns:
         assert "Infer year from document context" in result["year"]
 
 
+@pytest.mark.unit
 class TestGetPatternGuidance:
     """Tests for _get_pattern_guidance function."""
 
@@ -513,6 +521,7 @@ class TestGetPatternGuidance:
         assert "Extract custom value from document" in result
 
 
+@pytest.mark.unit
 class TestSerializeFolderDefinitions:
     """Tests for serialize_folder_definitions function."""
 

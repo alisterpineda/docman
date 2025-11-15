@@ -17,6 +17,7 @@ from docman.llm_config import (
 )
 
 
+@pytest.mark.unit
 class TestProviderConfig:
     """Tests for ProviderConfig dataclass serialization."""
 
@@ -51,6 +52,7 @@ class TestProviderConfig:
         assert restored2.endpoint is None
 
 
+@pytest.mark.unit
 class TestAddProvider:
     """Tests for add_provider function."""
 
@@ -192,6 +194,7 @@ class TestAddProvider:
         assert providers[1]["is_active"] is True
 
 
+@pytest.mark.unit
 class TestGetProviders:
     """Tests for get_providers function."""
 
@@ -233,6 +236,7 @@ class TestGetProviders:
         assert result[1].name == "provider-2"
 
 
+@pytest.mark.unit
 class TestGetProvider:
     """Tests for get_provider function."""
 
@@ -267,6 +271,7 @@ class TestGetProvider:
         assert result is None
 
 
+@pytest.mark.unit
 class TestRemoveProvider:
     """Tests for remove_provider function."""
 
@@ -318,6 +323,7 @@ class TestRemoveProvider:
         mock_save_config.assert_not_called()
 
 
+@pytest.mark.unit
 class TestSetActiveProvider:
     """Tests for set_active_provider function."""
 
@@ -357,6 +363,7 @@ class TestSetActiveProvider:
         assert providers[1]["is_active"] is True
 
 
+@pytest.mark.unit
 class TestGetActiveProvider:
     """Tests for get_active_provider function."""
 
@@ -402,6 +409,7 @@ class TestGetActiveProvider:
         assert result is None
 
 
+@pytest.mark.unit
 class TestGetApiKey:
     """Tests for get_api_key function."""
 

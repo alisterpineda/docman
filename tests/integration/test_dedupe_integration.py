@@ -10,6 +10,7 @@ from docman.database import ensure_database, get_session
 from docman.models import Document, DocumentCopy, Operation, OperationStatus
 
 
+@pytest.mark.integration
 class TestDocmanDedupe:
     """Integration tests for docman dedupe command."""
 

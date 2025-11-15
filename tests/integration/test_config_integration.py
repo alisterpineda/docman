@@ -6,8 +6,10 @@ from click.testing import CliRunner
 
 from docman.cli import main
 from docman.repo_config import get_folder_definitions, get_repo_config_path
+import pytest
 
 
+@pytest.mark.integration
 class TestDocmanDefine:
     """Integration tests for docman define command."""
 
@@ -222,6 +224,7 @@ class TestDocmanDefine:
             assert "config.yaml" in result.output
 
 
+@pytest.mark.integration
 class TestDocmanConfigListDirs:
     """Integration tests for docman config list-dirs command."""
 
@@ -398,6 +401,7 @@ class TestDocmanConfigListDirs:
             assert "config.yaml" in result.output
 
 
+@pytest.mark.integration
 class TestPatternCommands:
     """Integration tests for pattern management commands."""
 

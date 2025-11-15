@@ -4,8 +4,10 @@ from pathlib import Path
 from unittest.mock import MagicMock, Mock, patch
 
 from docman.processor import extract_content
+import pytest
 
 
+@pytest.mark.unit
 class TestExtractContent:
     """Tests for extract_content function."""
 

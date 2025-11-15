@@ -13,6 +13,8 @@ from docman.llm_config import ProviderConfig
 from docman.models import Document, DocumentCopy, Operation, OperationStatus, OrganizationStatus, get_utc_now
 
 
+@pytest.mark.integration
+@pytest.mark.slow
 class TestDocmanReview:
     """Integration tests for docman review command."""
 
@@ -1266,6 +1268,7 @@ organization:
                 pass
 
 
+@pytest.mark.integration
 class TestReviewSecurityCleanup:
     """Test cleanup of invalid operations with security issues."""
 
@@ -1482,6 +1485,8 @@ organization:
                 pass
 
 
+@pytest.mark.integration
+@pytest.mark.slow
 class TestReprocessConversationHistory:
     """Tests for conversational re-process feature with prompt history tracking."""
 

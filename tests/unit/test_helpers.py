@@ -19,6 +19,7 @@ from docman.models import (
 from docman.processor import ProcessingResult, process_document_file
 
 
+@pytest.mark.unit
 class TestProcessDocumentFile:
     """Unit tests for process_document_file helper function."""
 
@@ -285,6 +286,7 @@ class TestProcessDocumentFile:
                 pass
 
 
+@pytest.mark.unit
 class TestOperationNeedsRegeneration:
     """Unit tests for operation_needs_regeneration helper function."""
 
@@ -369,6 +371,7 @@ class TestOperationNeedsRegeneration:
         assert reason is None
 
 
+@pytest.mark.unit
 class TestQueryDocumentsNeedingSuggestions:
     """Unit tests for query_documents_needing_suggestions helper function."""
 

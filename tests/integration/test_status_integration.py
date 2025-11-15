@@ -10,6 +10,7 @@ from docman.database import ensure_database, get_session
 from docman.models import Document, DocumentCopy, Operation, OperationStatus
 
 
+@pytest.mark.integration
 class TestDocmanStatus:
     """Integration tests for docman status command."""
 

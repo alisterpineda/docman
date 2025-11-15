@@ -13,6 +13,7 @@ from docman.file_operations import (
 )
 
 
+@pytest.mark.unit
 class TestMoveFile:
     """Tests for move_file function."""
 

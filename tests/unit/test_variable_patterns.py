@@ -11,6 +11,7 @@ from docman.repo_config import (
 )
 
 
+@pytest.mark.unit
 class TestGetVariablePatterns:
     """Tests for get_variable_patterns function."""
 
@@ -41,6 +42,7 @@ class TestGetVariablePatterns:
         assert result == {}
 
 
+@pytest.mark.unit
 class TestSetVariablePattern:
     """Tests for set_variable_pattern function."""
 
@@ -105,6 +107,7 @@ class TestSetVariablePattern:
             set_variable_pattern(tmp_path, "year", "   ")
 
 
+@pytest.mark.unit
 class TestRemoveVariablePattern:
     """Tests for remove_variable_pattern function."""
 
@@ -157,6 +160,7 @@ class TestRemoveVariablePattern:
         assert "Financial" in folders
 
 
+@pytest.mark.unit
 class TestVariablePatternYAMLSerialization:
     """Tests for YAML serialization of variable patterns."""
 

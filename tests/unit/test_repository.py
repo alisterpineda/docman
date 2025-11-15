@@ -15,6 +15,7 @@ from docman.repository import (
 )
 
 
+@pytest.mark.unit
 class TestFindRepositoryRoot:
     """Tests for find_repository_root function."""
 
@@ -60,6 +61,7 @@ class TestFindRepositoryRoot:
         assert result is None
 
 
+@pytest.mark.unit
 class TestValidateRepository:
     """Tests for validate_repository function."""
 
@@ -95,6 +97,7 @@ class TestValidateRepository:
         assert result is False
 
 
+@pytest.mark.unit
 class TestGetRepositoryRoot:
     """Tests for get_repository_root function."""
 
@@ -123,6 +126,7 @@ class TestGetRepositoryRoot:
             get_repository_root(tmp_path)
 
 
+@pytest.mark.unit
 class TestDiscoverDocumentFiles:
     """Tests for discover_document_files function."""
 
@@ -233,6 +237,7 @@ class TestDiscoverDocumentFiles:
         assert len(result) == 3
 
 
+@pytest.mark.unit
 class TestSupportedExtensions:
     """Tests for SUPPORTED_EXTENSIONS constant."""
 
@@ -251,6 +256,7 @@ class TestSupportedExtensions:
         assert ".html" in SUPPORTED_EXTENSIONS
 
 
+@pytest.mark.unit
 class TestExcludedDirs:
     """Tests for EXCLUDED_DIRS constant."""
 

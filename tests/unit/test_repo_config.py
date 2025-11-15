@@ -17,6 +17,7 @@ from docman.repo_config import (
 )
 
 
+@pytest.mark.unit
 class TestFolderDefinition:
     """Tests for FolderDefinition dataclass serialization."""
 
@@ -105,6 +106,7 @@ class TestFolderDefinition:
         assert restored.folders["invoices"].filename_convention == "{company}-invoice"
 
 
+@pytest.mark.unit
 class TestGetRepoConfigPath:
     """Tests for get_repo_config_path function."""
 
@@ -115,6 +117,7 @@ class TestGetRepoConfigPath:
         assert result == expected
 
 
+@pytest.mark.unit
 class TestLoadRepoConfig:
     """Tests for load_repo_config function."""
 
@@ -176,6 +179,7 @@ class TestLoadRepoConfig:
         assert "invalid YAML syntax" in str(exc_info.value)
 
 
+@pytest.mark.unit
 class TestSaveRepoConfig:
     """Tests for save_repo_config function."""
 
@@ -201,6 +205,7 @@ class TestSaveRepoConfig:
         assert loaded == config
 
 
+@pytest.mark.unit
 class TestGetFolderDefinitions:
     """Tests for get_folder_definitions function."""
 
@@ -239,6 +244,7 @@ class TestGetFolderDefinitions:
         assert result["Financial"].folders["invoices"].description == "Customer invoices"
 
 
+@pytest.mark.unit
 class TestAddFolderDefinition:
     """Tests for add_folder_definition function."""
 
@@ -372,6 +378,7 @@ class TestAddFolderDefinition:
         assert folders["Financial"].description is None
 
 
+@pytest.mark.unit
 class TestGetDefaultFilenameConvention:
     """Tests for get_default_filename_convention function."""
 
@@ -400,6 +407,7 @@ class TestGetDefaultFilenameConvention:
         assert result == convention
 
 
+@pytest.mark.unit
 class TestSetDefaultFilenameConvention:
     """Tests for set_default_filename_convention function."""
 
