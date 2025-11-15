@@ -252,7 +252,6 @@ def create_pending_operation(db_session) -> Callable:
             suggested_directory_path=suggested_dir,
             suggested_filename=suggested_filename,
             reason=reason,
-            confidence=confidence,
             prompt_hash="test_hash",
         )
         db_session.add(pending_op)

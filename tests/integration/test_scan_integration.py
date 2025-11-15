@@ -6,6 +6,7 @@ from unittest.mock import Mock, patch
 import pytest
 from click.testing import CliRunner
 
+from conftest import setup_repository
 from docman.cli import main
 from docman.database import get_session
 from docman.models import Document, DocumentCopy
@@ -14,26 +15,6 @@ from docman.models import Document, DocumentCopy
 @pytest.mark.integration
 class TestDocmanScan:
     """Integration tests for docman scan command."""
-
-    def setup_repository(self, path: Path) -> None:
-        """Set up a docman repository for testing."""
-        docman_dir = path / ".docman"
-        docman_dir.mkdir()
-        config_file = docman_dir / "config.yaml"
-        config_file.touch()
-
-        # Create instructions file (required for plan, not scan)
-        instructions_file = docman_dir / "instructions.md"
-        instructions_file.write_text("Test organization instructions")
-
-    def setup_isolated_env(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
-        """Set up isolated environment with separate app config and repository."""
-        app_config_dir = tmp_path / "app_config"
-        repo_dir = tmp_path / "repo"
-        repo_dir.mkdir()
-        monkeypatch.setenv("DOCMAN_APP_CONFIG_DIR", str(app_config_dir))
-        self.setup_repository(repo_dir)
-        return repo_dir
 
     @patch("docman.processor.extract_content")
     def test_scan_success_with_documents(
@@ -44,7 +25,9 @@ class TestDocmanScan:
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         """Test successful scan execution with documents."""
-        repo_dir = self.setup_isolated_env(tmp_path, monkeypatch)
+        repo_dir = tmp_path / "repo"
+        repo_dir.mkdir()
+        setup_repository(repo_dir)
 
         # Create test documents
         (repo_dir / "test1.pdf").write_text("content1")
@@ -97,7 +80,9 @@ class TestDocmanScan:
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         """Test that scan skips files that haven't changed."""
-        repo_dir = self.setup_isolated_env(tmp_path, monkeypatch)
+        repo_dir = tmp_path / "repo"
+        repo_dir.mkdir()
+        setup_repository(repo_dir)
 
         # Create test document
         test_file = repo_dir / "test.pdf"
@@ -129,7 +114,9 @@ class TestDocmanScan:
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         """Test that scan is non-recursive by default."""
-        repo_dir = self.setup_isolated_env(tmp_path, monkeypatch)
+        repo_dir = tmp_path / "repo"
+        repo_dir.mkdir()
+        setup_repository(repo_dir)
 
         # Create documents in root and subdirectory
         (repo_dir / "root.pdf").write_text("root content")
@@ -178,7 +165,9 @@ class TestDocmanScan:
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         """Test that scan --rescan forces re-scanning of all files."""
-        repo_dir = self.setup_isolated_env(tmp_path, monkeypatch)
+        repo_dir = tmp_path / "repo"
+        repo_dir.mkdir()
+        setup_repository(repo_dir)
 
         # Create test document
         test_file = repo_dir / "test.pdf"
@@ -211,7 +200,9 @@ class TestDocmanScan:
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         """Test scan when no document files are found."""
-        repo_dir = self.setup_isolated_env(tmp_path, monkeypatch)
+        repo_dir = tmp_path / "repo"
+        repo_dir.mkdir()
+        setup_repository(repo_dir)
 
         # Create non-document files
         (repo_dir / "test.py").touch()
@@ -269,7 +260,9 @@ class TestDocmanScan:
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         """Test scan with a single file path."""
-        repo_dir = self.setup_isolated_env(tmp_path, monkeypatch)
+        repo_dir = tmp_path / "repo"
+        repo_dir.mkdir()
+        setup_repository(repo_dir)
 
         # Create test documents
         (repo_dir / "target.pdf").write_text("target")
@@ -316,7 +309,9 @@ class TestDocmanScan:
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         """Test scan with a directory path."""
-        repo_dir = self.setup_isolated_env(tmp_path, monkeypatch)
+        repo_dir = tmp_path / "repo"
+        repo_dir.mkdir()
+        setup_repository(repo_dir)
 
         # Create documents in different directories
         (repo_dir / "root.pdf").write_text("root")
@@ -355,7 +350,9 @@ class TestDocmanScan:
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         """Test that scan commits in batches of 10 files."""
-        repo_dir = self.setup_isolated_env(tmp_path, monkeypatch)
+        repo_dir = tmp_path / "repo"
+        repo_dir.mkdir()
+        setup_repository(repo_dir)
 
         # Create 25 test documents to span multiple batches
         for i in range(25):
@@ -407,7 +404,9 @@ class TestDocmanScan:
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         """Test that scan handles database commit errors gracefully."""
-        repo_dir = self.setup_isolated_env(tmp_path, monkeypatch)
+        repo_dir = tmp_path / "repo"
+        repo_dir.mkdir()
+        setup_repository(repo_dir)
 
         # Create 15 test documents to trigger 2 batches
         for i in range(15):

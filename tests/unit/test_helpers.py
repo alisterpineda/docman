@@ -290,85 +290,43 @@ class TestProcessDocumentFile:
 class TestOperationNeedsRegeneration:
     """Unit tests for operation_needs_regeneration helper function."""
 
-    def test_no_operation_needs_regeneration(self) -> None:
-        """Test that missing operation needs regeneration."""
-        needs_regen, reason = operation_needs_regeneration(
-            operation=None,
-            current_prompt_hash="hash1",
-            document_content_hash="content_hash1",
-            model_name="model1",
-        )
-
-        assert needs_regen is True
-        assert reason is None
-
-    def test_prompt_hash_changed_needs_regeneration(self) -> None:
-        """Test that changed prompt hash needs regeneration."""
-        operation = Mock(spec=Operation)
-        operation.prompt_hash = "old_hash"
-        operation.document_content_hash = "content_hash1"
-        operation.model_name = "model1"
-
-        needs_regen, reason = operation_needs_regeneration(
-            operation=operation,
-            current_prompt_hash="new_hash",
-            document_content_hash="content_hash1",
-            model_name="model1",
-        )
-
-        assert needs_regen is True
-        assert reason == "Prompt or model changed"
-
-    def test_content_hash_changed_needs_regeneration(self) -> None:
-        """Test that changed content hash needs regeneration."""
-        operation = Mock(spec=Operation)
-        operation.prompt_hash = "hash1"
-        operation.document_content_hash = "old_content"
-        operation.model_name = "model1"
+    @pytest.mark.parametrize("operation_attrs,current_hash,current_content,current_model,expected_regen,expected_reason", [
+        # No operation case
+        (None, "hash1", "content1", "model1", True, None),
+        # Prompt hash changed
+        ({"prompt_hash": "old", "document_content_hash": "content1", "model_name": "model1"},
+         "new", "content1", "model1", True, "Prompt or model changed"),
+        # Content hash changed
+        ({"prompt_hash": "hash1", "document_content_hash": "old", "model_name": "model1"},
+         "hash1", "new", "model1", True, "Document content changed"),
+        # Model changed
+        ({"prompt_hash": "hash1", "document_content_hash": "content1", "model_name": "old"},
+         "hash1", "content1", "new", True, "Model changed"),
+        # No changes
+        ({"prompt_hash": "hash1", "document_content_hash": "content1", "model_name": "model1"},
+         "hash1", "content1", "model1", False, None),
+    ])
+    def test_operation_needs_regeneration(
+        self, operation_attrs, current_hash, current_content, current_model,
+        expected_regen, expected_reason
+    ) -> None:
+        """Test operation regeneration detection for various scenarios."""
+        if operation_attrs is None:
+            operation = None
+        else:
+            operation = Mock(spec=Operation)
+            for key, value in operation_attrs.items():
+                setattr(operation, key, value)
 
         needs_regen, reason = operation_needs_regeneration(
             operation=operation,
-            current_prompt_hash="hash1",
-            document_content_hash="new_content",
-            model_name="model1",
+            current_prompt_hash=current_hash,
+            document_content_hash=current_content,
+            model_name=current_model,
         )
 
-        assert needs_regen is True
-        assert reason == "Document content changed"
-
-    def test_model_name_changed_needs_regeneration(self) -> None:
-        """Test that changed model name needs regeneration."""
-        operation = Mock(spec=Operation)
-        operation.prompt_hash = "hash1"
-        operation.document_content_hash = "content_hash1"
-        operation.model_name = "old_model"
-
-        needs_regen, reason = operation_needs_regeneration(
-            operation=operation,
-            current_prompt_hash="hash1",
-            document_content_hash="content_hash1",
-            model_name="new_model",
-        )
-
-        assert needs_regen is True
-        assert reason == "Model changed"
-
-    def test_no_changes_no_regeneration(self) -> None:
-        """Test that unchanged operation doesn't need regeneration."""
-        operation = Mock(spec=Operation)
-        operation.prompt_hash = "hash1"
-        operation.document_content_hash = "content_hash1"
-        operation.model_name = "model1"
-
-        needs_regen, reason = operation_needs_regeneration(
-            operation=operation,
-            current_prompt_hash="hash1",
-            document_content_hash="content_hash1",
-            model_name="model1",
-        )
-
-        assert needs_regen is False
-        assert reason is None
+        assert needs_regen is expected_regen
+        assert reason == expected_reason
 
 
 @pytest.mark.unit

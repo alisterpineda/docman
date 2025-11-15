@@ -7,6 +7,7 @@ from unittest.mock import Mock, patch
 import pytest
 from click.testing import CliRunner
 
+from conftest import setup_repository
 from docman.cli import main
 from docman.database import ensure_database, get_session
 from docman.llm_config import ProviderConfig
@@ -18,85 +19,14 @@ from docman.models import Document, DocumentCopy, Operation, OperationStatus, Or
 class TestDocmanReview:
     """Integration tests for docman review command."""
 
-    def setup_repository(self, path: Path) -> None:
-        """Set up a docman repository for testing."""
-        docman_dir = path / ".docman"
-        docman_dir.mkdir()
-        config_file = docman_dir / "config.yaml"
-        # Create folder definitions (required)
-        config_content = """
-organization:
-  variable_patterns:
-    year: "4-digit year in YYYY format"
-    category: "Document category"
-  folders:
-    Documents:
-      description: "Test documents folder"
-      folders:
-        Archive:
-          description: "Archived documents"
-"""
-        config_file.write_text(config_content)
-
-    def setup_isolated_env(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
-        """Set up isolated environment with separate app config and repository."""
-        app_config_dir = tmp_path / "app_config"
-        repo_dir = tmp_path / "repo"
-        repo_dir.mkdir()
-        monkeypatch.setenv("DOCMAN_APP_CONFIG_DIR", str(app_config_dir))
-        self.setup_repository(repo_dir)
-        return repo_dir
-
-    def create_pending_operation(
-        self,
-        repo_path: str,
-        file_path: str,
-        suggested_dir: str,
-        suggested_filename: str,
-        reason: str = "Test reason",
-    ) -> None:
-        """Helper to create a pending operation in the database."""
-        ensure_database()
-        session_gen = get_session()
-        session = next(session_gen)
-        try:
-            # Create document
-            doc = Document(content_hash=f"hash_{file_path}", content="Test content")
-            session.add(doc)
-            session.flush()
-
-            # Create document copy
-            copy = DocumentCopy(
-                document_id=doc.id,
-                repository_path=repo_path,
-                file_path=file_path,
-            )
-            session.add(copy)
-            session.flush()
-
-            # Create pending operation
-            pending_op = Operation(
-                document_copy_id=copy.id,
-                suggested_directory_path=suggested_dir,
-                suggested_filename=suggested_filename,
-                reason=reason,
-                prompt_hash="test_hash",
-            )
-            session.add(pending_op)
-            session.commit()
-        finally:
-            try:
-                next(session_gen)
-            except StopIteration:
-                pass
-
     # === VALIDATION TESTS ===
 
     def test_review_apply_all_and_reject_all_conflict(
-        self, cli_runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+        self, cli_runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         """Test that review rejects both --apply-all and --reject-all."""
-        repo_dir = self.setup_isolated_env(tmp_path, monkeypatch)
+        repo_dir = tmp_path / "repo"
+        repo_dir.mkdir()
+        setup_repository(repo_dir)
         monkeypatch.chdir(repo_dir)
 
         result = cli_runner.invoke(main, ["review", "--apply-all", "--reject-all"])
@@ -105,10 +35,11 @@ organization:
         assert "Cannot use both --apply-all and --reject-all" in result.output
 
     def test_review_dry_run_requires_bulk_mode(
-        self, cli_runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+        self, cli_runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         """Test that --dry-run requires --apply-all or --reject-all."""
-        repo_dir = self.setup_isolated_env(tmp_path, monkeypatch)
+        repo_dir = tmp_path / "repo"
+        repo_dir.mkdir()
+        setup_repository(repo_dir)
         monkeypatch.chdir(repo_dir)
 
         result = cli_runner.invoke(main, ["review", "--dry-run"])
@@ -117,10 +48,12 @@ organization:
         assert "--dry-run can only be used with --apply-all or --reject-all" in result.output
 
     def test_review_apply_all_requires_confirmation(
-        self, cli_runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+        self, cli_runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, create_pending_operation
     ) -> None:
         """Test that --apply-all without -y prompts for confirmation."""
-        repo_dir = self.setup_isolated_env(tmp_path, monkeypatch)
+        repo_dir = tmp_path / "repo"
+        repo_dir.mkdir()
+        setup_repository(repo_dir)
         monkeypatch.chdir(repo_dir)
 
         # Create source file
@@ -129,7 +62,7 @@ organization:
         source_file.write_text("test content")
 
         # Create pending operation
-        self.create_pending_operation(
+        create_pending_operation(
             repo_path=str(repo_dir),
             file_path="inbox/test.pdf",
             suggested_dir="documents",
@@ -147,10 +80,11 @@ organization:
         assert not (repo_dir / "documents" / "test.pdf").exists()
 
     def test_review_no_pending_operations(
-        self, cli_runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+        self, cli_runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         """Test review when no pending operations exist."""
-        repo_dir = self.setup_isolated_env(tmp_path, monkeypatch)
+        repo_dir = tmp_path / "repo"
+        repo_dir.mkdir()
+        setup_repository(repo_dir)
         monkeypatch.chdir(repo_dir)
 
         result = cli_runner.invoke(main, ["review", "--apply-all", "-y"], catch_exceptions=False)
@@ -161,10 +95,12 @@ organization:
     # === BULK APPLY MODE TESTS ===
 
     def test_review_apply_all_basic(
-        self, cli_runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+        self, cli_runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, create_pending_operation
     ) -> None:
         """Test basic bulk apply functionality."""
-        repo_dir = self.setup_isolated_env(tmp_path, monkeypatch)
+        repo_dir = tmp_path / "repo"
+        repo_dir.mkdir()
+        setup_repository(repo_dir)
         monkeypatch.chdir(repo_dir)
 
         # Create source file
@@ -173,7 +109,7 @@ organization:
         source_file.write_text("test content")
 
         # Create pending operation
-        self.create_pending_operation(
+        create_pending_operation(
             repo_path=str(repo_dir),
             file_path="inbox/test.pdf",
             suggested_dir="documents",
@@ -188,10 +124,12 @@ organization:
         assert not source_file.exists()
 
     def test_review_apply_all_with_dry_run(
-        self, cli_runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+        self, cli_runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, create_pending_operation
     ) -> None:
         """Test bulk apply with --dry-run flag."""
-        repo_dir = self.setup_isolated_env(tmp_path, monkeypatch)
+        repo_dir = tmp_path / "repo"
+        repo_dir.mkdir()
+        setup_repository(repo_dir)
         monkeypatch.chdir(repo_dir)
 
         # Create source file
@@ -200,7 +138,7 @@ organization:
         source_file.write_text("test content")
 
         # Create pending operation
-        self.create_pending_operation(
+        create_pending_operation(
             repo_path=str(repo_dir),
             file_path="inbox/test.pdf",
             suggested_dir="documents",
@@ -217,10 +155,12 @@ organization:
         assert not (repo_dir / "documents" / "test.pdf").exists()
 
     def test_review_apply_all_with_force(
-        self, cli_runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+        self, cli_runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, create_pending_operation
     ) -> None:
         """Test bulk apply with --force to overwrite conflicts."""
-        repo_dir = self.setup_isolated_env(tmp_path, monkeypatch)
+        repo_dir = tmp_path / "repo"
+        repo_dir.mkdir()
+        setup_repository(repo_dir)
         monkeypatch.chdir(repo_dir)
 
         # Create source and target files
@@ -233,7 +173,7 @@ organization:
         target_file.write_text("old content")
 
         # Create pending operation
-        self.create_pending_operation(
+        create_pending_operation(
             repo_path=str(repo_dir),
             file_path="inbox/test.pdf",
             suggested_dir="documents",
@@ -248,10 +188,12 @@ organization:
         assert not source_file.exists()
 
     def test_review_apply_all_conflict_without_force(
-        self, cli_runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+        self, cli_runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, create_pending_operation
     ) -> None:
         """Test bulk apply with conflict but no --force flag."""
-        repo_dir = self.setup_isolated_env(tmp_path, monkeypatch)
+        repo_dir = tmp_path / "repo"
+        repo_dir.mkdir()
+        setup_repository(repo_dir)
         monkeypatch.chdir(repo_dir)
 
         # Create source and target files
@@ -264,7 +206,7 @@ organization:
         target_file.write_text("old content")
 
         # Create pending operation
-        self.create_pending_operation(
+        create_pending_operation(
             repo_path=str(repo_dir),
             file_path="inbox/test.pdf",
             suggested_dir="documents",
@@ -283,14 +225,16 @@ organization:
     # === BULK REJECT MODE TESTS ===
 
     def test_review_reject_all_basic(
-        self, cli_runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+        self, cli_runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, create_pending_operation
     ) -> None:
         """Test basic bulk reject functionality."""
-        repo_dir = self.setup_isolated_env(tmp_path, monkeypatch)
+        repo_dir = tmp_path / "repo"
+        repo_dir.mkdir()
+        setup_repository(repo_dir)
         monkeypatch.chdir(repo_dir)
 
         # Create pending operation
-        self.create_pending_operation(
+        create_pending_operation(
             repo_path=str(repo_dir),
             file_path="inbox/test.pdf",
             suggested_dir="documents",
@@ -315,14 +259,16 @@ organization:
                 pass
 
     def test_review_reject_all_with_dry_run(
-        self, cli_runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+        self, cli_runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, create_pending_operation
     ) -> None:
         """Test bulk reject with --dry-run flag."""
-        repo_dir = self.setup_isolated_env(tmp_path, monkeypatch)
+        repo_dir = tmp_path / "repo"
+        repo_dir.mkdir()
+        setup_repository(repo_dir)
         monkeypatch.chdir(repo_dir)
 
         # Create pending operation
-        self.create_pending_operation(
+        create_pending_operation(
             repo_path=str(repo_dir),
             file_path="inbox/test.pdf",
             suggested_dir="documents",
@@ -348,14 +294,16 @@ organization:
                 pass
 
     def test_review_reject_all_with_confirmation_abort(
-        self, cli_runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+        self, cli_runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, create_pending_operation
     ) -> None:
         """Test bulk reject with confirmation prompt - user aborts."""
-        repo_dir = self.setup_isolated_env(tmp_path, monkeypatch)
+        repo_dir = tmp_path / "repo"
+        repo_dir.mkdir()
+        setup_repository(repo_dir)
         monkeypatch.chdir(repo_dir)
 
         # Create pending operation
-        self.create_pending_operation(
+        create_pending_operation(
             repo_path=str(repo_dir),
             file_path="inbox/test.pdf",
             suggested_dir="documents",
@@ -383,10 +331,12 @@ organization:
     # === INTERACTIVE MODE TESTS ===
 
     def test_review_interactive_apply(
-        self, cli_runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+        self, cli_runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, create_pending_operation
     ) -> None:
         """Test interactive mode - user applies operation."""
-        repo_dir = self.setup_isolated_env(tmp_path, monkeypatch)
+        repo_dir = tmp_path / "repo"
+        repo_dir.mkdir()
+        setup_repository(repo_dir)
         monkeypatch.chdir(repo_dir)
 
         # Create source file
@@ -395,7 +345,7 @@ organization:
         source_file.write_text("test content")
 
         # Create pending operation
-        self.create_pending_operation(
+        create_pending_operation(
             repo_path=str(repo_dir),
             file_path="inbox/test.pdf",
             suggested_dir="documents",
@@ -411,10 +361,12 @@ organization:
         assert not source_file.exists()
 
     def test_review_interactive_reject(
-        self, cli_runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+        self, cli_runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, create_pending_operation
     ) -> None:
         """Test interactive mode - user rejects operation."""
-        repo_dir = self.setup_isolated_env(tmp_path, monkeypatch)
+        repo_dir = tmp_path / "repo"
+        repo_dir.mkdir()
+        setup_repository(repo_dir)
         monkeypatch.chdir(repo_dir)
 
         # Create source file
@@ -423,7 +375,7 @@ organization:
         source_file.write_text("test content")
 
         # Create pending operation
-        self.create_pending_operation(
+        create_pending_operation(
             repo_path=str(repo_dir),
             file_path="inbox/test.pdf",
             suggested_dir="documents",
@@ -452,10 +404,12 @@ organization:
                 pass
 
     def test_review_interactive_skip(
-        self, cli_runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+        self, cli_runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, create_pending_operation
     ) -> None:
         """Test interactive mode - user skips operation."""
-        repo_dir = self.setup_isolated_env(tmp_path, monkeypatch)
+        repo_dir = tmp_path / "repo"
+        repo_dir.mkdir()
+        setup_repository(repo_dir)
         monkeypatch.chdir(repo_dir)
 
         # Create source file
@@ -464,7 +418,7 @@ organization:
         source_file.write_text("test content")
 
         # Create pending operation
-        self.create_pending_operation(
+        create_pending_operation(
             repo_path=str(repo_dir),
             file_path="inbox/test.pdf",
             suggested_dir="documents",
@@ -493,20 +447,21 @@ organization:
                 pass
 
     def test_review_interactive_quit(
-        self, cli_runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+        self, cli_runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, create_pending_operation) -> None:
         """Test interactive mode - user quits early."""
-        repo_dir = self.setup_isolated_env(tmp_path, monkeypatch)
+        repo_dir = tmp_path / "repo"
+        repo_dir.mkdir()
+        setup_repository(repo_dir)
         monkeypatch.chdir(repo_dir)
 
         # Create two pending operations
-        self.create_pending_operation(
+        create_pending_operation(
             repo_path=str(repo_dir),
             file_path="inbox/test1.pdf",
             suggested_dir="documents",
             suggested_filename="test1.pdf",
         )
-        self.create_pending_operation(
+        create_pending_operation(
             repo_path=str(repo_dir),
             file_path="inbox/test2.pdf",
             suggested_dir="documents",
@@ -521,10 +476,11 @@ organization:
         assert "Not processed (quit early): 1" in result.output
 
     def test_review_interactive_help(
-        self, cli_runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+        self, cli_runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, create_pending_operation) -> None:
         """Test interactive mode - user requests help then applies."""
-        repo_dir = self.setup_isolated_env(tmp_path, monkeypatch)
+        repo_dir = tmp_path / "repo"
+        repo_dir.mkdir()
+        setup_repository(repo_dir)
         monkeypatch.chdir(repo_dir)
 
         # Create source file
@@ -533,7 +489,7 @@ organization:
         source_file.write_text("test content")
 
         # Create pending operation
-        self.create_pending_operation(
+        create_pending_operation(
             repo_path=str(repo_dir),
             file_path="inbox/test.pdf",
             suggested_dir="documents",
@@ -549,10 +505,11 @@ organization:
         assert "Applied: 1" in result.output
 
     def test_review_interactive_invalid_input(
-        self, cli_runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+        self, cli_runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, create_pending_operation) -> None:
         """Test interactive mode - user provides invalid input then applies."""
-        repo_dir = self.setup_isolated_env(tmp_path, monkeypatch)
+        repo_dir = tmp_path / "repo"
+        repo_dir.mkdir()
+        setup_repository(repo_dir)
         monkeypatch.chdir(repo_dir)
 
         # Create source file
@@ -561,7 +518,7 @@ organization:
         source_file.write_text("test content")
 
         # Create pending operation
-        self.create_pending_operation(
+        create_pending_operation(
             repo_path=str(repo_dir),
             file_path="inbox/test.pdf",
             suggested_dir="documents",
@@ -576,10 +533,11 @@ organization:
         assert "Applied: 1" in result.output
 
     def test_review_interactive_multiple_operations(
-        self, cli_runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+        self, cli_runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, create_pending_operation) -> None:
         """Test interactive mode with multiple operations - mixed actions."""
-        repo_dir = self.setup_isolated_env(tmp_path, monkeypatch)
+        repo_dir = tmp_path / "repo"
+        repo_dir.mkdir()
+        setup_repository(repo_dir)
         monkeypatch.chdir(repo_dir)
 
         # Create source files
@@ -590,7 +548,7 @@ organization:
 
         # Create pending operations
         for i in range(1, 4):
-            self.create_pending_operation(
+            create_pending_operation(
                 repo_path=str(repo_dir),
                 file_path=f"inbox/test{i}.pdf",
                 suggested_dir="documents",
@@ -613,10 +571,11 @@ organization:
     # === PATH FILTERING TESTS ===
 
     def test_review_apply_all_with_path_filter(
-        self, cli_runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+        self, cli_runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, create_pending_operation) -> None:
         """Test bulk apply with path filter."""
-        repo_dir = self.setup_isolated_env(tmp_path, monkeypatch)
+        repo_dir = tmp_path / "repo"
+        repo_dir.mkdir()
+        setup_repository(repo_dir)
         monkeypatch.chdir(repo_dir)
 
         # Create source files in different directories
@@ -625,7 +584,7 @@ organization:
             source_file.parent.mkdir(parents=True)
             source_file.write_text(f"content from {dir_name}")
 
-            self.create_pending_operation(
+            create_pending_operation(
                 repo_path=str(repo_dir),
                 file_path=f"{dir_name}/test.pdf",
                 suggested_dir="documents",
@@ -644,10 +603,11 @@ organization:
         assert not (repo_dir / "documents" / "test_drafts.pdf").exists()
 
     def test_review_reject_all_recursive_vs_non_recursive(
-        self, cli_runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+        self, cli_runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, create_pending_operation) -> None:
         """Test bulk reject with recursive flag."""
-        repo_dir = self.setup_isolated_env(tmp_path, monkeypatch)
+        repo_dir = tmp_path / "repo"
+        repo_dir.mkdir()
+        setup_repository(repo_dir)
         monkeypatch.chdir(repo_dir)
 
         # Create directory structure
@@ -655,13 +615,13 @@ organization:
         (repo_dir / "inbox" / "subdir").mkdir()
 
         # Create operations in directory and subdirectory
-        self.create_pending_operation(
+        create_pending_operation(
             repo_path=str(repo_dir),
             file_path="inbox/test.pdf",
             suggested_dir="documents",
             suggested_filename="test.pdf",
         )
-        self.create_pending_operation(
+        create_pending_operation(
             repo_path=str(repo_dir),
             file_path="inbox/subdir/test2.pdf",
             suggested_dir="documents",
@@ -678,7 +638,7 @@ organization:
 
         # Reset for recursive test
         # Create new operation
-        self.create_pending_operation(
+        create_pending_operation(
             repo_path=str(repo_dir),
             file_path="inbox/test3.pdf",
             suggested_dir="documents",
@@ -697,10 +657,11 @@ organization:
     # === EDGE CASES ===
 
     def test_review_no_op_operation(
-        self, cli_runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+        self, cli_runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, create_pending_operation) -> None:
         """Test review with operation where file is already at target."""
-        repo_dir = self.setup_isolated_env(tmp_path, monkeypatch)
+        repo_dir = tmp_path / "repo"
+        repo_dir.mkdir()
+        setup_repository(repo_dir)
         monkeypatch.chdir(repo_dir)
 
         # Create file at target location
@@ -709,7 +670,7 @@ organization:
         target_file.write_text("test content")
 
         # Create pending operation pointing to same location
-        self.create_pending_operation(
+        create_pending_operation(
             repo_path=str(repo_dir),
             file_path="documents/test.pdf",
             suggested_dir="documents",
@@ -724,8 +685,7 @@ organization:
         assert "Removed" in result.output
 
     def test_review_outside_repository(
-        self, cli_runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+        self, cli_runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         """Test review command outside a repository."""
         non_repo_dir = tmp_path / "not_a_repo"
         non_repo_dir.mkdir()
@@ -737,10 +697,11 @@ organization:
         assert "Not in a docman repository" in result.output
 
     def test_review_interactive_with_path_filter(
-        self, cli_runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+        self, cli_runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, create_pending_operation) -> None:
         """Test interactive review with path filter."""
-        repo_dir = self.setup_isolated_env(tmp_path, monkeypatch)
+        repo_dir = tmp_path / "repo"
+        repo_dir.mkdir()
+        setup_repository(repo_dir)
         monkeypatch.chdir(repo_dir)
 
         # Create source files
@@ -750,13 +711,13 @@ organization:
         (repo_dir / "drafts" / "test2.pdf").write_text("content 2")
 
         # Create operations
-        self.create_pending_operation(
+        create_pending_operation(
             repo_path=str(repo_dir),
             file_path="inbox/test1.pdf",
             suggested_dir="documents",
             suggested_filename="test1.pdf",
         )
-        self.create_pending_operation(
+        create_pending_operation(
             repo_path=str(repo_dir),
             file_path="drafts/test2.pdf",
             suggested_dir="documents",
@@ -775,10 +736,11 @@ organization:
     # === RE-PROCESS TESTS ===
 
     def test_review_interactive_reprocess_basic(
-        self, cli_runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+        self, cli_runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, create_pending_operation) -> None:
         """Test re-processing a suggestion with additional instructions."""
-        repo_dir = self.setup_isolated_env(tmp_path, monkeypatch)
+        repo_dir = tmp_path / "repo"
+        repo_dir.mkdir()
+        setup_repository(repo_dir)
         monkeypatch.chdir(repo_dir)
 
         # Create source file
@@ -787,7 +749,7 @@ organization:
         source_file.write_text("test content")
 
         # Create pending operation
-        self.create_pending_operation(
+        create_pending_operation(
             repo_path=str(repo_dir),
             file_path="inbox/test.pdf",
             suggested_dir="documents",
@@ -849,10 +811,11 @@ organization:
                 pass
 
     def test_review_interactive_reprocess_multiple_iterations(
-        self, cli_runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+        self, cli_runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, create_pending_operation) -> None:
         """Test re-processing multiple times before applying."""
-        repo_dir = self.setup_isolated_env(tmp_path, monkeypatch)
+        repo_dir = tmp_path / "repo"
+        repo_dir.mkdir()
+        setup_repository(repo_dir)
         monkeypatch.chdir(repo_dir)
 
         # Create source file
@@ -861,7 +824,7 @@ organization:
         source_file.write_text("test content")
 
         # Create pending operation
-        self.create_pending_operation(
+        create_pending_operation(
             repo_path=str(repo_dir),
             file_path="inbox/test.pdf",
             suggested_dir="documents",
@@ -916,10 +879,11 @@ organization:
         assert not source_file.exists()
 
     def test_review_interactive_reprocess_then_reject(
-        self, cli_runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+        self, cli_runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, create_pending_operation) -> None:
         """Test re-processing and then rejecting the new suggestion."""
-        repo_dir = self.setup_isolated_env(tmp_path, monkeypatch)
+        repo_dir = tmp_path / "repo"
+        repo_dir.mkdir()
+        setup_repository(repo_dir)
         monkeypatch.chdir(repo_dir)
 
         # Create source file
@@ -928,7 +892,7 @@ organization:
         source_file.write_text("test content")
 
         # Create pending operation
-        self.create_pending_operation(
+        create_pending_operation(
             repo_path=str(repo_dir),
             file_path="inbox/test.pdf",
             suggested_dir="documents",
@@ -983,10 +947,11 @@ organization:
                 pass
 
     def test_review_interactive_reprocess_cancel(
-        self, cli_runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+        self, cli_runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, create_pending_operation) -> None:
         """Test cancelling re-process by providing empty instructions."""
-        repo_dir = self.setup_isolated_env(tmp_path, monkeypatch)
+        repo_dir = tmp_path / "repo"
+        repo_dir.mkdir()
+        setup_repository(repo_dir)
         monkeypatch.chdir(repo_dir)
 
         # Create source file
@@ -995,7 +960,7 @@ organization:
         source_file.write_text("test content")
 
         # Create pending operation
-        self.create_pending_operation(
+        create_pending_operation(
             repo_path=str(repo_dir),
             file_path="inbox/test.pdf",
             suggested_dir="documents",
@@ -1044,10 +1009,11 @@ organization:
                 pass
 
     def test_review_interactive_reprocess_invalid_path_security(
-        self, cli_runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+        self, cli_runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, create_pending_operation) -> None:
         """Test that invalid paths from LLM during re-process don't corrupt the operation."""
-        repo_dir = self.setup_isolated_env(tmp_path, monkeypatch)
+        repo_dir = tmp_path / "repo"
+        repo_dir.mkdir()
+        setup_repository(repo_dir)
         monkeypatch.chdir(repo_dir)
 
         # Create source file
@@ -1056,7 +1022,7 @@ organization:
         source_file.write_text("test content")
 
         # Create pending operation with valid suggestion
-        self.create_pending_operation(
+        create_pending_operation(
             repo_path=str(repo_dir),
             file_path="inbox/test.pdf",
             suggested_dir="documents",
@@ -1112,10 +1078,11 @@ organization:
                 pass
 
     def test_review_interactive_open_file(
-        self, cli_runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+        self, cli_runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, create_pending_operation) -> None:
         """Test interactive mode - user opens file with default application."""
-        repo_dir = self.setup_isolated_env(tmp_path, monkeypatch)
+        repo_dir = tmp_path / "repo"
+        repo_dir.mkdir()
+        setup_repository(repo_dir)
         monkeypatch.chdir(repo_dir)
 
         # Create source file
@@ -1124,7 +1091,7 @@ organization:
         source_file.write_text("test content")
 
         # Create pending operation
-        self.create_pending_operation(
+        create_pending_operation(
             repo_path=str(repo_dir),
             file_path="inbox/test.pdf",
             suggested_dir="documents",
@@ -1176,14 +1143,15 @@ organization:
                 pass
 
     def test_review_interactive_open_file_not_found(
-        self, cli_runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+        self, cli_runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, create_pending_operation) -> None:
         """Test interactive mode - open file fails when file doesn't exist."""
-        repo_dir = self.setup_isolated_env(tmp_path, monkeypatch)
+        repo_dir = tmp_path / "repo"
+        repo_dir.mkdir()
+        setup_repository(repo_dir)
         monkeypatch.chdir(repo_dir)
 
         # Create pending operation WITHOUT creating the actual file
-        self.create_pending_operation(
+        create_pending_operation(
             repo_path=str(repo_dir),
             file_path="inbox/missing.pdf",
             suggested_dir="documents",
@@ -1210,10 +1178,11 @@ organization:
                 pass
 
     def test_review_interactive_open_file_command_fails(
-        self, cli_runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+        self, cli_runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, create_pending_operation) -> None:
         """Test interactive mode - open file handles subprocess failure gracefully."""
-        repo_dir = self.setup_isolated_env(tmp_path, monkeypatch)
+        repo_dir = tmp_path / "repo"
+        repo_dir.mkdir()
+        setup_repository(repo_dir)
         monkeypatch.chdir(repo_dir)
 
         # Create source file
@@ -1222,7 +1191,7 @@ organization:
         source_file.write_text("test content")
 
         # Create pending operation
-        self.create_pending_operation(
+        create_pending_operation(
             repo_path=str(repo_dir),
             file_path="inbox/test.pdf",
             suggested_dir="documents",
@@ -1272,35 +1241,6 @@ organization:
 class TestReviewSecurityCleanup:
     """Test cleanup of invalid operations with security issues."""
 
-    def setup_repository(self, path: Path) -> None:
-        """Set up a docman repository for testing."""
-        docman_dir = path / ".docman"
-        docman_dir.mkdir()
-        config_file = docman_dir / "config.yaml"
-        # Create folder definitions (required)
-        config_content = """
-organization:
-  variable_patterns:
-    year: "4-digit year in YYYY format"
-    category: "Document category"
-  folders:
-    Documents:
-      description: "Test documents folder"
-      folders:
-        Archive:
-          description: "Archived documents"
-"""
-        config_file.write_text(config_content)
-
-    def setup_isolated_env(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
-        """Set up isolated environment."""
-        app_config_dir = tmp_path / "app_config"
-        repo_dir = tmp_path / "repo"
-        repo_dir.mkdir()
-        monkeypatch.setenv("DOCMAN_APP_CONFIG_DIR", str(app_config_dir))
-        self.setup_repository(repo_dir)
-        return repo_dir
-
     def test_interactive_review_allows_rejecting_invalid_operations(
         self,
         cli_runner: CliRunner,
@@ -1308,7 +1248,9 @@ organization:
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         """Test that invalid operations can be rejected in interactive mode."""
-        repo_dir = self.setup_isolated_env(tmp_path, monkeypatch)
+        repo_dir = tmp_path / "repo"
+        repo_dir.mkdir()
+        setup_repository(repo_dir)
 
         # Create a test file
         test_file = repo_dir / "test.pdf"
@@ -1401,7 +1343,9 @@ organization:
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         """Test that invalid operations are auto-rejected in bulk mode."""
-        repo_dir = self.setup_isolated_env(tmp_path, monkeypatch)
+        repo_dir = tmp_path / "repo"
+        repo_dir.mkdir()
+        setup_repository(repo_dir)
 
         # Create a test file
         test_file = repo_dir / "test.pdf"
@@ -1490,94 +1434,13 @@ organization:
 class TestReprocessConversationHistory:
     """Tests for conversational re-process feature with prompt history tracking."""
 
-    def setup_repository(self, path: Path) -> None:
-        """Set up a docman repository for testing."""
-        docman_dir = path / ".docman"
-        docman_dir.mkdir()
-        config_file = docman_dir / "config.yaml"
-        # Create folder definitions (required)
-        config_content = """
-organization:
-  variable_patterns:
-    year: "4-digit year in YYYY format"
-    category: "Document category"
-  folders:
-    Documents:
-      description: "Test documents folder"
-      folders:
-        Archive:
-          description: "Archived documents"
-"""
-        config_file.write_text(config_content)
-
-    def setup_isolated_env(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
-        """Set up isolated environment with separate app config and repository."""
-        app_config_dir = tmp_path / "app_config"
-        repo_dir = tmp_path / "repo"
-        repo_dir.mkdir()
-        monkeypatch.setenv("DOCMAN_APP_CONFIG_DIR", str(app_config_dir))
-        self.setup_repository(repo_dir)
-        return repo_dir
-
-    def create_pending_operation(
-        self,
-        repo_path: str,
-        file_path: str,
-        suggested_dir: str,
-        suggested_filename: str,
-        reason: str = "Test reason",
-    ) -> None:
-        """Helper to create a pending operation in the database."""
-        ensure_database()
-        session_gen = get_session()
-        session = next(session_gen)
-        try:
-            # Create document
-            doc = Document(
-                content="Invoice #123\nDate: 2024-01-15\nVendor: ACME Corp",
-                content_hash="test_hash_123",
-            )
-            session.add(doc)
-            session.flush()
-
-            # Create document copy
-            doc_copy = DocumentCopy(
-                repository_path=repo_path,
-                file_path=file_path,
-                document_id=doc.id,
-                stored_content_hash="test_hash_123",
-                stored_size=100,
-                stored_mtime=123456.0,
-                organization_status=OrganizationStatus.UNORGANIZED,
-            )
-            session.add(doc_copy)
-            session.flush()
-
-            # Create pending operation
-            op = Operation(
-                document_copy_id=doc_copy.id,
-                suggested_directory_path=suggested_dir,
-                suggested_filename=suggested_filename,
-                reason=reason,
-                status=OperationStatus.PENDING,
-                prompt_hash="test_hash",
-                document_content_hash="test_hash_123",
-                model_name="test-model",
-                created_at=get_utc_now(),
-            )
-            session.add(op)
-            session.commit()
-        finally:
-            try:
-                next(session_gen)
-            except StopIteration:
-                pass
-
     def test_prompt_includes_first_iteration_history(
-        self, cli_runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+        self, cli_runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, create_pending_operation
     ) -> None:
         """Test that prompt includes first suggestion and user feedback after first re-process."""
-        repo_dir = self.setup_isolated_env(tmp_path, monkeypatch)
+        repo_dir = tmp_path / "repo"
+        repo_dir.mkdir()
+        setup_repository(repo_dir)
         monkeypatch.chdir(repo_dir)
 
         # Create source file
@@ -1586,7 +1449,7 @@ organization:
         source_file.write_text("Invoice #123\nDate: 2024-01-15\nVendor: ACME Corp")
 
         # Create pending operation with initial suggestion
-        self.create_pending_operation(
+        create_pending_operation(
             repo_path=str(repo_dir),
             file_path="inbox/invoice.pdf",
             suggested_dir="invoices/2024",
@@ -1651,10 +1514,12 @@ organization:
         assert "</userFeedback>" in user_prompt
 
     def test_prompt_includes_multiple_iteration_history(
-        self, cli_runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+        self, cli_runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, create_pending_operation
     ) -> None:
         """Test that prompt grows to include all iterations in conversation."""
-        repo_dir = self.setup_isolated_env(tmp_path, monkeypatch)
+        repo_dir = tmp_path / "repo"
+        repo_dir.mkdir()
+        setup_repository(repo_dir)
         monkeypatch.chdir(repo_dir)
 
         # Create source file
@@ -1663,7 +1528,7 @@ organization:
         source_file.write_text("Invoice #123\nDate: 2024-01-15\nVendor: ACME Corp")
 
         # Create pending operation with initial suggestion
-        self.create_pending_operation(
+        create_pending_operation(
             repo_path=str(repo_dir),
             file_path="inbox/invoice.pdf",
             suggested_dir="invoices/2024",
@@ -1739,7 +1604,9 @@ organization:
         self, cli_runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """Test that conversation history resets when moving to next operation."""
-        repo_dir = self.setup_isolated_env(tmp_path, monkeypatch)
+        repo_dir = tmp_path / "repo"
+        repo_dir.mkdir()
+        setup_repository(repo_dir)
         monkeypatch.chdir(repo_dir)
 
         # Create two source files
@@ -1866,10 +1733,12 @@ organization:
         assert 'filePath="inbox/doc1.pdf"' not in second_call_prompt
 
     def test_special_characters_in_feedback(
-        self, cli_runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+        self, cli_runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, create_pending_operation
     ) -> None:
         """Test that special characters in feedback are properly handled in prompt."""
-        repo_dir = self.setup_isolated_env(tmp_path, monkeypatch)
+        repo_dir = tmp_path / "repo"
+        repo_dir.mkdir()
+        setup_repository(repo_dir)
         monkeypatch.chdir(repo_dir)
 
         # Create source file
@@ -1878,7 +1747,7 @@ organization:
         source_file.write_text("Test content")
 
         # Create pending operation
-        self.create_pending_operation(
+        create_pending_operation(
             repo_path=str(repo_dir),
             file_path="inbox/test.pdf",
             suggested_dir="docs",
@@ -1928,10 +1797,12 @@ organization:
         assert "</userFeedback>" in user_prompt
 
     def test_very_long_feedback(
-        self, cli_runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+        self, cli_runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, create_pending_operation
     ) -> None:
         """Test handling of very long user feedback in conversation."""
-        repo_dir = self.setup_isolated_env(tmp_path, monkeypatch)
+        repo_dir = tmp_path / "repo"
+        repo_dir.mkdir()
+        setup_repository(repo_dir)
         monkeypatch.chdir(repo_dir)
 
         # Create source file
@@ -1940,7 +1811,7 @@ organization:
         source_file.write_text("Test content")
 
         # Create pending operation
-        self.create_pending_operation(
+        create_pending_operation(
             repo_path=str(repo_dir),
             file_path="inbox/test.pdf",
             suggested_dir="docs",
@@ -1988,14 +1859,12 @@ organization:
         assert len(user_prompt) > 2000
 
     def test_prompt_structure_with_no_organization_instructions(
-        self, cli_runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+        self, cli_runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, create_pending_operation
     ) -> None:
         """Test prompt structure when organization instructions are missing."""
         repo_dir = tmp_path / "repo"
         repo_dir.mkdir()
-        app_config_dir = tmp_path / "app_config"
-        monkeypatch.setenv("DOCMAN_APP_CONFIG_DIR", str(app_config_dir))
-        
+
         # Setup repo WITHOUT instructions file
         docman_dir = repo_dir / ".docman"
         docman_dir.mkdir()
@@ -2011,7 +1880,7 @@ organization:
         source_file.write_text("Test content")
 
         # Create pending operation
-        self.create_pending_operation(
+        create_pending_operation(
             repo_path=str(repo_dir),
             file_path="inbox/test.pdf",
             suggested_dir="docs",
@@ -2047,10 +1916,12 @@ organization:
         assert mock_provider_instance.generate_suggestions.call_count == 0
 
     def test_reprocess_not_persisted_on_skip(
-        self, cli_runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+        self, cli_runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, create_pending_operation
     ) -> None:
         """Test that re-processed suggestions are NOT persisted when skipped."""
-        repo_dir = self.setup_isolated_env(tmp_path, monkeypatch)
+        repo_dir = tmp_path / "repo"
+        repo_dir.mkdir()
+        setup_repository(repo_dir)
         monkeypatch.chdir(repo_dir)
 
         # Create source file
@@ -2059,7 +1930,7 @@ organization:
         source_file.write_text("test content")
 
         # Create pending operation with ORIGINAL suggestion
-        self.create_pending_operation(
+        create_pending_operation(
             repo_path=str(repo_dir),
             file_path="inbox/test.pdf",
             suggested_dir="original_dir",
@@ -2113,10 +1984,12 @@ organization:
                 pass
 
     def test_reprocess_not_persisted_on_reject(
-        self, cli_runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+        self, cli_runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, create_pending_operation
     ) -> None:
         """Test that re-processed suggestions are NOT persisted when rejected."""
-        repo_dir = self.setup_isolated_env(tmp_path, monkeypatch)
+        repo_dir = tmp_path / "repo"
+        repo_dir.mkdir()
+        setup_repository(repo_dir)
         monkeypatch.chdir(repo_dir)
 
         # Create source file
@@ -2125,7 +1998,7 @@ organization:
         source_file.write_text("test content")
 
         # Create pending operation with ORIGINAL suggestion
-        self.create_pending_operation(
+        create_pending_operation(
             repo_path=str(repo_dir),
             file_path="inbox/test.pdf",
             suggested_dir="original_dir",
@@ -2179,10 +2052,12 @@ organization:
                 pass
 
     def test_reprocess_persisted_on_apply(
-        self, cli_runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+        self, cli_runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, create_pending_operation
     ) -> None:
         """Test that re-processed suggestions ARE persisted when applied."""
-        repo_dir = self.setup_isolated_env(tmp_path, monkeypatch)
+        repo_dir = tmp_path / "repo"
+        repo_dir.mkdir()
+        setup_repository(repo_dir)
         monkeypatch.chdir(repo_dir)
 
         # Create source file
@@ -2191,7 +2066,7 @@ organization:
         source_file.write_text("test content")
 
         # Create pending operation with ORIGINAL suggestion
-        self.create_pending_operation(
+        create_pending_operation(
             repo_path=str(repo_dir),
             file_path="inbox/test.pdf",
             suggested_dir="original_dir",
@@ -2250,10 +2125,12 @@ organization:
                 pass
 
     def test_reprocess_not_persisted_on_conflict_skip(
-        self, cli_runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+        self, cli_runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, create_pending_operation
     ) -> None:
         """Test that re-processed suggestions are NOT persisted when conflict occurs and user skips."""
-        repo_dir = self.setup_isolated_env(tmp_path, monkeypatch)
+        repo_dir = tmp_path / "repo"
+        repo_dir.mkdir()
+        setup_repository(repo_dir)
         monkeypatch.chdir(repo_dir)
 
         # Create source file
@@ -2267,7 +2144,7 @@ organization:
         conflict_target.write_text("existing file")
 
         # Create pending operation with ORIGINAL suggestion
-        self.create_pending_operation(
+        create_pending_operation(
             repo_path=str(repo_dir),
             file_path="inbox/test.pdf",
             suggested_dir="original_dir",

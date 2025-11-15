@@ -90,21 +90,17 @@ class TestSetVariablePattern:
         assert "year" in patterns
         assert patterns["year"] == "4-digit year"
 
-    def test_empty_name_raises_error(self, tmp_path: Path) -> None:
+    @pytest.mark.parametrize("empty_value", ["", "   "])
+    def test_empty_name_raises_error(self, tmp_path: Path, empty_value: str) -> None:
         """Test that empty variable name raises ValueError."""
         with pytest.raises(ValueError, match="Variable name cannot be empty"):
-            set_variable_pattern(tmp_path, "", "Description")
+            set_variable_pattern(tmp_path, empty_value, "Description")
 
-        with pytest.raises(ValueError, match="Variable name cannot be empty"):
-            set_variable_pattern(tmp_path, "   ", "Description")
-
-    def test_empty_description_raises_error(self, tmp_path: Path) -> None:
+    @pytest.mark.parametrize("empty_value", ["", "   "])
+    def test_empty_description_raises_error(self, tmp_path: Path, empty_value: str) -> None:
         """Test that empty description raises ValueError."""
         with pytest.raises(ValueError, match="Variable description cannot be empty"):
-            set_variable_pattern(tmp_path, "year", "")
-
-        with pytest.raises(ValueError, match="Variable description cannot be empty"):
-            set_variable_pattern(tmp_path, "year", "   ")
+            set_variable_pattern(tmp_path, "year", empty_value)
 
 
 @pytest.mark.unit
@@ -127,13 +123,11 @@ class TestRemoveVariablePattern:
         with pytest.raises(ValueError, match="Variable pattern 'year' not found"):
             remove_variable_pattern(tmp_path, "year")
 
-    def test_empty_name_raises_error(self, tmp_path: Path) -> None:
+    @pytest.mark.parametrize("empty_value", ["", "   "])
+    def test_empty_name_raises_error(self, tmp_path: Path, empty_value: str) -> None:
         """Test that empty variable name raises ValueError."""
         with pytest.raises(ValueError, match="Variable name cannot be empty"):
-            remove_variable_pattern(tmp_path, "")
-
-        with pytest.raises(ValueError, match="Variable name cannot be empty"):
-            remove_variable_pattern(tmp_path, "   ")
+            remove_variable_pattern(tmp_path, empty_value)
 
     def test_removes_from_existing_config(self, tmp_path: Path) -> None:
         """Test removing pattern from config with other data."""

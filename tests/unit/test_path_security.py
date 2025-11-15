@@ -40,45 +40,40 @@ class TestValidatePathComponent:
         with pytest.raises(PathSecurityError, match="cannot be empty"):
             validate_path_component("")
 
-    def test_reject_parent_directory_simple(self):
-        """Reject simple parent directory traversal (..)."""
+    @pytest.mark.parametrize("invalid_path", [
+        "..",
+        "safe/../danger",
+        "../../etc/passwd",
+        "docs/../../../etc",
+    ])
+    def test_reject_parent_directory_traversal(self, invalid_path):
+        """Reject parent directory traversal in various forms."""
         with pytest.raises(PathSecurityError, match="parent directory traversal"):
-            validate_path_component("..")
+            validate_path_component(invalid_path)
 
-    def test_reject_parent_directory_in_path(self):
-        """Reject paths containing parent directory traversal."""
-        with pytest.raises(PathSecurityError, match="parent directory traversal"):
-            validate_path_component("safe/../danger")
-
-        with pytest.raises(PathSecurityError, match="parent directory traversal"):
-            validate_path_component("../../etc/passwd")
-
-        with pytest.raises(PathSecurityError, match="parent directory traversal"):
-            validate_path_component("docs/../../../etc")
-
-    def test_reject_absolute_paths_unix(self):
-        """Reject Unix absolute paths."""
+    @pytest.mark.parametrize("absolute_path", [
+        "/etc/passwd",
+        "/home/user",
+    ])
+    def test_reject_absolute_paths(self, absolute_path):
+        """Reject absolute paths."""
         with pytest.raises(PathSecurityError, match="cannot be absolute"):
-            validate_path_component("/etc/passwd")
+            validate_path_component(absolute_path)
 
-        with pytest.raises(PathSecurityError, match="cannot be absolute"):
-            validate_path_component("/home/user")
-
-    def test_reject_null_bytes(self):
+    @pytest.mark.parametrize("path_with_null", [
+        "file\0.txt",
+        "docs/\0/file.pdf",
+    ])
+    def test_reject_null_bytes(self, path_with_null):
         """Reject paths containing null bytes."""
         with pytest.raises(PathSecurityError, match="null byte"):
-            validate_path_component("file\0.txt")
+            validate_path_component(path_with_null)
 
-        with pytest.raises(PathSecurityError, match="null byte"):
-            validate_path_component("docs/\0/file.pdf")
-
-    def test_reject_invalid_characters(self):
+    @pytest.mark.parametrize("invalid_char", ["<", ">", ":", '"', "|", "?", "*"])
+    def test_reject_invalid_characters(self, invalid_char):
         """Reject paths with invalid characters."""
-        invalid_chars = ["<", ">", ":", '"', "|", "?", "*"]
-
-        for char in invalid_chars:
-            with pytest.raises(PathSecurityError, match="invalid character"):
-                validate_path_component(f"file{char}name.txt")
+        with pytest.raises(PathSecurityError, match="invalid character"):
+            validate_path_component(f"file{invalid_char}name.txt")
 
     def test_accept_dots_in_filename(self):
         """Accept valid dots in filenames (not parent traversal)."""
@@ -111,13 +106,14 @@ class TestValidateTargetPath:
         result = validate_target_path(tmp_path, "reports/2024/Q1", "summary.pdf")
         assert result == tmp_path / "reports" / "2024" / "Q1" / "summary.pdf"
 
-    def test_reject_path_escaping_repository(self, tmp_path):
+    @pytest.mark.parametrize("directory,filename", [
+        ("../../etc", "passwd"),
+        ("..", "file.txt"),
+    ])
+    def test_reject_path_escaping_repository(self, tmp_path, directory, filename):
         """Reject paths that escape the repository."""
         with pytest.raises(PathSecurityError, match="parent directory traversal"):
-            validate_target_path(tmp_path, "../../etc", "passwd")
-
-        with pytest.raises(PathSecurityError, match="parent directory traversal"):
-            validate_target_path(tmp_path, "..", "file.txt")
+            validate_target_path(tmp_path, directory, filename)
 
     def test_reject_absolute_directory_path(self, tmp_path):
         """Reject absolute paths in directory component."""
@@ -129,31 +125,32 @@ class TestValidateTargetPath:
         with pytest.raises(PathSecurityError, match="cannot be absolute"):
             validate_target_path(tmp_path, "docs", "/etc/passwd")
 
-    def test_reject_parent_traversal_in_directory(self, tmp_path):
-        """Reject parent directory traversal in directory path."""
+    @pytest.mark.parametrize("directory,filename,description", [
+        ("safe/../danger", "file.txt", "directory"),
+        ("docs", "../file.txt", "filename"),
+    ])
+    def test_reject_parent_traversal_in_components(self, tmp_path, directory, filename, description):
+        """Reject parent directory traversal in any component."""
         with pytest.raises(PathSecurityError, match="parent directory traversal"):
-            validate_target_path(tmp_path, "safe/../danger", "file.txt")
+            validate_target_path(tmp_path, directory, filename)
 
-    def test_reject_parent_traversal_in_filename(self, tmp_path):
-        """Reject parent directory traversal in filename."""
-        with pytest.raises(PathSecurityError, match="parent directory traversal"):
-            validate_target_path(tmp_path, "docs", "../file.txt")
-
-    def test_reject_null_bytes_in_paths(self, tmp_path):
+    @pytest.mark.parametrize("directory,filename", [
+        ("docs\0", "file.txt"),
+        ("docs", "file\0.txt"),
+    ])
+    def test_reject_null_bytes_in_paths(self, tmp_path, directory, filename):
         """Reject null bytes in any component."""
         with pytest.raises(PathSecurityError, match="null byte"):
-            validate_target_path(tmp_path, "docs\0", "file.txt")
+            validate_target_path(tmp_path, directory, filename)
 
-        with pytest.raises(PathSecurityError, match="null byte"):
-            validate_target_path(tmp_path, "docs", "file\0.txt")
-
-    def test_reject_invalid_characters_in_paths(self, tmp_path):
+    @pytest.mark.parametrize("directory,filename", [
+        ("docs<>", "file.txt"),
+        ("docs", "file*.txt"),
+    ])
+    def test_reject_invalid_characters_in_paths(self, tmp_path, directory, filename):
         """Reject invalid characters in any component."""
         with pytest.raises(PathSecurityError, match="invalid character"):
-            validate_target_path(tmp_path, "docs<>", "file.txt")
-
-        with pytest.raises(PathSecurityError, match="invalid character"):
-            validate_target_path(tmp_path, "docs", "file*.txt")
+            validate_target_path(tmp_path, directory, filename)
 
     def test_require_absolute_base_path(self, tmp_path):
         """Require base_path to be absolute."""
@@ -259,30 +256,17 @@ class TestEdgeCases:
 class TestSecurityAttackVectors:
     """Test specific attack vectors from security analysis."""
 
-    def test_attack_ssh_keys(self, tmp_path):
-        """Block attempt to access SSH keys."""
-        with pytest.raises(PathSecurityError, match="parent directory traversal"):
-            validate_target_path(tmp_path, "../../.ssh", "id_rsa")
-
-    def test_attack_etc_passwd(self, tmp_path):
-        """Block attempt to access /etc/passwd."""
-        with pytest.raises(PathSecurityError, match="parent directory traversal"):
-            validate_target_path(tmp_path, "../../../etc", "passwd")
-
-    def test_attack_absolute_etc_hosts(self, tmp_path):
-        """Block attempt to overwrite /etc/hosts."""
-        with pytest.raises(PathSecurityError, match="cannot be absolute"):
-            validate_target_path(tmp_path, "/etc", "hosts")
-
-    def test_attack_hidden_traversal(self, tmp_path):
-        """Block hidden traversal in seemingly safe path."""
-        with pytest.raises(PathSecurityError, match="parent directory traversal"):
-            validate_target_path(tmp_path, "safe/../../danger", "file.pdf")
-
-    def test_attack_null_byte_injection(self, tmp_path):
-        """Block null byte injection attack."""
-        with pytest.raises(PathSecurityError, match="null byte"):
-            validate_target_path(tmp_path, "docs", "file.txt\0.pdf")
+    @pytest.mark.parametrize("attack_name,directory,filename,expected_error", [
+        ("SSH keys access", "../../.ssh", "id_rsa", "parent directory traversal"),
+        ("/etc/passwd access", "../../../etc", "passwd", "parent directory traversal"),
+        ("absolute /etc/hosts", "/etc", "hosts", "cannot be absolute"),
+        ("hidden traversal", "safe/../../danger", "file.pdf", "parent directory traversal"),
+        ("null byte injection", "docs", "file.txt\0.pdf", "null byte"),
+    ])
+    def test_common_attack_vectors(self, tmp_path, attack_name, directory, filename, expected_error):
+        """Block common security attack vectors."""
+        with pytest.raises(PathSecurityError, match=expected_error):
+            validate_target_path(tmp_path, directory, filename)
 
     def test_attack_windows_device_names(self, tmp_path):
         """Handle Windows device names."""

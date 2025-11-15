@@ -14,13 +14,6 @@ from docman.llm_config import ProviderConfig, add_provider
 class TestLLMAdd:
     """Integration tests for 'docman llm add' command."""
 
-    def setup_isolated_env(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        """Set up isolated environment with separate app config."""
-        app_config_dir = tmp_path / "app_config"
-        monkeypatch.setenv("DOCMAN_APP_CONFIG_DIR", str(app_config_dir))
-
     @patch("docman.cli.get_llm_provider")
     @patch("docman.llm_config.keyring")
     def test_add_success_with_all_options(
@@ -32,8 +25,6 @@ class TestLLMAdd:
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         """Test successfully adding provider with all options provided (non-interactive)."""
-        self.setup_isolated_env(tmp_path, monkeypatch)
-
         # Mock keyring operations
         mock_keyring.set_password.return_value = None
 
@@ -84,8 +75,6 @@ class TestLLMAdd:
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         """Test that add command uses wizard when options are missing."""
-        self.setup_isolated_env(tmp_path, monkeypatch)
-
         # Mock wizard to return success
         mock_wizard.return_value = True
 
@@ -105,8 +94,6 @@ class TestLLMAdd:
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         """Test that add command handles wizard cancellation."""
-        self.setup_isolated_env(tmp_path, monkeypatch)
-
         # Mock wizard to return failure
         mock_wizard.return_value = False
 
@@ -129,8 +116,6 @@ class TestLLMAdd:
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         """Test that adding provider with duplicate name fails."""
-        self.setup_isolated_env(tmp_path, monkeypatch)
-
         # Mock keyring operations
         mock_keyring.set_password.return_value = None
 
@@ -192,8 +177,6 @@ class TestLLMAdd:
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         """Test that add command handles connection test failures."""
-        self.setup_isolated_env(tmp_path, monkeypatch)
-
         # Mock keyring operations
         mock_keyring.set_password.return_value = None
 
@@ -236,8 +219,6 @@ class TestLLMAdd:
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         """Test that first provider is automatically set as active."""
-        self.setup_isolated_env(tmp_path, monkeypatch)
-
         # Mock keyring operations
         mock_keyring.set_password.return_value = None
 
@@ -273,13 +254,6 @@ class TestLLMAdd:
 class TestLLMList:
     """Integration tests for 'docman llm list' command."""
 
-    def setup_isolated_env(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        """Set up isolated environment with separate app config."""
-        app_config_dir = tmp_path / "app_config"
-        monkeypatch.setenv("DOCMAN_APP_CONFIG_DIR", str(app_config_dir))
-
     def test_list_empty(
         self,
         cli_runner: CliRunner,
@@ -287,8 +261,6 @@ class TestLLMList:
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         """Test list command with no providers configured."""
-        self.setup_isolated_env(tmp_path, monkeypatch)
-
         result = cli_runner.invoke(main, ["llm", "list"], catch_exceptions=False)
 
         assert result.exit_code == 0
@@ -306,8 +278,6 @@ class TestLLMList:
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         """Test list command with single provider."""
-        self.setup_isolated_env(tmp_path, monkeypatch)
-
         # Mock dependencies
         mock_keyring.set_password.return_value = None
         mock_provider_instance = MagicMock()
@@ -353,8 +323,6 @@ class TestLLMList:
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         """Test list command with multiple providers shows active indicator correctly."""
-        self.setup_isolated_env(tmp_path, monkeypatch)
-
         # Mock dependencies
         mock_keyring.set_password.return_value = None
         mock_provider_instance = MagicMock()
@@ -415,13 +383,6 @@ class TestLLMList:
 class TestLLMRemove:
     """Integration tests for 'docman llm remove' command."""
 
-    def setup_isolated_env(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        """Set up isolated environment with separate app config."""
-        app_config_dir = tmp_path / "app_config"
-        monkeypatch.setenv("DOCMAN_APP_CONFIG_DIR", str(app_config_dir))
-
     @patch("docman.cli.get_llm_provider")
     @patch("docman.llm_config.keyring")
     def test_remove_success_with_confirmation(
@@ -433,8 +394,6 @@ class TestLLMRemove:
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         """Test successfully removing provider with confirmation."""
-        self.setup_isolated_env(tmp_path, monkeypatch)
-
         # Mock dependencies for add
         mock_keyring.set_password.return_value = None
         mock_keyring.delete_password.return_value = None
@@ -483,8 +442,6 @@ class TestLLMRemove:
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         """Test removing provider with -y flag skips confirmation."""
-        self.setup_isolated_env(tmp_path, monkeypatch)
-
         # Mock dependencies
         mock_keyring.set_password.return_value = None
         mock_keyring.delete_password.return_value = None
@@ -530,8 +487,6 @@ class TestLLMRemove:
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         """Test that declining confirmation aborts removal."""
-        self.setup_isolated_env(tmp_path, monkeypatch)
-
         # Mock dependencies
         mock_keyring.set_password.return_value = None
         mock_keyring.delete_password.return_value = None
@@ -575,8 +530,6 @@ class TestLLMRemove:
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         """Test removing a provider that doesn't exist."""
-        self.setup_isolated_env(tmp_path, monkeypatch)
-
         result = cli_runner.invoke(
             main, ["llm", "remove", "nonexistent"], catch_exceptions=False
         )
@@ -595,8 +548,6 @@ class TestLLMRemove:
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         """Test that removing active provider selects a new active provider."""
-        self.setup_isolated_env(tmp_path, monkeypatch)
-
         # Mock dependencies
         mock_keyring.set_password.return_value = None
         mock_keyring.delete_password.return_value = None
@@ -656,13 +607,6 @@ class TestLLMRemove:
 class TestLLMSetActive:
     """Integration tests for 'docman llm set-active' command."""
 
-    def setup_isolated_env(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        """Set up isolated environment with separate app config."""
-        app_config_dir = tmp_path / "app_config"
-        monkeypatch.setenv("DOCMAN_APP_CONFIG_DIR", str(app_config_dir))
-
     @patch("docman.cli.get_llm_provider")
     @patch("docman.llm_config.keyring")
     def test_set_active_success(
@@ -674,8 +618,6 @@ class TestLLMSetActive:
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         """Test successfully setting a provider as active."""
-        self.setup_isolated_env(tmp_path, monkeypatch)
-
         # Mock dependencies
         mock_keyring.set_password.return_value = None
         mock_provider_instance = MagicMock()
@@ -741,8 +683,6 @@ class TestLLMSetActive:
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         """Test setting a nonexistent provider as active."""
-        self.setup_isolated_env(tmp_path, monkeypatch)
-
         result = cli_runner.invoke(
             main, ["llm", "set-active", "nonexistent"], catch_exceptions=False
         )
@@ -755,13 +695,6 @@ class TestLLMSetActive:
 class TestLLMShow:
     """Integration tests for 'docman llm show' command."""
 
-    def setup_isolated_env(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        """Set up isolated environment with separate app config."""
-        app_config_dir = tmp_path / "app_config"
-        monkeypatch.setenv("DOCMAN_APP_CONFIG_DIR", str(app_config_dir))
-
     @patch("docman.cli.get_llm_provider")
     @patch("docman.llm_config.keyring")
     def test_show_active_provider_no_args(
@@ -773,8 +706,6 @@ class TestLLMShow:
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         """Test showing active provider without specifying name."""
-        self.setup_isolated_env(tmp_path, monkeypatch)
-
         # Mock dependencies
         mock_keyring.set_password.return_value = None
         mock_keyring.get_password.return_value = "test-key"
@@ -823,8 +754,6 @@ class TestLLMShow:
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         """Test showing a specific provider by name."""
-        self.setup_isolated_env(tmp_path, monkeypatch)
-
         # Mock dependencies
         mock_keyring.set_password.return_value = None
         mock_keyring.get_password.return_value = "test-key"
@@ -883,8 +812,6 @@ class TestLLMShow:
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         """Test showing a provider that doesn't exist."""
-        self.setup_isolated_env(tmp_path, monkeypatch)
-
         result = cli_runner.invoke(
             main, ["llm", "show", "nonexistent"], catch_exceptions=False
         )
@@ -899,8 +826,6 @@ class TestLLMShow:
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         """Test showing active provider when none is configured."""
-        self.setup_isolated_env(tmp_path, monkeypatch)
-
         result = cli_runner.invoke(main, ["llm", "show"], catch_exceptions=False)
 
         assert result.exit_code == 0
@@ -918,8 +843,6 @@ class TestLLMShow:
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         """Test showing provider when API key is missing from keyring."""
-        self.setup_isolated_env(tmp_path, monkeypatch)
-
         # Mock dependencies
         mock_keyring.set_password.return_value = None
         # Simulate API key not found
@@ -957,13 +880,6 @@ class TestLLMShow:
 class TestLLMTest:
     """Integration tests for 'docman llm test' command."""
 
-    def setup_isolated_env(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        """Set up isolated environment with separate app config."""
-        app_config_dir = tmp_path / "app_config"
-        monkeypatch.setenv("DOCMAN_APP_CONFIG_DIR", str(app_config_dir))
-
     @patch("docman.cli.get_llm_provider")
     @patch("docman.llm_config.keyring")
     def test_test_active_provider_success(
@@ -975,8 +891,6 @@ class TestLLMTest:
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         """Test connection to active provider successfully."""
-        self.setup_isolated_env(tmp_path, monkeypatch)
-
         # Mock dependencies
         mock_keyring.set_password.return_value = None
         mock_keyring.get_password.return_value = "test-key"
@@ -1020,8 +934,6 @@ class TestLLMTest:
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         """Test connection to specific provider by name."""
-        self.setup_isolated_env(tmp_path, monkeypatch)
-
         # Mock dependencies
         mock_keyring.set_password.return_value = None
         mock_keyring.get_password.return_value = "test-key"
@@ -1083,8 +995,6 @@ class TestLLMTest:
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         """Test handling of connection failure."""
-        self.setup_isolated_env(tmp_path, monkeypatch)
-
         # Mock dependencies
         mock_keyring.set_password.return_value = None
         mock_keyring.get_password.return_value = "test-key"
@@ -1132,8 +1042,6 @@ class TestLLMTest:
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         """Test error when API key is not found."""
-        self.setup_isolated_env(tmp_path, monkeypatch)
-
         # Mock dependencies
         mock_keyring.set_password.return_value = None
         # API key not found during test
@@ -1173,8 +1081,6 @@ class TestLLMTest:
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         """Test error when no active provider is configured."""
-        self.setup_isolated_env(tmp_path, monkeypatch)
-
         result = cli_runner.invoke(main, ["llm", "test"], catch_exceptions=False)
 
         assert result.exit_code == 0
@@ -1188,8 +1094,6 @@ class TestLLMTest:
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         """Test error when testing a nonexistent provider."""
-        self.setup_isolated_env(tmp_path, monkeypatch)
-
         result = cli_runner.invoke(
             main, ["llm", "test", "nonexistent"], catch_exceptions=False
         )

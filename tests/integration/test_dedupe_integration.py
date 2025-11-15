@@ -5,6 +5,7 @@ from pathlib import Path
 import pytest
 from click.testing import CliRunner
 
+from conftest import setup_repository
 from docman.cli import main
 from docman.database import ensure_database, get_session
 from docman.models import Document, DocumentCopy, Operation, OperationStatus
@@ -13,26 +14,6 @@ from docman.models import Document, DocumentCopy, Operation, OperationStatus
 @pytest.mark.integration
 class TestDocmanDedupe:
     """Integration tests for docman dedupe command."""
-
-    def setup_repository(self, path: Path) -> None:
-        """Set up a docman repository for testing."""
-        docman_dir = path / ".docman"
-        docman_dir.mkdir()
-        config_file = docman_dir / "config.yaml"
-        config_file.touch()
-
-        # Create instructions file (required)
-        instructions_file = docman_dir / "instructions.md"
-        instructions_file.write_text("Test organization instructions")
-
-    def setup_isolated_env(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
-        """Set up isolated environment with separate app config and repository."""
-        app_config_dir = tmp_path / "app_config"
-        repo_dir = tmp_path / "repo"
-        repo_dir.mkdir()
-        monkeypatch.setenv("DOCMAN_APP_CONFIG_DIR", str(app_config_dir))
-        self.setup_repository(repo_dir)
-        return repo_dir
 
     def create_duplicate_group(
         self,
@@ -83,7 +64,9 @@ class TestDocmanDedupe:
         self, cli_runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """Test that dedupe shows duplicate groups with correct metadata."""
-        repo_dir = self.setup_isolated_env(tmp_path, monkeypatch)
+        repo_dir = tmp_path / "repo"
+        repo_dir.mkdir()
+        setup_repository(repo_dir)
         monkeypatch.chdir(repo_dir)
 
         # Create 2 duplicate groups
@@ -112,7 +95,9 @@ class TestDocmanDedupe:
         self, cli_runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """Test dedupe interactive mode with keep choice."""
-        repo_dir = self.setup_isolated_env(tmp_path, monkeypatch)
+        repo_dir = tmp_path / "repo"
+        repo_dir.mkdir()
+        setup_repository(repo_dir)
         monkeypatch.chdir(repo_dir)
 
         # Create duplicate group
@@ -150,7 +135,9 @@ class TestDocmanDedupe:
         self, cli_runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """Test dedupe interactive mode with skip choice."""
-        repo_dir = self.setup_isolated_env(tmp_path, monkeypatch)
+        repo_dir = tmp_path / "repo"
+        repo_dir.mkdir()
+        setup_repository(repo_dir)
         monkeypatch.chdir(repo_dir)
 
         # Create duplicate group
@@ -185,7 +172,9 @@ class TestDocmanDedupe:
         self, cli_runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """Test dedupe interactive mode with keep all choice."""
-        repo_dir = self.setup_isolated_env(tmp_path, monkeypatch)
+        repo_dir = tmp_path / "repo"
+        repo_dir.mkdir()
+        setup_repository(repo_dir)
         monkeypatch.chdir(repo_dir)
 
         # Create duplicate group
@@ -220,7 +209,9 @@ class TestDocmanDedupe:
         self, cli_runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """Test dedupe bulk mode (-y flag)."""
-        repo_dir = self.setup_isolated_env(tmp_path, monkeypatch)
+        repo_dir = tmp_path / "repo"
+        repo_dir.mkdir()
+        setup_repository(repo_dir)
         monkeypatch.chdir(repo_dir)
 
         # Create 3 duplicate groups
@@ -266,7 +257,9 @@ class TestDocmanDedupe:
         self, cli_runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """Test dedupe dry-run mode."""
-        repo_dir = self.setup_isolated_env(tmp_path, monkeypatch)
+        repo_dir = tmp_path / "repo"
+        repo_dir.mkdir()
+        setup_repository(repo_dir)
         monkeypatch.chdir(repo_dir)
 
         # Create duplicate group
@@ -300,7 +293,9 @@ class TestDocmanDedupe:
         self, cli_runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """Test dedupe with path filter."""
-        repo_dir = self.setup_isolated_env(tmp_path, monkeypatch)
+        repo_dir = tmp_path / "repo"
+        repo_dir.mkdir()
+        setup_repository(repo_dir)
         monkeypatch.chdir(repo_dir)
 
         # Create duplicates in different directories
@@ -341,7 +336,9 @@ class TestDocmanDedupe:
         self, cli_runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """Test that dedupe deletes pending operations (cascade)."""
-        repo_dir = self.setup_isolated_env(tmp_path, monkeypatch)
+        repo_dir = tmp_path / "repo"
+        repo_dir.mkdir()
+        setup_repository(repo_dir)
         monkeypatch.chdir(repo_dir)
 
         # Create duplicate group
@@ -397,7 +394,9 @@ class TestDocmanDedupe:
         self, cli_runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """Test dedupe when no duplicates exist."""
-        repo_dir = self.setup_isolated_env(tmp_path, monkeypatch)
+        repo_dir = tmp_path / "repo"
+        repo_dir.mkdir()
+        setup_repository(repo_dir)
         monkeypatch.chdir(repo_dir)
 
         # Create unique documents only
@@ -414,7 +413,9 @@ class TestDocmanDedupe:
         self, cli_runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """Test dedupe gracefully handles missing files."""
-        repo_dir = self.setup_isolated_env(tmp_path, monkeypatch)
+        repo_dir = tmp_path / "repo"
+        repo_dir.mkdir()
+        setup_repository(repo_dir)
         monkeypatch.chdir(repo_dir)
 
         # Create duplicate group
