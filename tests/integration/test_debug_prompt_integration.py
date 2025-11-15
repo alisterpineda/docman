@@ -18,13 +18,20 @@ class TestDocmanDebugPrompt:
         docman_dir = path / ".docman"
         docman_dir.mkdir()
         config_file = docman_dir / "config.yaml"
-        config_file.write_text("organization:\n  folders: {}\n")
-
-        # Create instructions file (required)
-        instructions_file = docman_dir / "instructions.md"
-        instructions_file.write_text(
-            "# Organization Instructions\n\nOrganize documents by type."
-        )
+        # Create folder definitions (required)
+        config_content = """
+organization:
+  variable_patterns:
+    year: "4-digit year in YYYY format"
+    category: "Document category"
+  folders:
+    Documents:
+      description: "Test documents folder"
+      folders:
+        Archive:
+          description: "Archived documents"
+"""
+        config_file.write_text(config_content)
 
     def setup_isolated_env(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
         """Set up isolated environment with separate app config and repository."""
@@ -120,13 +127,13 @@ class TestDocmanDebugPrompt:
     def test_debug_prompt_no_instructions(
         self, cli_runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """Test debug-prompt without organization instructions."""
+        """Test debug-prompt without folder definitions."""
         app_config_dir = tmp_path / "app_config"
         repo_dir = tmp_path / "repo"
         repo_dir.mkdir()
         monkeypatch.setenv("DOCMAN_APP_CONFIG_DIR", str(app_config_dir))
 
-        # Set up repository WITHOUT instructions
+        # Set up repository WITHOUT folder definitions
         docman_dir = repo_dir / ".docman"
         docman_dir.mkdir()
         config_file = docman_dir / "config.yaml"
@@ -141,7 +148,7 @@ class TestDocmanDebugPrompt:
         result = cli_runner.invoke(main, ["debug-prompt", "test.md"])
 
         assert result.exit_code != 0
-        assert "organization instructions are required" in result.output
+        assert "No folder definitions found" in result.output
 
     def test_debug_prompt_with_existing_document(
         self, cli_runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch

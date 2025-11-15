@@ -3426,14 +3426,19 @@ def debug_prompt(file_path: str) -> None:
                 supports_structured_output = True
 
         # Load organization instructions from folder definitions
-        organization_instructions = generate_instructions(repo_root)
-        if not organization_instructions:
-            click.secho(
-                "Error: No folder definitions found.",
-                fg="red",
-                err=True,
-            )
-            click.echo("Run 'docman define <path> --desc \"description\"' to create folder definitions.")
+        try:
+            organization_instructions = generate_instructions(repo_root)
+            if not organization_instructions:
+                click.secho(
+                    "Error: No folder definitions found.",
+                    fg="red",
+                    err=True,
+                )
+                click.echo("Run 'docman define <path> --desc \"description\"' to create folder definitions.")
+                raise click.Abort()
+        except ValueError as e:
+            # Catch YAML syntax errors from load_repo_config()
+            click.secho(f"Error: {e}", fg="red", err=True)
             raise click.Abort()
 
         # Build prompts

@@ -21,11 +21,20 @@ class TestDocmanReview:
         docman_dir = path / ".docman"
         docman_dir.mkdir()
         config_file = docman_dir / "config.yaml"
-        config_file.touch()
-
-        # Create instructions file (required)
-        instructions_file = docman_dir / "instructions.md"
-        instructions_file.write_text("Test organization instructions")
+        # Create folder definitions (required)
+        config_content = """
+organization:
+  variable_patterns:
+    year: "4-digit year in YYYY format"
+    category: "Document category"
+  folders:
+    Documents:
+      description: "Test documents folder"
+      folders:
+        Archive:
+          description: "Archived documents"
+"""
+        config_file.write_text(config_content)
 
     def setup_isolated_env(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
         """Set up isolated environment with separate app config and repository."""
@@ -1265,9 +1274,20 @@ class TestReviewSecurityCleanup:
         docman_dir = path / ".docman"
         docman_dir.mkdir()
         config_file = docman_dir / "config.yaml"
-        config_file.touch()
-        instructions_file = docman_dir / "instructions.md"
-        instructions_file.write_text("Test organization instructions")
+        # Create folder definitions (required)
+        config_content = """
+organization:
+  variable_patterns:
+    year: "4-digit year in YYYY format"
+    category: "Document category"
+  folders:
+    Documents:
+      description: "Test documents folder"
+      folders:
+        Archive:
+          description: "Archived documents"
+"""
+        config_file.write_text(config_content)
 
     def setup_isolated_env(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
         """Set up isolated environment."""
@@ -1470,11 +1490,20 @@ class TestReprocessConversationHistory:
         docman_dir = path / ".docman"
         docman_dir.mkdir()
         config_file = docman_dir / "config.yaml"
-        config_file.touch()
-
-        # Create instructions file (required)
-        instructions_file = docman_dir / "instructions.md"
-        instructions_file.write_text("Organize documents by category and date.")
+        # Create folder definitions (required)
+        config_content = """
+organization:
+  variable_patterns:
+    year: "4-digit year in YYYY format"
+    category: "Document category"
+  folders:
+    Documents:
+      description: "Test documents folder"
+      folders:
+        Archive:
+          description: "Archived documents"
+"""
+        config_file.write_text(config_content)
 
     def setup_isolated_env(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
         """Set up isolated environment with separate app config and repository."""
@@ -1600,7 +1629,8 @@ class TestReprocessConversationHistory:
 
         # Verify base prompt structure
         assert "<organizationInstructions>" in user_prompt
-        assert "Organize documents by category and date" in user_prompt
+        assert "Document Organization Structure" in user_prompt
+        assert "Test documents folder" in user_prompt  # From folder definitions
         assert "<documentContent" in user_prompt
         assert 'filePath="inbox/invoice.pdf"' in user_prompt
 
@@ -2006,9 +2036,9 @@ class TestReprocessConversationHistory:
             catch_exceptions=False,
         )
 
-        # Should show error about missing instructions
-        assert "Error: Organization instructions not found" in result.output
-        # Should NOT call generate_suggestions since instructions are required
+        # Should show error about missing folder definitions
+        assert "Error: No folder definitions found" in result.output
+        # Should NOT call generate_suggestions since folder definitions are required
         assert mock_provider_instance.generate_suggestions.call_count == 0
 
     def test_reprocess_not_persisted_on_skip(

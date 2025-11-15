@@ -13,8 +13,7 @@ class TestDocmanInit:
 
     def test_init_success(self, cli_runner: CliRunner, tmp_path: Path) -> None:
         """Test successful initialization creates complete structure with correct output."""
-        # Decline editor prompt
-        result = cli_runner.invoke(main, ["init", str(tmp_path)], input="n\n")
+        result = cli_runner.invoke(main, ["init", str(tmp_path)])
 
         # Verify exit code
         assert result.exit_code == 0
@@ -30,18 +29,24 @@ class TestDocmanInit:
         config_file = tmp_path / ".docman" / "config.yaml"
         assert config_file.read_text() == ""
 
-        # Verify instructions template is created
+        # Verify "Next steps" guidance is shown
+        assert "Next steps:" in result.output
+        assert "Define variable patterns: docman pattern add" in result.output
+        assert "Define folder structure: docman define" in result.output
+        assert "Scan documents: docman scan -r" in result.output
+        assert "Generate suggestions: docman plan" in result.output
+
+        # Verify instructions.md is NOT created
         instructions_file = tmp_path / ".docman" / "instructions.md"
-        assert instructions_file.exists()
-        assert "Document Organization Instructions" in instructions_file.read_text()
+        assert not instructions_file.exists()
 
     def test_init_idempotency(self, cli_runner: CliRunner, tmp_path: Path) -> None:
         """Test that re-initializing multiple times is safe and shows appropriate message."""
-        # First initialization (decline editor)
-        result1 = cli_runner.invoke(main, ["init", str(tmp_path)], input="n\n")
+        # First initialization
+        result1 = cli_runner.invoke(main, ["init", str(tmp_path)])
         assert result1.exit_code == 0
 
-        # Re-initialize multiple times (no prompt shown as .docman already exists)
+        # Re-initialize multiple times
         for _ in range(3):
             result = cli_runner.invoke(main, ["init", str(tmp_path)])
             assert result.exit_code == 0
@@ -80,21 +85,21 @@ class TestDocmanInit:
         """Test that init handles default, relative, and nested paths correctly."""
         with cli_runner.isolated_filesystem(temp_dir=tmp_path):
             # Test default directory (current dir)
-            result = cli_runner.invoke(main, ["init"], input="n\n")
+            result = cli_runner.invoke(main, ["init"])
             assert result.exit_code == 0
             assert_docman_initialized(Path.cwd())
 
             # Test relative path
             subdir_name = "subdir"
             Path(subdir_name).mkdir()
-            result = cli_runner.invoke(main, ["init", subdir_name], input="n\n")
+            result = cli_runner.invoke(main, ["init", subdir_name])
             assert result.exit_code == 0
             assert_docman_initialized(Path.cwd() / subdir_name)
 
         # Test nested paths
         nested_dir = tmp_path / "level1" / "level2" / "level3"
         nested_dir.mkdir(parents=True)
-        result = cli_runner.invoke(main, ["init", str(nested_dir)], input="n\n")
+        result = cli_runner.invoke(main, ["init", str(nested_dir)])
         assert result.exit_code == 0
         assert_docman_initialized(nested_dir)
 
@@ -108,7 +113,7 @@ class TestDocmanInit:
         existing_dir = tmp_path / "existing_dir"
         existing_dir.mkdir()
 
-        result = cli_runner.invoke(main, ["init", str(tmp_path)], input="n\n")
+        result = cli_runner.invoke(main, ["init", str(tmp_path)])
 
         assert result.exit_code == 0
         # Check that existing files are preserved
@@ -116,36 +121,6 @@ class TestDocmanInit:
         assert existing_file.read_text() == "important data"
         assert existing_dir.exists()
         assert existing_dir.is_dir()
-
-    def test_init_decline_editor(self, cli_runner: CliRunner, tmp_path: Path) -> None:
-        """Test that declining editor prompt creates template and shows instructions."""
-        result = cli_runner.invoke(main, ["init", str(tmp_path)], input="n\n")
-
-        assert result.exit_code == 0
-        assert "Instructions template created at .docman/instructions.md" in result.output
-        assert "Edit this file before running 'docman plan'" in result.output
-
-        # Verify template was created
-        instructions_file = tmp_path / ".docman" / "instructions.md"
-        assert instructions_file.exists()
-        assert "Document Organization Instructions" in instructions_file.read_text()
-
-    def test_init_accept_editor_fails(self, cli_runner: CliRunner, tmp_path: Path, mocker) -> None:
-        """Test that accepting editor prompt but editor fails shows warning."""
-        # Mock editor to fail
-        mocker.patch(
-            "docman.repo_config.edit_instructions_interactive",
-            return_value=False
-        )
-
-        result = cli_runner.invoke(main, ["init", str(tmp_path)], input="y\n")
-
-        assert result.exit_code == 0
-        assert "Warning: Could not open editor" in result.output
-
-        # Template should still be created
-        instructions_file = tmp_path / ".docman" / "instructions.md"
-        assert instructions_file.exists()
 
     def test_init_permission_error_handling(
         self, cli_runner: CliRunner, tmp_path: Path, mocker
