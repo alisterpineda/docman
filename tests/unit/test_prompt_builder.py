@@ -89,8 +89,8 @@ class TestTruncateContentSmart:
         assert "TAIL_CONTENT" in result
         assert was_truncated is True
 
-    def test_truncation_even_split(self) -> None:
-        """Test that truncation splits space approximately evenly."""
+    def test_truncation_default_60_40_split(self) -> None:
+        """Test that truncation splits space 60/40 by default (head/tail)."""
         content = "A" * 5000 + "B" * 5000 + "C" * 5000
         result, was_truncated, _, _ = _truncate_content_smart(content, max_chars=8000)
 
@@ -98,8 +98,10 @@ class TestTruncateContentSmart:
         a_count = result.count("A")
         c_count = result.count("C")
 
-        # Should have roughly equal amounts (within 20% tolerance)
-        assert abs(a_count - c_count) < max(a_count, c_count) * 0.3
+        # With 60/40 split, A's should be ~1.5x C's (60/40 = 1.5)
+        # Allow 20% tolerance for paragraph boundary adjustments
+        ratio = a_count / c_count if c_count > 0 else float("inf")
+        assert 1.2 < ratio < 1.8, f"Expected ratio ~1.5 (60/40), got {ratio:.2f}"
         assert was_truncated is True
 
     def test_truncation_paragraph_boundaries(self) -> None:
@@ -166,6 +168,116 @@ class TestTruncateContentSmart:
 
         assert was_truncated is True
         assert len(result) <= 8000
+
+    def test_truncation_custom_ratio_70_30(self) -> None:
+        """Test that custom 70/30 ratio works correctly."""
+        content = "A" * 5000 + "B" * 5000 + "C" * 5000
+        result, was_truncated, _, _ = _truncate_content_smart(
+            content, max_chars=8000, head_ratio=0.7
+        )
+
+        # Count A's and C's (beginning and end characters)
+        a_count = result.count("A")
+        c_count = result.count("C")
+
+        # With 70/30 split, A's should be ~2.3x C's (70/30 = 2.33)
+        # Allow tolerance for paragraph boundary adjustments
+        ratio = a_count / c_count if c_count > 0 else float("inf")
+        assert 1.9 < ratio < 2.8, f"Expected ratio ~2.3 (70/30), got {ratio:.2f}"
+        assert was_truncated is True
+
+    def test_truncation_custom_ratio_50_50(self) -> None:
+        """Test that explicit 50/50 ratio splits evenly."""
+        content = "A" * 5000 + "B" * 5000 + "C" * 5000
+        result, was_truncated, _, _ = _truncate_content_smart(
+            content, max_chars=8000, head_ratio=0.5
+        )
+
+        # Count A's and C's (beginning and end characters)
+        a_count = result.count("A")
+        c_count = result.count("C")
+
+        # With 50/50 split, A's and C's should be roughly equal
+        # Allow 30% tolerance for paragraph boundary adjustments
+        assert abs(a_count - c_count) < max(a_count, c_count) * 0.3
+        assert was_truncated is True
+
+    def test_truncation_invalid_ratio_zero(self) -> None:
+        """Test that head_ratio of 0.0 raises ValueError."""
+        content = "x" * 10000
+        import pytest
+
+        with pytest.raises(ValueError, match="must be between 0.0 and 1.0"):
+            _truncate_content_smart(content, max_chars=8000, head_ratio=0.0)
+
+    def test_truncation_invalid_ratio_one(self) -> None:
+        """Test that head_ratio of 1.0 raises ValueError."""
+        content = "x" * 10000
+        import pytest
+
+        with pytest.raises(ValueError, match="must be between 0.0 and 1.0"):
+            _truncate_content_smart(content, max_chars=8000, head_ratio=1.0)
+
+    def test_truncation_invalid_ratio_negative(self) -> None:
+        """Test that negative head_ratio raises ValueError."""
+        content = "x" * 10000
+        import pytest
+
+        with pytest.raises(ValueError, match="must be between 0.0 and 1.0"):
+            _truncate_content_smart(content, max_chars=8000, head_ratio=-0.5)
+
+    def test_truncation_invalid_ratio_greater_than_one(self) -> None:
+        """Test that head_ratio > 1.0 raises ValueError."""
+        content = "x" * 10000
+        import pytest
+
+        with pytest.raises(ValueError, match="must be between 0.0 and 1.0"):
+            _truncate_content_smart(content, max_chars=8000, head_ratio=1.5)
+
+    def test_truncation_extreme_ratio_head_heavy(self) -> None:
+        """Test that extreme head-heavy ratio (0.9) works correctly."""
+        content = "A" * 5000 + "B" * 5000 + "C" * 5000
+        result, was_truncated, _, _ = _truncate_content_smart(
+            content, max_chars=8000, head_ratio=0.9
+        )
+
+        # Count A's and C's
+        a_count = result.count("A")
+        c_count = result.count("C")
+
+        # With 90/10 split, A's should be ~9x C's
+        # Expect ratio between 6 and 12 to account for paragraph boundaries
+        ratio = a_count / c_count if c_count > 0 else float("inf")
+        assert ratio > 6, f"Expected ratio > 6 (90/10), got {ratio:.2f}"
+        assert was_truncated is True
+
+    def test_truncation_extreme_ratio_tail_heavy(self) -> None:
+        """Test that extreme tail-heavy ratio (0.1) works correctly."""
+        content = "A" * 5000 + "B" * 5000 + "C" * 5000
+        result, was_truncated, _, _ = _truncate_content_smart(
+            content, max_chars=8000, head_ratio=0.1
+        )
+
+        # Count A's and C's
+        a_count = result.count("A")
+        c_count = result.count("C")
+
+        # With 10/90 split, C's should be ~9x A's (ratio A/C ~0.11)
+        ratio = a_count / c_count if c_count > 0 else float("inf")
+        assert ratio < 0.2, f"Expected ratio < 0.2 (10/90), got {ratio:.2f}"
+        assert was_truncated is True
+
+    def test_truncation_short_content_with_custom_ratio(self) -> None:
+        """Test that short content is not truncated regardless of head_ratio."""
+        content = "Short content"
+        result, was_truncated, original_len, truncated_len = _truncate_content_smart(
+            content, max_chars=8000, head_ratio=0.9
+        )
+
+        assert result == content
+        assert was_truncated is False
+        assert original_len == len(content)
+        assert truncated_len == len(content)
 
 
 class TestBuildSystemPrompt:
@@ -335,6 +447,40 @@ class TestBuildUserPrompt:
 
         # Should contain exact path (no escaping needed)
         assert f'filePath="{file_path}"' in result
+
+    def test_head_ratio_parameter_passed_through(self) -> None:
+        """Test that head_ratio parameter affects truncation ratio."""
+        file_path = "test.pdf"
+        # Content with clear head (A's) and tail (C's)
+        content = "A" * 5000 + "B" * 5000 + "C" * 5000
+
+        # Test with 70/30 ratio (more head content)
+        result = build_user_prompt(file_path, content, head_ratio=0.7)
+
+        # Count A's and C's
+        a_count = result.count("A")
+        c_count = result.count("C")
+
+        # With 70/30 split, A's should be significantly more than C's
+        # (ratio around 2.3)
+        ratio = a_count / c_count if c_count > 0 else float("inf")
+        assert ratio > 1.8, f"Expected head-heavy ratio, got {ratio:.2f}"
+
+    def test_head_ratio_default_60_40(self) -> None:
+        """Test that default head_ratio is 60/40."""
+        file_path = "test.pdf"
+        content = "A" * 5000 + "B" * 5000 + "C" * 5000
+
+        # Use default (no head_ratio specified)
+        result = build_user_prompt(file_path, content)
+
+        # Count A's and C's
+        a_count = result.count("A")
+        c_count = result.count("C")
+
+        # Default 60/40 split: ratio should be around 1.5
+        ratio = a_count / c_count if c_count > 0 else float("inf")
+        assert 1.2 < ratio < 1.8, f"Expected ratio ~1.5 (60/40), got {ratio:.2f}"
 
 
 class TestGenerateInstructionsFromFolders:

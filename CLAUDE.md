@@ -119,7 +119,10 @@ Three main tables model document tracking and operations:
   - Document content wrapped in `<documentContent>` XML tags with `filePath` attribute
   - File path embedded directly in `<documentContent filePath="...">` for clear association
   - Clean structure without markdown headers, using only XML boundaries
-- Smart content truncation: Keeps beginning and end of long documents in equal parts, with paragraph-aware breaks
+- Smart content truncation: Keeps beginning and end of long documents with configurable ratio (default 60% head, 40% tail), with paragraph-aware breaks
+  - Default 8000 character limit
+  - `head_ratio` parameter configures head/tail split (0.0 to 1.0 exclusive)
+  - For most documents (invoices, letters, reports), beginning contains more critical info
 - Prompt hash caching: Avoids redundant LLM calls when prompts haven't changed
 
 **Provider Abstraction** (`llm_providers.py`):

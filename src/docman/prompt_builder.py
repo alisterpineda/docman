@@ -22,20 +22,37 @@ from docman.repo_config import FolderDefinition
 def _truncate_content_smart(
     content: str,
     max_chars: int = 8000,
+    head_ratio: float = 0.6,
 ) -> tuple[str, bool, int, int]:
     """Truncate content preserving beginning and end.
 
-    Keeps both the beginning and end of the document with an even 50/50 split
-    of available space. Attempts to find clean paragraph boundaries for breaks.
+    Keeps both the beginning and end of the document with a configurable split
+    ratio. Attempts to find clean paragraph boundaries for breaks.
+
+    For most documents (invoices, letters, reports), the beginning contains more
+    critical information (headers, dates, parties, titles), so the default ratio
+    favors the head content (60% head, 40% tail).
 
     Args:
         content: The document content to truncate.
         max_chars: Maximum number of characters to keep.
+        head_ratio: Ratio of available space to allocate to the beginning of
+            the document. Must be between 0.0 and 1.0 (exclusive). Default is
+            0.6 (60% head, 40% tail).
 
     Returns:
         Tuple of (truncated_content, was_truncated, original_length, truncated_length).
         was_truncated is True if content was actually truncated.
+
+    Raises:
+        ValueError: If head_ratio is not between 0.0 and 1.0 (exclusive).
     """
+    # Validate head_ratio
+    if not (0.0 < head_ratio < 1.0):
+        raise ValueError(
+            f"head_ratio must be between 0.0 and 1.0 (exclusive), got {head_ratio}"
+        )
+
     if len(content) <= max_chars:
         return content, False, len(content), len(content)
 
@@ -43,12 +60,12 @@ def _truncate_content_smart(
     omitted = len(content) - max_chars
     marker = f"\n\n[... {omitted:,} characters omitted ...]\n\n"
 
-    # Split remaining space evenly
+    # Split remaining space according to head_ratio
     available = max_chars - len(marker)
     if available < 0:
         # Edge case: marker itself exceeds max_chars
         available = 0
-    head_chars = available // 2
+    head_chars = int(available * head_ratio)
     tail_chars = available - head_chars
 
     # Find paragraph boundaries for clean breaks
@@ -498,6 +515,7 @@ def build_user_prompt(
     file_path: str,
     document_content: str,
     organization_instructions: str | None = None,
+    head_ratio: float = 0.6,
 ) -> str:
     """Build the dynamic user prompt for a specific document.
 
@@ -505,13 +523,16 @@ def build_user_prompt(
         file_path: Current path of the file being analyzed.
         document_content: Extracted text content from the document.
         organization_instructions: Document organization instructions.
+        head_ratio: Ratio of available space to allocate to the beginning of
+            the document when truncating. Must be between 0.0 and 1.0 (exclusive).
+            Default is 0.6 (60% head, 40% tail).
 
     Returns:
         User prompt string with document-specific information.
     """
     # Apply smart truncation to content
     content, was_truncated, original_length, truncated_length = _truncate_content_smart(
-        document_content
+        document_content, head_ratio=head_ratio
     )
 
     # Render template
