@@ -561,7 +561,7 @@ def get_examples(
 
     examples: list[dict[str, Any]] = []
 
-    for operation, copy, document in query.all():
+    for operation, copy, document in query:
         # Check if the file is at the suggested location
         expected_path = f"{operation.suggested_directory_path}/{operation.suggested_filename}"
         if copy.file_path != expected_path:
