@@ -2,6 +2,8 @@
 
 from pathlib import Path
 
+import pytest
+
 from docman.prompt_builder import (
     _detect_existing_directories,
     _extract_variable_patterns,
@@ -11,7 +13,9 @@ from docman.prompt_builder import (
     build_system_prompt,
     build_user_prompt,
     clear_prompt_cache,
+    format_examples,
     generate_instructions_from_folders,
+    get_examples,
     serialize_folder_definitions,
 )
 from docman.repo_config import FolderDefinition
@@ -1430,3 +1434,590 @@ class TestSerializeFolderDefinitions:
         parsed = json.loads(result1)
         keys = list(parsed.keys())
         assert keys == sorted(keys)
+
+
+class TestGetExamples:
+    """Tests for get_examples function."""
+
+    @pytest.fixture
+    def test_repo(self, tmp_path: Path) -> Path:
+        """Create a test repository."""
+        repo_dir = tmp_path / "test_repo"
+        repo_dir.mkdir()
+        return repo_dir
+
+    @pytest.fixture
+    def session(self):
+        """Create a database session for testing."""
+        from docman.database import ensure_database, get_session
+        from docman.models import Document, DocumentCopy, Operation
+
+        ensure_database()
+        session_gen = get_session()
+        session = next(session_gen)
+
+        # Clear all tables before test
+        session.query(Operation).delete()
+        session.query(DocumentCopy).delete()
+        session.query(Document).delete()
+        session.commit()
+
+        yield session
+
+        # Cleanup after test
+        session.query(Operation).delete()
+        session.query(DocumentCopy).delete()
+        session.query(Document).delete()
+        session.commit()
+
+        try:
+            next(session_gen)
+        except StopIteration:
+            pass
+
+    def test_get_examples_returns_accepted_operations_at_correct_location(
+        self, session, test_repo: Path
+    ) -> None:
+        """Test that get_examples returns accepted operations at the correct location."""
+        from docman.models import Document, DocumentCopy, Operation, OperationStatus
+
+        # Create document with content
+        doc = Document(content_hash="hash1", content="Invoice content for Acme Corp")
+        session.add(doc)
+        session.flush()
+
+        # Create copy at the suggested location
+        target_dir = test_repo / "Financial" / "invoices" / "2024"
+        target_dir.mkdir(parents=True)
+        target_file = target_dir / "acme-invoice.pdf"
+        target_file.touch()
+
+        copy = DocumentCopy(
+            document_id=doc.id,
+            repository_path=str(test_repo),
+            file_path="Financial/invoices/2024/acme-invoice.pdf",
+        )
+        session.add(copy)
+        session.flush()
+
+        # Create accepted operation matching the location
+        operation = Operation(
+            document_copy_id=copy.id,
+            status=OperationStatus.ACCEPTED,
+            suggested_directory_path="Financial/invoices/2024",
+            suggested_filename="acme-invoice.pdf",
+            reason="Invoice from Acme dated 2024",
+            prompt_hash="abc123",
+            document_content_hash="hash1",
+        )
+        session.add(operation)
+        session.commit()
+
+        examples = get_examples(session, test_repo)
+
+        assert len(examples) == 1
+        assert examples[0]["file_path"] == "Financial/invoices/2024/acme-invoice.pdf"
+        assert examples[0]["content"] == "Invoice content for Acme Corp"
+        assert examples[0]["suggestion"]["suggested_directory_path"] == "Financial/invoices/2024"
+        assert examples[0]["suggestion"]["suggested_filename"] == "acme-invoice.pdf"
+        assert examples[0]["suggestion"]["reason"] == "Invoice from Acme dated 2024"
+
+    def test_get_examples_excludes_operations_not_at_suggested_location(
+        self, session, test_repo: Path
+    ) -> None:
+        """Test that get_examples excludes operations where file is not at suggested location."""
+        from docman.models import Document, DocumentCopy, Operation, OperationStatus
+
+        # Create document
+        doc = Document(content_hash="hash2", content="Some content")
+        session.add(doc)
+        session.flush()
+
+        # Create copy at a DIFFERENT location than suggested
+        target_dir = test_repo / "Other"
+        target_dir.mkdir(parents=True)
+        target_file = target_dir / "file.pdf"
+        target_file.touch()
+
+        copy = DocumentCopy(
+            document_id=doc.id,
+            repository_path=str(test_repo),
+            file_path="Other/file.pdf",  # Different from suggested
+        )
+        session.add(copy)
+        session.flush()
+
+        # Create accepted operation with different suggested path
+        operation = Operation(
+            document_copy_id=copy.id,
+            status=OperationStatus.ACCEPTED,
+            suggested_directory_path="Financial/invoices",
+            suggested_filename="invoice.pdf",
+            reason="Invoice",
+            prompt_hash="abc123",
+        )
+        session.add(operation)
+        session.commit()
+
+        examples = get_examples(session, test_repo)
+        assert len(examples) == 0
+
+    def test_get_examples_excludes_nonexistent_files(
+        self, session, test_repo: Path
+    ) -> None:
+        """Test that get_examples excludes operations where file doesn't exist on disk."""
+        from docman.models import Document, DocumentCopy, Operation, OperationStatus
+
+        # Create document
+        doc = Document(content_hash="hash3", content="Content")
+        session.add(doc)
+        session.flush()
+
+        # Create copy referencing a file that doesn't exist
+        copy = DocumentCopy(
+            document_id=doc.id,
+            repository_path=str(test_repo),
+            file_path="Financial/nonexistent.pdf",
+        )
+        session.add(copy)
+        session.flush()
+
+        # Create accepted operation
+        operation = Operation(
+            document_copy_id=copy.id,
+            status=OperationStatus.ACCEPTED,
+            suggested_directory_path="Financial",
+            suggested_filename="nonexistent.pdf",
+            reason="File",
+            prompt_hash="abc123",
+        )
+        session.add(operation)
+        session.commit()
+
+        examples = get_examples(session, test_repo)
+        assert len(examples) == 0
+
+    def test_get_examples_limits_results(self, session, test_repo: Path) -> None:
+        """Test that get_examples respects the limit parameter."""
+        from docman.models import Document, DocumentCopy, Operation, OperationStatus
+
+        # Create 5 documents with accepted operations
+        for i in range(5):
+            doc = Document(content_hash=f"hash_{i}", content=f"Content {i}")
+            session.add(doc)
+            session.flush()
+
+            target_dir = test_repo / f"folder{i}"
+            target_dir.mkdir(parents=True)
+            target_file = target_dir / f"file{i}.pdf"
+            target_file.touch()
+
+            copy = DocumentCopy(
+                document_id=doc.id,
+                repository_path=str(test_repo),
+                file_path=f"folder{i}/file{i}.pdf",
+            )
+            session.add(copy)
+            session.flush()
+
+            operation = Operation(
+                document_copy_id=copy.id,
+                status=OperationStatus.ACCEPTED,
+                suggested_directory_path=f"folder{i}",
+                suggested_filename=f"file{i}.pdf",
+                reason=f"Reason {i}",
+                prompt_hash="abc123",
+            )
+            session.add(operation)
+
+        session.commit()
+
+        # Request only 2 examples
+        examples = get_examples(session, test_repo, limit=2)
+        assert len(examples) == 2
+
+    def test_get_examples_empty_when_no_history(self, session, test_repo: Path) -> None:
+        """Test that get_examples returns empty list when no accepted operations exist."""
+        examples = get_examples(session, test_repo)
+        assert examples == []
+
+    def test_get_examples_orders_by_most_recent(self, session, test_repo: Path) -> None:
+        """Test that get_examples orders results by most recent first."""
+        from datetime import timedelta
+        from docman.models import Document, DocumentCopy, Operation, OperationStatus, get_utc_now
+
+        # Create two documents with operations at different times
+        for i, time_offset in enumerate([timedelta(hours=2), timedelta(hours=0)]):
+            doc = Document(content_hash=f"hash_time_{i}", content=f"Content {i}")
+            session.add(doc)
+            session.flush()
+
+            target_dir = test_repo / f"time_folder{i}"
+            target_dir.mkdir(parents=True)
+            target_file = target_dir / f"file{i}.pdf"
+            target_file.touch()
+
+            copy = DocumentCopy(
+                document_id=doc.id,
+                repository_path=str(test_repo),
+                file_path=f"time_folder{i}/file{i}.pdf",
+            )
+            session.add(copy)
+            session.flush()
+
+            operation = Operation(
+                document_copy_id=copy.id,
+                status=OperationStatus.ACCEPTED,
+                suggested_directory_path=f"time_folder{i}",
+                suggested_filename=f"file{i}.pdf",
+                reason=f"Reason {i}",
+                prompt_hash="abc123",
+            )
+            # Manually set created_at to control order
+            operation.created_at = get_utc_now() - time_offset
+            session.add(operation)
+
+        session.commit()
+
+        examples = get_examples(session, test_repo, limit=2)
+        assert len(examples) == 2
+        # Most recent should be first (time_folder1)
+        assert "time_folder1" in examples[0]["file_path"]
+
+    def test_get_examples_excludes_pending_operations(
+        self, session, test_repo: Path
+    ) -> None:
+        """Test that get_examples only returns ACCEPTED operations."""
+        from docman.models import Document, DocumentCopy, Operation, OperationStatus
+
+        # Create document
+        doc = Document(content_hash="hash_pending", content="Content")
+        session.add(doc)
+        session.flush()
+
+        target_dir = test_repo / "pending_folder"
+        target_dir.mkdir(parents=True)
+        target_file = target_dir / "pending.pdf"
+        target_file.touch()
+
+        copy = DocumentCopy(
+            document_id=doc.id,
+            repository_path=str(test_repo),
+            file_path="pending_folder/pending.pdf",
+        )
+        session.add(copy)
+        session.flush()
+
+        # Create PENDING operation
+        operation = Operation(
+            document_copy_id=copy.id,
+            status=OperationStatus.PENDING,  # Not ACCEPTED
+            suggested_directory_path="pending_folder",
+            suggested_filename="pending.pdf",
+            reason="Pending",
+            prompt_hash="abc123",
+        )
+        session.add(operation)
+        session.commit()
+
+        examples = get_examples(session, test_repo)
+        assert len(examples) == 0
+
+    def test_get_examples_excludes_missing_content(
+        self, session, test_repo: Path
+    ) -> None:
+        """Test that get_examples excludes operations where document has no content."""
+        from docman.models import Document, DocumentCopy, Operation, OperationStatus
+
+        # Create document without content
+        doc = Document(content_hash="hash_no_content", content=None)
+        session.add(doc)
+        session.flush()
+
+        target_dir = test_repo / "no_content"
+        target_dir.mkdir(parents=True)
+        target_file = target_dir / "file.pdf"
+        target_file.touch()
+
+        copy = DocumentCopy(
+            document_id=doc.id,
+            repository_path=str(test_repo),
+            file_path="no_content/file.pdf",
+        )
+        session.add(copy)
+        session.flush()
+
+        operation = Operation(
+            document_copy_id=copy.id,
+            status=OperationStatus.ACCEPTED,
+            suggested_directory_path="no_content",
+            suggested_filename="file.pdf",
+            reason="No content",
+            prompt_hash="abc123",
+        )
+        session.add(operation)
+        session.commit()
+
+        examples = get_examples(session, test_repo)
+        assert len(examples) == 0
+
+
+class TestFormatExamples:
+    """Tests for format_examples function."""
+
+    def test_format_examples_uses_xml_tags(self) -> None:
+        """Test that format_examples produces XML with proper tags."""
+        examples = [
+            {
+                "file_path": "invoices/invoice.pdf",
+                "content": "Invoice content",
+                "suggestion": {
+                    "suggested_directory_path": "Financial/invoices/2024",
+                    "suggested_filename": "acme-invoice.pdf",
+                    "reason": "Invoice from Acme",
+                },
+            }
+        ]
+
+        result = format_examples(examples)
+
+        assert "<example>" in result
+        assert "</example>" in result
+        assert "<exampleContent" in result
+        assert "</exampleContent>" in result
+        assert "<expectedOutput>" in result
+        assert "</expectedOutput>" in result
+
+    def test_format_examples_uses_json_output(self) -> None:
+        """Test that format_examples produces JSON in expectedOutput."""
+        examples = [
+            {
+                "file_path": "test.pdf",
+                "content": "Content",
+                "suggestion": {
+                    "suggested_directory_path": "Financial",
+                    "suggested_filename": "file.pdf",
+                    "reason": "Test reason",
+                },
+            }
+        ]
+
+        result = format_examples(examples)
+
+        # Should contain JSON keys
+        assert '"suggested_directory_path"' in result
+        assert '"suggested_filename"' in result
+        assert '"reason"' in result
+        assert '"Financial"' in result
+        assert '"file.pdf"' in result
+        assert '"Test reason"' in result
+
+    def test_format_examples_truncates_long_content(self) -> None:
+        """Test that format_examples truncates content exceeding max_content_chars."""
+        examples = [
+            {
+                "file_path": "test.pdf",
+                "content": "x" * 1000,  # Long content
+                "suggestion": {
+                    "suggested_directory_path": "Dir",
+                    "suggested_filename": "file.pdf",
+                    "reason": "Reason",
+                },
+            }
+        ]
+
+        result = format_examples(examples, max_content_chars=500)
+
+        # Should have truncation marker
+        assert "<<<DOCMAN_TRUNCATION:" in result
+        assert "characters omitted>>>" in result
+
+    def test_format_examples_includes_truncation_attributes(self) -> None:
+        """Test that truncated content includes truncation attributes."""
+        examples = [
+            {
+                "file_path": "test.pdf",
+                "content": "x" * 1000,
+                "suggestion": {
+                    "suggested_directory_path": "Dir",
+                    "suggested_filename": "file.pdf",
+                    "reason": "Reason",
+                },
+            }
+        ]
+
+        result = format_examples(examples, max_content_chars=500)
+
+        assert 'truncated="true"' in result
+        assert 'originalChars="1000"' in result
+
+    def test_format_examples_no_truncation_for_short_content(self) -> None:
+        """Test that short content is not truncated."""
+        examples = [
+            {
+                "file_path": "test.pdf",
+                "content": "Short content",
+                "suggestion": {
+                    "suggested_directory_path": "Dir",
+                    "suggested_filename": "file.pdf",
+                    "reason": "Reason",
+                },
+            }
+        ]
+
+        result = format_examples(examples, max_content_chars=500)
+
+        assert 'truncated="true"' not in result
+        assert "<<<DOCMAN_TRUNCATION:" not in result
+        assert "Short content" in result
+
+    def test_format_examples_escapes_file_path(self) -> None:
+        """Test that file paths with special characters are escaped."""
+        examples = [
+            {
+                "file_path": 'docs/AT&T "report".pdf',
+                "content": "Content",
+                "suggestion": {
+                    "suggested_directory_path": "Dir",
+                    "suggested_filename": "file.pdf",
+                    "reason": "Reason",
+                },
+            }
+        ]
+
+        result = format_examples(examples)
+
+        # Should have escaped ampersand and quotes
+        assert "&amp;" in result
+        assert "&quot;" in result or "&#34;" in result
+
+    def test_format_examples_empty_list_returns_empty_string(self) -> None:
+        """Test that empty examples list returns empty string."""
+        result = format_examples([])
+        assert result == ""
+
+    def test_format_examples_multiple_examples(self) -> None:
+        """Test that multiple examples are formatted correctly."""
+        examples = [
+            {
+                "file_path": "file1.pdf",
+                "content": "Content 1",
+                "suggestion": {
+                    "suggested_directory_path": "Dir1",
+                    "suggested_filename": "file1.pdf",
+                    "reason": "Reason 1",
+                },
+            },
+            {
+                "file_path": "file2.pdf",
+                "content": "Content 2",
+                "suggestion": {
+                    "suggested_directory_path": "Dir2",
+                    "suggested_filename": "file2.pdf",
+                    "reason": "Reason 2",
+                },
+            },
+        ]
+
+        result = format_examples(examples)
+
+        # Should have two example blocks
+        assert result.count("<example>") == 2
+        assert result.count("</example>") == 2
+        assert "Content 1" in result
+        assert "Content 2" in result
+
+    def test_format_examples_uses_default_head_ratio(self) -> None:
+        """Test that format_examples uses default 60/40 head/tail ratio for truncation."""
+        # Content with clear head and tail markers
+        content = "HEAD" * 500 + "MIDDLE" * 500 + "TAIL" * 500
+        examples = [
+            {
+                "file_path": "test.pdf",
+                "content": content,
+                "suggestion": {
+                    "suggested_directory_path": "Dir",
+                    "suggested_filename": "file.pdf",
+                    "reason": "Reason",
+                },
+            }
+        ]
+
+        result = format_examples(examples, max_content_chars=500)
+
+        # Both HEAD and TAIL should be present
+        assert "HEAD" in result
+        assert "TAIL" in result
+
+
+class TestBuildUserPromptWithExamples:
+    """Tests for build_user_prompt with examples parameter."""
+
+    def test_build_user_prompt_includes_examples(self) -> None:
+        """Test that build_user_prompt includes examples when provided."""
+        file_path = "test.pdf"
+        content = "Document content"
+        instructions = "Organization instructions"
+        examples = "<example>Example content</example>"
+
+        result = build_user_prompt(
+            file_path, content, instructions, examples=examples
+        )
+
+        assert "<examples>" in result
+        assert "</examples>" in result
+        assert "Example content" in result
+
+    def test_build_user_prompt_without_examples(self) -> None:
+        """Test that build_user_prompt works without examples."""
+        file_path = "test.pdf"
+        content = "Document content"
+        instructions = "Organization instructions"
+
+        result = build_user_prompt(file_path, content, instructions)
+
+        assert "<examples>" not in result
+        assert "</examples>" not in result
+
+    def test_build_user_prompt_examples_before_instructions(self) -> None:
+        """Test that examples appear before organization instructions."""
+        file_path = "test.pdf"
+        content = "Document content"
+        instructions = "Organization instructions"
+        examples = "<example>Example</example>"
+
+        result = build_user_prompt(
+            file_path, content, instructions, examples=examples
+        )
+
+        # Find positions
+        examples_pos = result.find("<examples>")
+        instructions_pos = result.find("<organizationInstructions>")
+
+        assert examples_pos < instructions_pos
+
+    def test_build_user_prompt_examples_with_none_value(self) -> None:
+        """Test that passing None for examples works correctly."""
+        file_path = "test.pdf"
+        content = "Document content"
+        instructions = "Organization instructions"
+
+        result = build_user_prompt(
+            file_path, content, instructions, examples=None
+        )
+
+        assert "<examples>" not in result
+
+    def test_build_user_prompt_examples_with_empty_string(self) -> None:
+        """Test that passing empty string for examples doesn't add section."""
+        file_path = "test.pdf"
+        content = "Document content"
+        instructions = "Organization instructions"
+
+        result = build_user_prompt(
+            file_path, content, instructions, examples=""
+        )
+
+        # Empty string should not render the examples section
+        # (Jinja's {% if examples %} treats empty string as falsy)
+        assert "<examples>" not in result

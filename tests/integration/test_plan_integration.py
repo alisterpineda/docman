@@ -1405,6 +1405,165 @@ organization:
             except StopIteration:
                 pass
 
+    def test_plan_uses_examples_from_organized_documents(
+        self,
+        cli_runner: CliRunner,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Test that plan uses examples from previously organized documents."""
+        repo_dir = self.setup_isolated_env(tmp_path, monkeypatch)
+
+        # Create an organized document with accepted operation at correct location
+        ensure_database()
+        session_gen = get_session()
+        session = next(session_gen)
+
+        try:
+            # Create the organized file at its destination
+            target_dir = repo_dir / "Documents" / "Archive"
+            target_dir.mkdir(parents=True)
+            organized_file = target_dir / "organized.pdf"
+            organized_file.write_text("Organized document content")
+
+            content_hash = compute_content_hash(organized_file)
+
+            # Create document
+            doc = Document(content_hash=content_hash, content="Organized document content")
+            session.add(doc)
+            session.flush()
+
+            # Create copy at the organized location
+            copy = DocumentCopy(
+                document_id=doc.id,
+                repository_path=str(repo_dir),
+                file_path="Documents/Archive/organized.pdf",
+                stored_content_hash=content_hash,
+            )
+            session.add(copy)
+            session.flush()
+
+            # Create accepted operation that matches the current file location
+            operation = Operation(
+                document_copy_id=copy.id,
+                status=OperationStatus.ACCEPTED,
+                suggested_directory_path="Documents/Archive",
+                suggested_filename="organized.pdf",
+                reason="Example organization reason",
+                prompt_hash="abc123",
+                document_content_hash=content_hash,
+            )
+            session.add(operation)
+            session.commit()
+        finally:
+            try:
+                next(session_gen)
+            except StopIteration:
+                pass
+
+        # Create a new document to be processed
+        self.create_scanned_document(repo_dir, "new_document.pdf", "New document content")
+
+        # Change to the repository directory
+        monkeypatch.chdir(repo_dir)
+
+        # Run plan command
+        result = cli_runner.invoke(main, ["plan"], catch_exceptions=False)
+
+        # Verify examples are used
+        assert result.exit_code == 0
+        assert "Using 1 example(s) from previously organized documents" in result.output
+
+    def test_plan_no_examples_on_first_run(
+        self,
+        cli_runner: CliRunner,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Test that plan shows no examples message on first run with no history."""
+        repo_dir = self.setup_isolated_env(tmp_path, monkeypatch)
+
+        # Create a document to be processed (no prior history)
+        self.create_scanned_document(repo_dir, "test.pdf", "Test content")
+
+        # Change to the repository directory
+        monkeypatch.chdir(repo_dir)
+
+        # Run plan command
+        result = cli_runner.invoke(main, ["plan"], catch_exceptions=False)
+
+        # Verify no examples message appears
+        assert result.exit_code == 0
+        assert "Using" not in result.output or "example(s) from previously organized documents" not in result.output
+
+    def test_plan_only_uses_examples_where_file_at_suggested_location(
+        self,
+        cli_runner: CliRunner,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Test that plan only uses examples where file is at the suggested location."""
+        repo_dir = self.setup_isolated_env(tmp_path, monkeypatch)
+
+        ensure_database()
+        session_gen = get_session()
+        session = next(session_gen)
+
+        try:
+            # Create a file that is NOT at the suggested location
+            wrong_dir = repo_dir / "WrongLocation"
+            wrong_dir.mkdir(parents=True)
+            misplaced_file = wrong_dir / "misplaced.pdf"
+            misplaced_file.write_text("Misplaced document content")
+
+            content_hash = compute_content_hash(misplaced_file)
+
+            # Create document
+            doc = Document(content_hash=content_hash, content="Misplaced document content")
+            session.add(doc)
+            session.flush()
+
+            # Create copy at wrong location
+            copy = DocumentCopy(
+                document_id=doc.id,
+                repository_path=str(repo_dir),
+                file_path="WrongLocation/misplaced.pdf",
+                stored_content_hash=content_hash,
+            )
+            session.add(copy)
+            session.flush()
+
+            # Create accepted operation with different suggested path
+            operation = Operation(
+                document_copy_id=copy.id,
+                status=OperationStatus.ACCEPTED,
+                suggested_directory_path="Documents/Archive",  # Different from file location
+                suggested_filename="should_be_here.pdf",
+                reason="Example reason",
+                prompt_hash="abc123",
+                document_content_hash=content_hash,
+            )
+            session.add(operation)
+            session.commit()
+        finally:
+            try:
+                next(session_gen)
+            except StopIteration:
+                pass
+
+        # Create a new document to be processed
+        self.create_scanned_document(repo_dir, "new_document.pdf", "New document content")
+
+        # Change to the repository directory
+        monkeypatch.chdir(repo_dir)
+
+        # Run plan command
+        result = cli_runner.invoke(main, ["plan"], catch_exceptions=False)
+
+        # Verify no examples are used (file is not at suggested location)
+        assert result.exit_code == 0
+        assert "example(s) from previously organized documents" not in result.output
+
 
 class TestDocmanPlanPathSecurity:
     """Integration tests for path security in plan command."""
