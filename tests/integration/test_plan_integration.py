@@ -1654,3 +1654,262 @@ organization:
             except StopIteration:
                 pass
 
+
+class TestDocmanPlanExamples:
+    """Integration tests for few-shot examples in plan command."""
+
+    @pytest.fixture(autouse=True)
+    def _mock_llm_provider(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Automatically mock LLM provider for all tests in this class."""
+        # Create a mock provider config
+        mock_provider_config = ProviderConfig(
+            name="test-provider",
+            provider_type="google",
+            model="gemini-1.5-flash",
+            is_active=True,
+        )
+
+        # Create mock provider instance
+        mock_provider_instance = Mock()
+        mock_provider_instance.test_connection.return_value = True
+        mock_provider_instance.supports_structured_output = True
+        mock_provider_instance.generate_suggestions.return_value = {
+            "suggested_directory_path": "test/directory",
+            "suggested_filename": "test_file.pdf",
+            "reason": "Test reason",
+        }
+
+        # Patch the LLM-related functions
+        monkeypatch.setattr("docman.cli.get_active_provider", Mock(return_value=mock_provider_config))
+        monkeypatch.setattr("docman.cli.get_api_key", Mock(return_value="test-api-key"))
+        monkeypatch.setattr("docman.cli.get_llm_provider", Mock(return_value=mock_provider_instance))
+
+    def setup_repository(self, path: Path) -> None:
+        """Set up a docman repository for testing."""
+        docman_dir = path / ".docman"
+        docman_dir.mkdir()
+        config_file = docman_dir / "config.yaml"
+
+        # Create folder definitions (required for plan command)
+        config_content = """
+organization:
+  variable_patterns:
+    year: "4-digit year in YYYY format"
+    category: "Document category"
+  folders:
+    Documents:
+      description: "Test documents folder"
+      folders:
+        Archive:
+          description: "Archived documents"
+"""
+        config_file.write_text(config_content)
+
+    def setup_isolated_env(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+        """Set up isolated environment with separate app config and repository."""
+        app_config_dir = tmp_path / "app_config"
+        repo_dir = tmp_path / "repo"
+        repo_dir.mkdir()
+        monkeypatch.setenv("DOCMAN_APP_CONFIG_DIR", str(app_config_dir))
+        self.setup_repository(repo_dir)
+        return repo_dir
+
+    def create_scanned_document(
+        self, repo_dir: Path, file_path: str, content: str = "Test content"
+    ) -> tuple[Document, DocumentCopy]:
+        """Create a scanned document in the database (simulates scan command)."""
+        ensure_database()
+        session_gen = get_session()
+        session = next(session_gen)
+
+        try:
+            # Create the actual file
+            full_path = repo_dir / file_path
+            full_path.parent.mkdir(parents=True, exist_ok=True)
+            full_path.write_text(content)
+
+            # Compute content hash
+            content_hash = compute_content_hash(full_path)
+
+            # Create document
+            document = Document(content_hash=content_hash, content=content)
+            session.add(document)
+            session.flush()
+
+            # Create document copy with stored metadata
+            stat = full_path.stat()
+            copy = DocumentCopy(
+                document_id=document.id,
+                repository_path=str(repo_dir),
+                file_path=file_path,
+                stored_content_hash=content_hash,
+                stored_size=stat.st_size,
+                stored_mtime=stat.st_mtime,
+            )
+            session.add(copy)
+            session.commit()
+
+            return document, copy
+        finally:
+            try:
+                next(session_gen)
+            except StopIteration:
+                pass
+
+    def test_plan_uses_examples_from_organized_documents(
+        self,
+        cli_runner: CliRunner,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Test that plan uses examples from previously organized documents."""
+        from docman.models import OrganizationStatus
+
+        repo_dir = self.setup_isolated_env(tmp_path, monkeypatch)
+
+        # Create first document directly at the suggested location
+        doc1, copy1 = self.create_scanned_document(
+            repo_dir, "Documents/Archive/organized.pdf", "Organized content"
+        )
+
+        # Create accepted operation for the first document
+        session_gen = get_session()
+        session = next(session_gen)
+        try:
+            copy1.organization_status = OrganizationStatus.ORGANIZED
+
+            # Create accepted operation matching the file location
+            op = Operation(
+                document_copy_id=copy1.id,
+                status=OperationStatus.ACCEPTED,
+                suggested_directory_path="Documents/Archive",
+                suggested_filename="organized.pdf",
+                reason="Archived document",
+                prompt_hash="hash123",
+            )
+            session.add(op)
+            session.commit()
+        finally:
+            try:
+                next(session_gen)
+            except StopIteration:
+                pass
+
+        # Create second document to be processed
+        self.create_scanned_document(repo_dir, "new.pdf", "New content")
+
+        # Change to the repository directory
+        monkeypatch.chdir(repo_dir)
+
+        # Run plan command
+        result = cli_runner.invoke(main, ["plan"], catch_exceptions=False)
+
+        # Verify exit code
+        assert result.exit_code == 0
+
+        # Verify examples were used
+        assert "Using 1 example(s) from previously organized documents" in result.output
+
+    def test_plan_no_examples_on_first_run(
+        self,
+        cli_runner: CliRunner,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Test that plan works without examples on first run."""
+        repo_dir = self.setup_isolated_env(tmp_path, monkeypatch)
+
+        # Create document to be processed
+        self.create_scanned_document(repo_dir, "new.pdf", "New content")
+
+        # Change to the repository directory
+        monkeypatch.chdir(repo_dir)
+
+        # Run plan command
+        result = cli_runner.invoke(main, ["plan"], catch_exceptions=False)
+
+        # Verify exit code
+        assert result.exit_code == 0
+
+        # Verify no examples message was printed (no previously organized documents)
+        assert "example(s) from previously organized documents" not in result.output
+
+        # Verify operation was created
+        assert "Pending operations created: 1" in result.output
+
+    def test_plan_only_uses_examples_where_file_at_suggested_location(
+        self,
+        cli_runner: CliRunner,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Test that plan only uses examples where file is at the suggested location."""
+        from docman.models import OrganizationStatus
+
+        repo_dir = self.setup_isolated_env(tmp_path, monkeypatch)
+
+        # Create first document with accepted operation at correct location
+        doc1, copy1 = self.create_scanned_document(repo_dir, "Documents/Archive/correct.pdf", "Correct content")
+
+        session_gen = get_session()
+        session = next(session_gen)
+        try:
+            copy1.organization_status = OrganizationStatus.ORGANIZED
+
+            # Create accepted operation that matches the file path
+            op1 = Operation(
+                document_copy_id=copy1.id,
+                status=OperationStatus.ACCEPTED,
+                suggested_directory_path="Documents/Archive",
+                suggested_filename="correct.pdf",
+                reason="Correctly organized",
+                prompt_hash="hash123",
+            )
+            session.add(op1)
+            session.commit()
+        finally:
+            try:
+                next(session_gen)
+            except StopIteration:
+                pass
+
+        # Create second document with accepted operation NOT at suggested location
+        doc2, copy2 = self.create_scanned_document(repo_dir, "wrong/location.pdf", "Wrong content")
+
+        session_gen = get_session()
+        session = next(session_gen)
+        try:
+            copy2.organization_status = OrganizationStatus.ORGANIZED
+
+            # Create accepted operation with different suggested path
+            op2 = Operation(
+                document_copy_id=copy2.id,
+                status=OperationStatus.ACCEPTED,
+                suggested_directory_path="Documents/Reports",  # Different from actual location
+                suggested_filename="report.pdf",  # Different filename
+                reason="This should not be used as example",
+                prompt_hash="hash456",
+            )
+            session.add(op2)
+            session.commit()
+        finally:
+            try:
+                next(session_gen)
+            except StopIteration:
+                pass
+
+        # Create new document to be processed
+        self.create_scanned_document(repo_dir, "new.pdf", "New content")
+
+        # Change to the repository directory
+        monkeypatch.chdir(repo_dir)
+
+        # Run plan command
+        result = cli_runner.invoke(main, ["plan"], catch_exceptions=False)
+
+        # Verify exit code
+        assert result.exit_code == 0
+
+        # Verify only 1 example (correct.pdf) was used, not 2
+        assert "Using 1 example(s) from previously organized documents" in result.output
+

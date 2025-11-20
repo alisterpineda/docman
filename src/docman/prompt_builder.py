@@ -6,14 +6,18 @@ organization tasks, keeping prompt logic separate from LLM providers.
 
 import functools
 import json
+from html import escape
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import click
 from jinja2 import Environment, PackageLoader
 
 from docman.llm_providers import OrganizationSuggestion
 from docman.repo_config import FolderDefinition
+
+if TYPE_CHECKING:
+    from sqlalchemy.orm import Session
 
 # Initialize Jinja2 template environment
 _template_env = Environment(loader=PackageLoader("docman", "prompt_templates"))
@@ -520,6 +524,147 @@ def _generate_schema_example() -> str:
     return json.dumps(example, indent=4)
 
 
+def get_examples(
+    session: "Session",
+    repo_root: Path,
+    limit: int = 3,
+) -> list[dict[str, Any]]:
+    """Get accepted operations where file was actually moved to suggested location.
+
+    Only includes examples where:
+    1. Operation status is ACCEPTED
+    2. DocumentCopy file_path matches the suggestion (directory_path/filename)
+    3. File actually exists at that location on disk
+
+    Args:
+        session: SQLAlchemy database session.
+        repo_root: Path to the repository root.
+        limit: Maximum number of examples to return.
+
+    Returns:
+        List of dicts with: file_path, content, suggestion (dict with
+        suggested_directory_path, suggested_filename, reason).
+    """
+    from docman.models import Document, DocumentCopy, Operation, OperationStatus
+
+    repository_path = str(repo_root)
+
+    # Query accepted operations with their document copies and documents
+    query = (
+        session.query(Operation, DocumentCopy, Document)
+        .join(DocumentCopy, Operation.document_copy_id == DocumentCopy.id)
+        .join(Document, DocumentCopy.document_id == Document.id)
+        .filter(DocumentCopy.repository_path == repository_path)
+        .filter(Operation.status == OperationStatus.ACCEPTED)
+        .order_by(Operation.created_at.desc())
+    )
+
+    examples: list[dict[str, Any]] = []
+
+    for operation, copy, document in query:
+        # Check if the file is at the suggested location
+        # Build expected path, handling root-level suggestions (empty directory path)
+        if operation.suggested_directory_path:
+            expected_path = f"{operation.suggested_directory_path}/{operation.suggested_filename}"
+        else:
+            expected_path = operation.suggested_filename
+        # Normalize paths to use forward slashes for cross-platform compatibility
+        # (Windows stores paths with backslashes, but suggestions use forward slashes)
+        normalized_copy_path = copy.file_path.replace("\\", "/")
+        if normalized_copy_path != expected_path:
+            # File was not moved to the suggested location (user modified suggestion)
+            continue
+
+        # Verify file actually exists on disk
+        full_path = repo_root / copy.file_path
+        if not full_path.exists():
+            continue
+
+        # Check that document has content
+        if not document.content:
+            continue
+
+        # Build example dict
+        example = {
+            "file_path": copy.file_path,
+            "content": document.content,
+            "suggestion": {
+                "suggested_directory_path": operation.suggested_directory_path,
+                "suggested_filename": operation.suggested_filename,
+                "reason": operation.reason,
+            },
+        }
+        examples.append(example)
+
+        if len(examples) >= limit:
+            break
+
+    return examples
+
+
+def format_examples(
+    examples: list[dict[str, Any]],
+    max_content_chars: int = 500,
+    head_ratio: float = 0.6,
+) -> str:
+    """Format examples as XML with JSON output for inclusion in prompts.
+
+    Uses _truncate_content_smart() for content truncation with smaller
+    char limit but same default head/tail ratio as main document.
+
+    Args:
+        examples: List of example dicts from get_examples().
+        max_content_chars: Maximum characters for example content.
+        head_ratio: Ratio of space to allocate to beginning of content.
+
+    Returns:
+        Formatted XML string with examples, or empty string if no examples.
+    """
+    if not examples:
+        return ""
+
+    formatted_examples: list[str] = []
+
+    for example in examples:
+        file_path = example["file_path"]
+        content = example["content"]
+        suggestion = example["suggestion"]
+
+        # Truncate content using the same smart truncation as main documents
+        truncated_content, was_truncated, original_len, _ = _truncate_content_smart(
+            content,
+            max_chars=max_content_chars,
+            head_ratio=head_ratio,
+        )
+
+        # Build exampleContent tag with truncation attributes if needed
+        if was_truncated:
+            example_content_tag = (
+                f'<exampleContent filePath="{escape(file_path)}" '
+                f'truncated="true" originalChars="{original_len}">'
+            )
+        else:
+            example_content_tag = f'<exampleContent filePath="{escape(file_path)}">'
+
+        # Format the expected output as JSON
+        expected_output = json.dumps(suggestion, indent=4)
+
+        # Build the example XML
+        example_xml = (
+            f"<example>\n"
+            f"{example_content_tag}\n"
+            f"{truncated_content}\n"
+            f"</exampleContent>\n"
+            f"<expectedOutput>\n"
+            f"{expected_output}\n"
+            f"</expectedOutput>\n"
+            f"</example>"
+        )
+        formatted_examples.append(example_xml)
+
+    return "\n\n".join(formatted_examples)
+
+
 @functools.lru_cache(maxsize=2)
 def build_system_prompt(use_structured_output: bool = False) -> str:
     """Build the static system prompt that defines the LLM's task.
@@ -551,6 +696,7 @@ def build_user_prompt(
     file_path: str,
     document_content: str,
     organization_instructions: str | None = None,
+    examples: str | None = None,
     head_ratio: float = 0.6,
 ) -> str:
     """Build the dynamic user prompt for a specific document.
@@ -559,6 +705,7 @@ def build_user_prompt(
         file_path: Current path of the file being analyzed.
         document_content: Extracted text content from the document.
         organization_instructions: Document organization instructions.
+        examples: Formatted examples from previously organized documents.
         head_ratio: Ratio of available space to allocate to the beginning of
             the document when truncating. Must be between 0.0 and 1.0 (exclusive).
             Default is 0.6 (60% head, 40% tail).
@@ -579,6 +726,7 @@ def build_user_prompt(
         was_truncated=was_truncated,
         original_length=original_length,
         organization_instructions=organization_instructions,
+        examples=examples,
     )
 
 
