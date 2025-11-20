@@ -12,11 +12,11 @@ from typing import Any
 import click
 from jinja2 import Environment, PackageLoader
 
+from docman.llm_providers import OrganizationSuggestion
+from docman.repo_config import FolderDefinition
+
 # Initialize Jinja2 template environment
 _template_env = Environment(loader=PackageLoader("docman", "prompt_templates"))
-
-# Import FolderDefinition for type hints
-from docman.repo_config import FolderDefinition
 
 
 def _truncate_content_smart(
@@ -493,6 +493,33 @@ def serialize_folder_definitions(
     return json.dumps(serializable, sort_keys=True)
 
 
+def _generate_schema_example() -> str:
+    """Generate a JSON example from the OrganizationSuggestion model.
+
+    Creates a JSON object with field names as keys and their descriptions
+    (from Pydantic Field metadata) as placeholder values. This ensures the
+    template always matches the actual Pydantic model schema.
+
+    Returns:
+        JSON string with field names and placeholder descriptions.
+    """
+    schema = OrganizationSuggestion.model_json_schema()
+    properties = schema.get("properties", {})
+
+    # Build example with human-readable placeholder values
+    example = {}
+    for field_name, field_info in properties.items():
+        # Use field description if available, otherwise create a placeholder
+        if "description" in field_info:
+            example[field_name] = field_info["description"]
+        else:
+            # Create a sensible placeholder based on field name
+            placeholder = field_name.replace("_", " ").replace("-", " ")
+            example[field_name] = f"<{placeholder}>"
+
+    return json.dumps(example, indent=4)
+
+
 @functools.lru_cache(maxsize=2)
 def build_system_prompt(use_structured_output: bool = False) -> str:
     """Build the static system prompt that defines the LLM's task.
@@ -508,7 +535,16 @@ def build_system_prompt(use_structured_output: bool = False) -> str:
         System prompt string defining the document organization task.
     """
     template = _template_env.get_template("system_prompt.j2")
-    return template.render(use_structured_output=use_structured_output)
+
+    # Generate schema example only when needed (for unstructured output)
+    json_schema_example = None
+    if not use_structured_output:
+        json_schema_example = _generate_schema_example()
+
+    return template.render(
+        use_structured_output=use_structured_output,
+        json_schema_example=json_schema_example,
+    )
 
 
 def build_user_prompt(

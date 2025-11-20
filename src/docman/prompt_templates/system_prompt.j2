@@ -18,11 +18,7 @@ Based on your analysis, provide a single organization suggestion with:
 {% if not use_structured_output %}
 
 Respond with this exact JSON structure:
-{
-    "suggested_directory_path": "relative/path/to/folder",
-    "suggested_filename": "new-filename.ext",
-    "reason": "Brief explanation of classification rationale"
-}
+{{ json_schema_example }}
 {% endif %}
 
 ## Critical Guidelines (in priority order)

@@ -5,6 +5,7 @@ from pathlib import Path
 from docman.prompt_builder import (
     _detect_existing_directories,
     _extract_variable_patterns,
+    _generate_schema_example,
     _get_pattern_guidance,
     _render_folder_hierarchy,
     _truncate_content_smart,
@@ -334,6 +335,83 @@ class TestBuildSystemPrompt:
         assert prompt1 == prompt2
         # Note: We can't reliably test object identity (is/is not) because
         # Python may intern identical strings, especially long template strings
+
+    def test_structured_output_excludes_json_format(self) -> None:
+        """Test that JSON format instructions are excluded when use_structured_output=True."""
+        clear_prompt_cache()
+        prompt = build_system_prompt(use_structured_output=True)
+
+        # Should NOT contain JSON format instructions
+        assert "Respond with this exact JSON structure" not in prompt
+        assert "Return ONLY the JSON object" not in prompt
+
+    def test_unstructured_output_includes_json_format(self) -> None:
+        """Test that JSON format instructions are included when use_structured_output=False."""
+        clear_prompt_cache()
+        prompt = build_system_prompt(use_structured_output=False)
+
+        # Should contain JSON format instructions
+        assert "Respond with this exact JSON structure" in prompt
+        assert "Return ONLY the JSON object" in prompt
+        # Should contain all expected fields
+        assert "suggested_directory_path" in prompt
+        assert "suggested_filename" in prompt
+        assert "reason" in prompt
+
+    def test_schema_generation_matches_model(self) -> None:
+        """Test that generated schema matches the OrganizationSuggestion model fields."""
+        from docman.llm_providers import OrganizationSuggestion
+
+        clear_prompt_cache()
+        prompt = build_system_prompt(use_structured_output=False)
+
+        # Get fields from the Pydantic model
+        schema = OrganizationSuggestion.model_json_schema()
+        properties = schema.get("properties", {})
+
+        # All model fields should appear in the prompt
+        for field_name in properties.keys():
+            assert field_name in prompt, f"Field '{field_name}' not found in prompt"
+
+    def test_generate_schema_example_returns_valid_json(self) -> None:
+        """Test that _generate_schema_example returns valid JSON with expected fields."""
+        import json
+
+        example = _generate_schema_example()
+
+        # Should be valid JSON
+        parsed = json.loads(example)
+        assert isinstance(parsed, dict)
+
+        # Should contain all expected fields
+        assert "suggested_directory_path" in parsed
+        assert "suggested_filename" in parsed
+        assert "reason" in parsed
+
+    def test_generate_schema_example_uses_field_descriptions(self) -> None:
+        """Test that _generate_schema_example uses Field descriptions from the model."""
+        import json
+
+        example = _generate_schema_example()
+        parsed = json.loads(example)
+
+        # Field descriptions should match what's in the OrganizationSuggestion model
+        assert parsed["suggested_directory_path"] == "relative/path/to/folder"
+        assert parsed["suggested_filename"] == "new-filename.ext"
+        assert parsed["reason"] == "Brief explanation of classification rationale"
+
+    def test_structured_vs_unstructured_cache_separate(self) -> None:
+        """Test that structured and unstructured prompts are cached separately."""
+        clear_prompt_cache()
+
+        # Get both versions
+        unstructured = build_system_prompt(use_structured_output=False)
+        structured = build_system_prompt(use_structured_output=True)
+
+        # Should be different
+        assert unstructured != structured
+        # Unstructured should be longer (has JSON instructions)
+        assert len(unstructured) > len(structured)
 
 
 class TestBuildUserPrompt:

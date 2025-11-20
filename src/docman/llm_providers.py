@@ -8,7 +8,7 @@ import json
 from abc import ABC, abstractmethod
 from typing import Any
 
-from pydantic import BaseModel, field_validator
+from pydantic import BaseModel, Field, field_validator
 
 from docman.llm_config import ProviderConfig
 from docman.path_security import validate_path_component
@@ -23,9 +23,15 @@ class OrganizationSuggestion(BaseModel):
     Security: Path fields are validated to prevent path traversal attacks.
     """
 
-    suggested_directory_path: str
-    suggested_filename: str
-    reason: str
+    suggested_directory_path: str = Field(
+        description="relative/path/to/folder"
+    )
+    suggested_filename: str = Field(
+        description="new-filename.ext"
+    )
+    reason: str = Field(
+        description="Brief explanation of classification rationale"
+    )
 
     @field_validator("suggested_directory_path")
     @classmethod
