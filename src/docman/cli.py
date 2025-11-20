@@ -1330,8 +1330,8 @@ def status(path: str | None) -> None:
             click.echo()
 
         click.echo("To apply these changes, run:")
-        click.echo("  docman apply --all       # Review each operation interactively")
-        click.echo("  docman apply --all -y    # Apply all operations without prompts")
+        click.echo("  docman review            # Review each operation interactively")
+        click.echo("  docman review --apply-all -y    # Apply all operations without prompts")
 
     finally:
         # Close the session

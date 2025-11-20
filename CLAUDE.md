@@ -565,7 +565,7 @@ Main commands:
   - `--all`: Unmark all files in repository
   - `-r`: Recursively unmark files in subdirectories
   - `-y`: Skip confirmation prompts
-- `docman ignore [path]`: Mark files as 'ignored' to exclude from future plan runs
+- `docman ignore <path>`: Mark files as 'ignored' to exclude from future plan runs
   - `-r`: Recursively ignore files in subdirectories
   - `-y`: Skip confirmation prompts
 - `docman llm`: Manage LLM providers (add, list, show, test, set-active, remove)
@@ -670,7 +670,7 @@ Your choice [1]:
   - `test_plan_integration.py`: Plan command (includes mutation tests: stale content, deleted files, model changes, error handling)
     - `test_plan_skips_file_on_llm_failure`: Verifies LLM failures skip files without creating pending operations
     - `test_plan_extraction_failure_not_double_counted`: Confirms extraction failures counted only in `failed_count`
-  - `test_config_integration.py`: Config commands including `define` and `list-dirs` (31 tests)
+  - `test_config_integration.py`: Config commands including `define` and `list-dirs` (39 tests)
   - `test_scan_integration.py`: Scan command
   - `test_dedupe_integration.py`: Dedupe command
   - `test_init_integration.py`: Init command
