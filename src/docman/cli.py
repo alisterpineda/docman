@@ -3458,9 +3458,24 @@ def debug_prompt(file_path: str) -> None:
             click.secho(f"Error: {e}", fg="red", err=True)
             raise click.Abort()
 
+        # Get examples from successfully organized documents
+        examples_data = get_examples(
+            session=session,
+            repo_root=repo_root,
+            limit=3,
+        )
+
+        examples_str = None
+        if examples_data:
+            examples_str = format_examples(examples_data)
+            num_ex = len(examples_data)
+            click.echo(f"Using {num_ex} example(s) from previously organized documents\n")
+
         # Build prompts
         system_prompt = build_system_prompt(use_structured_output=supports_structured_output)
-        user_prompt = build_user_prompt(file_path_str, document_content, organization_instructions)
+        user_prompt = build_user_prompt(
+            file_path_str, document_content, organization_instructions, examples=examples_str
+        )
 
         # Display the prompts with nice formatting
         click.echo("=" * 80)
@@ -3473,6 +3488,7 @@ def debug_prompt(file_path: str) -> None:
             click.echo(f"Provider: {active_provider.name}")
             click.echo(f"Model: {active_provider.model}")
         click.echo(f"Structured output: {supports_structured_output}")
+        click.echo(f"Few-shot examples: {len(examples_data) if examples_data else 0}")
         click.echo()
 
         # System prompt section
