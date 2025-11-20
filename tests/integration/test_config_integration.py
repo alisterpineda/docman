@@ -421,7 +421,7 @@ class TestPatternCommands:
 
         patterns = get_variable_patterns(tmp_path)
         assert "year" in patterns
-        assert patterns["year"] == "4-digit year in YYYY format"
+        assert patterns["year"].description == "4-digit year in YYYY format"
 
     def test_pattern_add_updates_existing(
         self, cli_runner: CliRunner, tmp_path: Path
@@ -447,7 +447,7 @@ class TestPatternCommands:
         from docman.repo_config import get_variable_patterns
 
         patterns = get_variable_patterns(tmp_path)
-        assert patterns["year"] == "New description"
+        assert patterns["year"].description == "New description"
 
     def test_pattern_list_empty(self, cli_runner: CliRunner, tmp_path: Path) -> None:
         """Test listing patterns when none are defined."""
@@ -580,6 +580,226 @@ class TestPatternCommands:
 
         patterns = get_variable_patterns(tmp_path)
         assert "year" in patterns
+
+    def test_pattern_value_add(self, cli_runner: CliRunner, tmp_path: Path) -> None:
+        """Test adding a value to a variable pattern."""
+        # Initialize repository and add pattern
+        cli_runner.invoke(main, ["init", str(tmp_path)], input="n\n")
+        cli_runner.invoke(
+            main,
+            ["pattern", "add", "company", "--desc", "Company name from document", "--path", str(tmp_path)],
+        )
+
+        # Add a value
+        result = cli_runner.invoke(
+            main,
+            ["pattern", "value", "add", "company", "Acme Corp.", "--desc", "Main company", "--path", str(tmp_path)],
+        )
+
+        assert result.exit_code == 0
+        assert "Added value 'Acme Corp.'" in result.output
+
+        # Verify value was saved
+        from docman.repo_config import get_pattern_values
+
+        values = get_pattern_values(tmp_path, "company")
+        assert len(values) == 1
+        assert values[0].value == "Acme Corp."
+        assert values[0].description == "Main company"
+
+    def test_pattern_value_add_alias(self, cli_runner: CliRunner, tmp_path: Path) -> None:
+        """Test adding an alias to a value."""
+        # Initialize repository and add pattern with value
+        cli_runner.invoke(main, ["init", str(tmp_path)], input="n\n")
+        cli_runner.invoke(
+            main,
+            ["pattern", "add", "company", "--desc", "Company name", "--path", str(tmp_path)],
+        )
+        cli_runner.invoke(
+            main,
+            ["pattern", "value", "add", "company", "Acme Corp.", "--path", str(tmp_path)],
+        )
+
+        # Add an alias
+        result = cli_runner.invoke(
+            main,
+            ["pattern", "value", "add", "company", "XYZ Corp", "--alias-of", "Acme Corp.", "--path", str(tmp_path)],
+        )
+
+        assert result.exit_code == 0
+        assert "Added alias 'XYZ Corp'" in result.output
+
+        # Verify alias was saved
+        from docman.repo_config import get_pattern_values
+
+        values = get_pattern_values(tmp_path, "company")
+        assert len(values) == 1
+        assert "XYZ Corp" in values[0].aliases
+
+    def test_pattern_value_list(self, cli_runner: CliRunner, tmp_path: Path) -> None:
+        """Test listing values for a pattern."""
+        # Initialize and set up
+        cli_runner.invoke(main, ["init", str(tmp_path)], input="n\n")
+        cli_runner.invoke(
+            main,
+            ["pattern", "add", "company", "--desc", "Company name", "--path", str(tmp_path)],
+        )
+        cli_runner.invoke(
+            main,
+            ["pattern", "value", "add", "company", "Acme Corp.", "--desc", "Main company", "--path", str(tmp_path)],
+        )
+        cli_runner.invoke(
+            main,
+            ["pattern", "value", "add", "company", "XYZ Corp", "--alias-of", "Acme Corp.", "--path", str(tmp_path)],
+        )
+        cli_runner.invoke(
+            main,
+            ["pattern", "value", "add", "company", "Beta Inc.", "--path", str(tmp_path)],
+        )
+
+        # List values
+        result = cli_runner.invoke(
+            main,
+            ["pattern", "value", "list", "company", "--path", str(tmp_path)],
+        )
+
+        assert result.exit_code == 0
+        assert "Values for 'company':" in result.output
+        assert "Acme Corp." in result.output
+        assert "Main company" in result.output
+        assert "Aliases: XYZ Corp" in result.output
+        assert "Beta Inc." in result.output
+
+    def test_pattern_value_list_empty(self, cli_runner: CliRunner, tmp_path: Path) -> None:
+        """Test listing values when none are defined."""
+        # Initialize and add pattern without values
+        cli_runner.invoke(main, ["init", str(tmp_path)], input="n\n")
+        cli_runner.invoke(
+            main,
+            ["pattern", "add", "company", "--desc", "Company name", "--path", str(tmp_path)],
+        )
+
+        # List values
+        result = cli_runner.invoke(
+            main,
+            ["pattern", "value", "list", "company", "--path", str(tmp_path)],
+        )
+
+        assert result.exit_code == 0
+        assert "No values defined for pattern 'company'" in result.output
+
+    def test_pattern_value_remove(self, cli_runner: CliRunner, tmp_path: Path) -> None:
+        """Test removing a value from a pattern."""
+        # Initialize and set up
+        cli_runner.invoke(main, ["init", str(tmp_path)], input="n\n")
+        cli_runner.invoke(
+            main,
+            ["pattern", "add", "company", "--desc", "Company name", "--path", str(tmp_path)],
+        )
+        cli_runner.invoke(
+            main,
+            ["pattern", "value", "add", "company", "Acme Corp.", "--path", str(tmp_path)],
+        )
+
+        # Remove value
+        result = cli_runner.invoke(
+            main,
+            ["pattern", "value", "remove", "company", "Acme Corp.", "-y", "--path", str(tmp_path)],
+        )
+
+        assert result.exit_code == 0
+        assert "Removed value 'Acme Corp.'" in result.output
+
+        # Verify value was removed
+        from docman.repo_config import get_pattern_values
+
+        values = get_pattern_values(tmp_path, "company")
+        assert len(values) == 0
+
+    def test_pattern_value_remove_alias(self, cli_runner: CliRunner, tmp_path: Path) -> None:
+        """Test removing an alias (keeps the canonical value)."""
+        # Initialize and set up
+        cli_runner.invoke(main, ["init", str(tmp_path)], input="n\n")
+        cli_runner.invoke(
+            main,
+            ["pattern", "add", "company", "--desc", "Company name", "--path", str(tmp_path)],
+        )
+        cli_runner.invoke(
+            main,
+            ["pattern", "value", "add", "company", "Acme Corp.", "--path", str(tmp_path)],
+        )
+        cli_runner.invoke(
+            main,
+            ["pattern", "value", "add", "company", "XYZ Corp", "--alias-of", "Acme Corp.", "--path", str(tmp_path)],
+        )
+
+        # Remove alias
+        result = cli_runner.invoke(
+            main,
+            ["pattern", "value", "remove", "company", "XYZ Corp", "-y", "--path", str(tmp_path)],
+        )
+
+        assert result.exit_code == 0
+        assert "Removed alias 'XYZ Corp'" in result.output
+
+        # Verify alias was removed but value remains
+        from docman.repo_config import get_pattern_values
+
+        values = get_pattern_values(tmp_path, "company")
+        assert len(values) == 1
+        assert values[0].value == "Acme Corp."
+        assert "XYZ Corp" not in values[0].aliases
+
+    def test_pattern_show_with_values(self, cli_runner: CliRunner, tmp_path: Path) -> None:
+        """Test that pattern show displays values and aliases."""
+        # Initialize and set up
+        cli_runner.invoke(main, ["init", str(tmp_path)], input="n\n")
+        cli_runner.invoke(
+            main,
+            ["pattern", "add", "company", "--desc", "Company name", "--path", str(tmp_path)],
+        )
+        cli_runner.invoke(
+            main,
+            ["pattern", "value", "add", "company", "Acme Corp.", "--desc", "Main company", "--path", str(tmp_path)],
+        )
+        cli_runner.invoke(
+            main,
+            ["pattern", "value", "add", "company", "XYZ Corp", "--alias-of", "Acme Corp.", "--path", str(tmp_path)],
+        )
+
+        # Show pattern
+        result = cli_runner.invoke(main, ["pattern", "show", "company", "--path", str(tmp_path)])
+
+        assert result.exit_code == 0
+        assert "Pattern: company" in result.output
+        assert "Company name" in result.output
+        assert "Values:" in result.output
+        assert "Acme Corp." in result.output
+        assert "Main company" in result.output
+        assert "Aliases: XYZ Corp" in result.output
+
+    def test_pattern_list_shows_value_count(self, cli_runner: CliRunner, tmp_path: Path) -> None:
+        """Test that pattern list shows value count when values are defined."""
+        # Initialize and set up
+        cli_runner.invoke(main, ["init", str(tmp_path)], input="n\n")
+        cli_runner.invoke(
+            main,
+            ["pattern", "add", "company", "--desc", "Company name", "--path", str(tmp_path)],
+        )
+        cli_runner.invoke(
+            main,
+            ["pattern", "value", "add", "company", "Acme Corp.", "--path", str(tmp_path)],
+        )
+        cli_runner.invoke(
+            main,
+            ["pattern", "value", "add", "company", "Beta Inc.", "--path", str(tmp_path)],
+        )
+
+        # List patterns
+        result = cli_runner.invoke(main, ["pattern", "list", "--path", str(tmp_path)])
+
+        assert result.exit_code == 0
+        assert "2 predefined values" in result.output
 
 
 class TestVariablePatternValidationIntegration:

@@ -346,9 +346,26 @@ def _get_pattern_guidance(variable_name: str, repo_root: Path) -> str:
         # Return LLM-friendly fallback guidance
         return f"\n  - Infer {variable_name} from document context"
 
-    # Return pattern description formatted as guidance
-    description = patterns[variable_name]
-    return f"\n  - {description}"
+    # Get the pattern object
+    pattern = patterns[variable_name]
+
+    # Build guidance with description
+    lines = [f"\n  - {pattern.description}"]
+
+    # Add known values if any
+    if pattern.values:
+        lines.append("\n  - Known values:")
+        for pv in pattern.values:
+            if pv.description:
+                lines.append(f"\n    - \"{pv.value}\" - {pv.description}")
+            else:
+                lines.append(f"\n    - \"{pv.value}\"")
+            # Add aliases
+            if pv.aliases:
+                aliases_str = ", ".join(f'"{a}"' for a in pv.aliases)
+                lines.append(f"\n      (Also known as: {aliases_str})")
+
+    return "".join(lines)
 
 
 def _detect_existing_directories(

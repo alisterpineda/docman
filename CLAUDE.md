@@ -308,8 +308,12 @@ docman unmark archives/ -r -y   # Reset to unorganized to re-process
 - **Storage**: YAML format in `.docman/config.yaml` under `organization.folders`
 - **Variable patterns**: Supports placeholders like `{year}`, `{company}`, `{family_member}` in both folder paths and filename conventions
   - **User-defined**: All variable patterns must be explicitly defined before use
-  - **Storage**: Patterns stored in `.docman/config.yaml` under `organization.variable_patterns` as `{name: description}` mapping
-  - **Functions**: `get_variable_patterns()`, `set_variable_pattern()`, `remove_variable_pattern()`
+  - **Storage**: Patterns stored in `.docman/config.yaml` under `organization.variable_patterns`
+    - Simple format: `{name: description}` (backward compatible)
+    - Extended format with values: `{name: {description: ..., values: [...]}}`
+  - **Dataclasses**: `PatternValue` (value, description, aliases), `VariablePattern` (description, values)
+  - **Functions**: `get_variable_patterns()`, `set_variable_pattern()`, `remove_variable_pattern()`, `get_pattern_values()`, `add_pattern_value()`, `remove_pattern_value()`
+  - **Predefined values**: Optional predefined values with descriptions and aliases to help LLM recognize known entities
 - **Default filename convention**: Repository-level default stored at `organization.default_filename_convention`
 - **Filename convention inheritance**: Folders inherit default convention unless overridden with folder-specific convention
 - **Extension preservation**: Filename conventions apply to base name only; original extension always preserved
@@ -333,8 +337,19 @@ docman unmark archives/ -r -y   # Reset to unorganized to re-process
   - Example: `docman pattern add year --desc "4-digit year in YYYY format"`
   - Patterns must be defined before use in folder paths or filename conventions
 - `docman pattern list`: List all defined variable patterns with descriptions
+  - Shows value count if pattern has predefined values
 - `docman pattern show <name>`: Show details of a specific variable pattern
+  - Displays values and aliases if defined
 - `docman pattern remove <name>`: Remove a variable pattern (requires confirmation or `-y` flag)
+- `docman pattern value add <pattern> <value> [--desc "..."] [--alias-of "canonical"]`: Add a value to a pattern
+  - `--desc`: Optional description for the value
+  - `--alias-of`: Add as an alias of an existing canonical value
+  - Example: `docman pattern value add company "Acme Corp." --desc "Main company"`
+  - Example: `docman pattern value add company "XYZ Corp" --alias-of "Acme Corp."`
+- `docman pattern value list <pattern>`: List all values for a pattern
+- `docman pattern value remove <pattern> <value>`: Remove a value or alias (requires confirmation or `-y` flag)
+  - If removing a canonical value, all its aliases are also removed
+  - If removing an alias, only the alias is removed
 - `docman define <path> [--desc "description"] [--filename-convention "pattern"]`: Define/update folder with optional description and filename convention
   - Path uses `/` separator (e.g., `Financial/invoices/{year}`)
   - `--desc` is optional - omit for self-documenting structures where variable patterns provide sufficient context
@@ -419,7 +434,11 @@ docman define Career/{FirstName}/{Year}
 - **Variable Pattern System**:
   - **User-defined only**: No hard-coded patterns; all variables must be explicitly defined via `docman pattern add`
   - **Storage**: Patterns stored in `.docman/config.yaml` under `organization.variable_patterns`
-  - **Structure**: Simple `{name: description}` mapping
+  - **Structure**: Simple `{name: description}` or extended `{name: {description: ..., values: [...]}}`
+  - **Predefined values**: Patterns can have predefined values with descriptions and aliases
+    - Values help LLM recognize known entities (e.g., company names)
+    - Aliases map alternative names to canonical values (e.g., "XYZ Corp" → "Acme Corp.")
+    - Generated prompt guidance includes "Known values:" section with values, descriptions, and aliases
   - **Validation**: Using undefined variables in folder paths or filename conventions displays warnings and provides LLM-friendly fallback guidance ("Infer {variable} from document context")
 - **Prompt hash consistency**: All operations use same hash computation logic
   - Includes: system prompt + organization instructions + model name + serialized folder definitions (including filename conventions)
@@ -454,6 +473,34 @@ docman plan
 # - Folder-specific override for invoices: {company}-invoice-{year}-{month}
 # - Variable pattern descriptions from user-defined patterns
 # - Extension preservation rules
+```
+
+**Example Workflow with Predefined Values**:
+```bash
+# Define pattern with predefined values for better LLM recognition
+docman pattern add company --desc "Company name extracted from document"
+
+# Add known companies with descriptions and aliases
+docman pattern value add company "Acme Corp." --desc "Current name after 2020 merger"
+docman pattern value add company "XYZ Corporation" --alias-of "Acme Corp."
+docman pattern value add company "XYZ Corp" --alias-of "Acme Corp."
+docman pattern value add company "Beta Industries" --desc "Technology partner"
+
+# View pattern details
+docman pattern show company
+# Output:
+# Pattern: company
+#   Description: Company name extracted from document
+#   Values:
+#     • Acme Corp. - Current name after 2020 merger
+#       Aliases: XYZ Corporation, XYZ Corp
+#     • Beta Industries - Technology partner
+
+# LLM prompt will include:
+# - Known values:
+#     - "Acme Corp." - Current name after 2020 merger
+#       (Also known as: "XYZ Corporation", "XYZ Corp")
+#     - "Beta Industries" - Technology partner
 ```
 
 ### CLI Structure (`cli.py`)
@@ -491,8 +538,11 @@ Main commands:
 - `docman pattern`: Manage variable pattern definitions for use in folder paths and filename conventions
   - `pattern add <name> --desc "description"`: Add or update a variable pattern
   - `pattern list`: List all defined variable patterns
-  - `pattern show <name>`: Show details of a specific pattern
+  - `pattern show <name>`: Show details of a specific pattern (includes values and aliases)
   - `pattern remove <name>`: Remove a variable pattern (requires confirmation or `-y` flag)
+  - `pattern value add <pattern> <value> [--desc "..."] [--alias-of "..."]`: Add a value or alias
+  - `pattern value list <pattern>`: List all values for a pattern
+  - `pattern value remove <pattern> <value>`: Remove a value or alias (requires confirmation or `-y` flag)
 - `docman unmark [path]`: Reset organization status to 'unorganized' for specified files
   - `--all`: Unmark all files in repository
   - `-r`: Recursively unmark files in subdirectories

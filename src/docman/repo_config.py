@@ -12,6 +12,81 @@ import yaml
 
 
 @dataclass
+class PatternValue:
+    """Represents a predefined value for a variable pattern.
+
+    Attributes:
+        value: The canonical value (e.g., "Acme Corp.").
+        description: Optional description of this value.
+        aliases: Alternative names that should map to this value.
+    """
+
+    value: str
+    description: str | None = None
+    aliases: list[str] = field(default_factory=list)
+
+    def to_dict(self) -> dict[str, Any]:
+        """Convert to dictionary representation for YAML serialization."""
+        result: dict[str, Any] = {"value": self.value}
+        if self.description is not None:
+            result["description"] = self.description
+        if self.aliases:
+            result["aliases"] = self.aliases
+        return result
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "PatternValue":
+        """Create PatternValue from dictionary representation."""
+        return cls(
+            value=data["value"],
+            description=data.get("description"),
+            aliases=data.get("aliases", []),
+        )
+
+
+@dataclass
+class VariablePattern:
+    """Represents a variable pattern with optional predefined values.
+
+    Attributes:
+        description: Human-readable description of the pattern.
+        values: List of predefined values with optional aliases.
+    """
+
+    description: str
+    values: list[PatternValue] = field(default_factory=list)
+
+    def to_dict(self) -> dict[str, Any]:
+        """Convert to dictionary representation for YAML serialization.
+
+        Returns simple string format if no values defined (backward compatible).
+        """
+        if not self.values:
+            # Simple format: just the description string
+            return self.description  # type: ignore
+        # Extended format with values
+        result: dict[str, Any] = {"description": self.description}
+        result["values"] = [v.to_dict() for v in self.values]
+        return result
+
+    @classmethod
+    def from_dict(cls, data: str | dict[str, Any]) -> "VariablePattern":
+        """Create VariablePattern from dictionary or string representation.
+
+        Supports both simple string format (backward compatible) and
+        extended dict format with values.
+        """
+        if isinstance(data, str):
+            # Simple format: just description
+            return cls(description=data)
+        # Extended format
+        return cls(
+            description=data["description"],
+            values=[PatternValue.from_dict(v) for v in data.get("values", [])],
+        )
+
+
+@dataclass
 class FolderDefinition:
     """Represents a folder with its description and nested subfolders.
 
@@ -352,8 +427,39 @@ def set_default_filename_convention(repo_root: Path, convention: str) -> None:
     save_repo_config(repo_root, config)
 
 
-def get_variable_patterns(repo_root: Path) -> dict[str, str]:
+def get_variable_patterns(repo_root: Path) -> dict[str, VariablePattern]:
     """Get variable pattern definitions from repository config.
+
+    Handles both simple string format (backward compatible) and extended
+    dict format with values.
+
+    Args:
+        repo_root: The repository root directory.
+
+    Returns:
+        Dictionary mapping variable names to VariablePattern objects.
+        Returns empty dict if no patterns defined.
+    """
+    config = load_repo_config(repo_root)
+    organization = config.get("organization", {})
+    patterns_data = organization.get("variable_patterns", {})
+
+    if not isinstance(patterns_data, dict):
+        return {}
+
+    # Normalize all patterns to VariablePattern objects
+    result: dict[str, VariablePattern] = {}
+    for name, data in patterns_data.items():
+        result[name] = VariablePattern.from_dict(data)
+
+    return result
+
+
+def get_variable_pattern_descriptions(repo_root: Path) -> dict[str, str]:
+    """Get variable pattern descriptions from repository config.
+
+    Convenience function for backward compatibility that returns just
+    the description strings.
 
     Args:
         repo_root: The repository root directory.
@@ -362,14 +468,15 @@ def get_variable_patterns(repo_root: Path) -> dict[str, str]:
         Dictionary mapping variable names to descriptions.
         Returns empty dict if no patterns defined.
     """
-    config = load_repo_config(repo_root)
-    organization = config.get("organization", {})
-    patterns = organization.get("variable_patterns", {})
-    return patterns if isinstance(patterns, dict) else {}
+    patterns = get_variable_patterns(repo_root)
+    return {name: pattern.description for name, pattern in patterns.items()}
 
 
 def set_variable_pattern(repo_root: Path, name: str, description: str) -> None:
     """Add or update a variable pattern definition.
+
+    Updates only the description. If the pattern has values, they are preserved.
+    If updating an existing pattern with values, only the description is changed.
 
     Args:
         repo_root: The repository root directory.
@@ -394,8 +501,17 @@ def set_variable_pattern(repo_root: Path, name: str, description: str) -> None:
     if "variable_patterns" not in config["organization"]:
         config["organization"]["variable_patterns"] = {}
 
-    # Set pattern
-    config["organization"]["variable_patterns"][name.strip()] = description.strip()
+    name = name.strip()
+    description = description.strip()
+
+    # Check if pattern already exists with values
+    existing = config["organization"]["variable_patterns"].get(name)
+    if isinstance(existing, dict) and "values" in existing:
+        # Preserve values, update description
+        config["organization"]["variable_patterns"][name]["description"] = description
+    else:
+        # Simple format (no values)
+        config["organization"]["variable_patterns"][name] = description
 
     # Save updated config
     save_repo_config(repo_root, config)
@@ -427,6 +543,187 @@ def remove_variable_pattern(repo_root: Path, name: str) -> None:
 
     # Remove pattern
     del config["organization"]["variable_patterns"][name.strip()]
+
+    # Save updated config
+    save_repo_config(repo_root, config)
+
+
+def get_pattern_values(repo_root: Path, pattern_name: str) -> list[PatternValue]:
+    """Get predefined values for a variable pattern.
+
+    Args:
+        repo_root: The repository root directory.
+        pattern_name: Name of the variable pattern.
+
+    Returns:
+        List of PatternValue objects for this pattern.
+        Returns empty list if pattern has no predefined values.
+
+    Raises:
+        ValueError: If pattern doesn't exist.
+    """
+    patterns = get_variable_patterns(repo_root)
+
+    if pattern_name not in patterns:
+        raise ValueError(f"Variable pattern '{pattern_name}' not found")
+
+    return patterns[pattern_name].values
+
+
+def add_pattern_value(
+    repo_root: Path,
+    pattern_name: str,
+    value: str,
+    description: str | None = None,
+    alias_of: str | None = None,
+) -> None:
+    """Add a value to a variable pattern, or add an alias to an existing value.
+
+    If alias_of is specified, the value is added as an alias to the canonical value.
+    Otherwise, it's added as a new canonical value.
+
+    Args:
+        repo_root: The repository root directory.
+        pattern_name: Name of the variable pattern.
+        value: The value to add.
+        description: Optional description (only for canonical values, not aliases).
+        alias_of: If specified, add this value as an alias of the canonical value.
+
+    Raises:
+        ValueError: If pattern doesn't exist, value already exists, or alias_of not found.
+        OSError: If config file cannot be written.
+    """
+    if not value or not value.strip():
+        raise ValueError("Value cannot be empty")
+
+    value = value.strip()
+
+    # Load existing config
+    config = load_repo_config(repo_root)
+
+    # Ensure organization.variable_patterns structure exists
+    organization = config.get("organization", {})
+    patterns = organization.get("variable_patterns", {})
+
+    if pattern_name not in patterns:
+        raise ValueError(f"Variable pattern '{pattern_name}' not found")
+
+    # Get current pattern data
+    pattern_data = patterns[pattern_name]
+
+    # Convert simple string format to extended format if needed
+    if isinstance(pattern_data, str):
+        pattern_data = {"description": pattern_data, "values": []}
+        config["organization"]["variable_patterns"][pattern_name] = pattern_data
+    elif "values" not in pattern_data:
+        pattern_data["values"] = []
+
+    # Check for duplicate values and aliases
+    for pv in pattern_data["values"]:
+        if pv["value"] == value:
+            raise ValueError(f"Value '{value}' already exists for pattern '{pattern_name}'")
+        if value in pv.get("aliases", []):
+            raise ValueError(
+                f"'{value}' already exists as an alias of '{pv['value']}' "
+                f"for pattern '{pattern_name}'"
+            )
+
+    if alias_of:
+        # Add as alias to existing canonical value
+        alias_of = alias_of.strip()
+        found = False
+        for pv in pattern_data["values"]:
+            if pv["value"] == alias_of:
+                if "aliases" not in pv:
+                    pv["aliases"] = []
+                pv["aliases"].append(value)
+                found = True
+                break
+
+        if not found:
+            raise ValueError(
+                f"Canonical value '{alias_of}' not found for pattern '{pattern_name}'"
+            )
+    else:
+        # Add as new canonical value
+        new_value: dict[str, Any] = {"value": value}
+        if description:
+            new_value["description"] = description.strip()
+        pattern_data["values"].append(new_value)
+
+    # Save updated config
+    save_repo_config(repo_root, config)
+
+
+def remove_pattern_value(repo_root: Path, pattern_name: str, value: str) -> None:
+    """Remove a value or alias from a variable pattern.
+
+    If the value is a canonical value, removes it and all its aliases.
+    If the value is an alias, removes only the alias.
+
+    Args:
+        repo_root: The repository root directory.
+        pattern_name: Name of the variable pattern.
+        value: The value or alias to remove.
+
+    Raises:
+        ValueError: If pattern doesn't exist or value/alias not found.
+        OSError: If config file cannot be written.
+    """
+    if not value or not value.strip():
+        raise ValueError("Value cannot be empty")
+
+    value = value.strip()
+
+    # Load existing config
+    config = load_repo_config(repo_root)
+
+    # Ensure pattern exists
+    organization = config.get("organization", {})
+    patterns = organization.get("variable_patterns", {})
+
+    if pattern_name not in patterns:
+        raise ValueError(f"Variable pattern '{pattern_name}' not found")
+
+    pattern_data = patterns[pattern_name]
+
+    # Handle simple string format (no values to remove)
+    if isinstance(pattern_data, str):
+        raise ValueError(f"Value '{value}' not found for pattern '{pattern_name}'")
+
+    if "values" not in pattern_data or not pattern_data["values"]:
+        raise ValueError(f"Value '{value}' not found for pattern '{pattern_name}'")
+
+    # Find and remove the value or alias
+    found = False
+    new_values = []
+
+    for pv in pattern_data["values"]:
+        if pv["value"] == value:
+            # Found as canonical value - remove entire entry
+            found = True
+            continue  # Skip this entry
+
+        # Check if it's an alias
+        if value in pv.get("aliases", []):
+            # Remove only the alias
+            pv["aliases"] = [a for a in pv["aliases"] if a != value]
+            if not pv["aliases"]:
+                del pv["aliases"]
+            found = True
+
+        new_values.append(pv)
+
+    if not found:
+        raise ValueError(f"Value '{value}' not found for pattern '{pattern_name}'")
+
+    pattern_data["values"] = new_values
+
+    # If no values left, convert back to simple format
+    if not pattern_data["values"]:
+        config["organization"]["variable_patterns"][pattern_name] = pattern_data[
+            "description"
+        ]
 
     # Save updated config
     save_repo_config(repo_root, config)

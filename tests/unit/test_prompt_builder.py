@@ -791,6 +791,63 @@ class TestGetPatternGuidance:
         assert result.startswith("\n  -")
         assert "Extract custom value from document" in result
 
+    def test_guidance_with_values(self, tmp_path: Path) -> None:
+        """Test that guidance includes predefined values."""
+        from docman.repo_config import add_pattern_value, set_variable_pattern
+
+        set_variable_pattern(tmp_path, "company", "Company name from document")
+        add_pattern_value(tmp_path, "company", "Acme Corp.", "Main company")
+        add_pattern_value(tmp_path, "company", "Beta Inc.")
+
+        result = _get_pattern_guidance("company", tmp_path)
+
+        # Should contain description
+        assert "Company name from document" in result
+
+        # Should contain values
+        assert "Known values:" in result
+        assert '"Acme Corp."' in result
+        assert "Main company" in result
+        assert '"Beta Inc."' in result
+
+    def test_guidance_with_aliases(self, tmp_path: Path) -> None:
+        """Test that guidance includes aliases for values."""
+        from docman.repo_config import add_pattern_value, set_variable_pattern
+
+        set_variable_pattern(tmp_path, "company", "Company name from document")
+        add_pattern_value(tmp_path, "company", "Acme Corp.", "Current name after merger")
+        add_pattern_value(tmp_path, "company", "XYZ Corp", alias_of="Acme Corp.")
+        add_pattern_value(tmp_path, "company", "XYZ Corporation", alias_of="Acme Corp.")
+
+        result = _get_pattern_guidance("company", tmp_path)
+
+        # Should contain aliases
+        assert "Also known as:" in result
+        assert '"XYZ Corp"' in result
+        assert '"XYZ Corporation"' in result
+
+    def test_guidance_with_mixed_simple_and_extended(self, tmp_path: Path) -> None:
+        """Test guidance generation with both simple and extended patterns."""
+        from docman.repo_config import add_pattern_value, set_variable_pattern
+
+        # Simple pattern (no values)
+        set_variable_pattern(tmp_path, "year", "4-digit year in YYYY format")
+
+        # Extended pattern (with values)
+        set_variable_pattern(tmp_path, "company", "Company name from document")
+        add_pattern_value(tmp_path, "company", "Acme Corp.")
+
+        result_year = _get_pattern_guidance("year", tmp_path)
+        result_company = _get_pattern_guidance("company", tmp_path)
+
+        # Simple pattern should not have Known values
+        assert "Known values:" not in result_year
+        assert "4-digit year" in result_year
+
+        # Extended pattern should have Known values
+        assert "Known values:" in result_company
+        assert '"Acme Corp."' in result_company
+
 
 class TestDetectExistingDirectories:
     """Tests for _detect_existing_directories function."""
