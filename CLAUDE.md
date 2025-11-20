@@ -34,8 +34,11 @@ uv run pytest
 # Run specific test file
 uv run pytest tests/unit/test_config.py
 
-# Run specific test
-uv run pytest tests/unit/test_config.py::test_ensure_app_config
+# Run specific test class
+uv run pytest tests/unit/test_config.py::TestEnsureAppConfig
+
+# Run specific test method
+uv run pytest tests/unit/test_config.py::TestEnsureAppConfig::test_creates_config_directory
 ```
 
 ### Linting and Type Checking
@@ -194,10 +197,12 @@ Three main tables model document tracking and operations:
 - Filter by file or directory path
 
 **Review Operations** (`review` command):
-- **Interactive mode** (default): Per-operation prompts with [A]pply/[R]eject/[S]kip/[Q]uit/[H]elp
+- **Interactive mode** (default): Per-operation prompts with [A]pply/[R]eject/[S]kip/[O]pen/[P]rocess/[Q]uit/[H]elp
   - **Apply**: Moves file, marks operation as ACCEPTED, sets organization_status=ORGANIZED
   - **Reject**: Marks operation as REJECTED (preserves for historical record), does NOT move file
   - **Skip**: Leaves operation as PENDING for later review
+  - **Open**: Opens file with default system application for preview
+  - **Process**: Re-generate suggestion with optional LLM feedback (allows refining suggestions)
 - **Bulk apply mode** (`--apply-all`): Auto-apply all operations
   - Options: `-y` (skip confirmation), `--force` (overwrite conflicts), `--dry-run` (preview only)
   - File operations via `file_operations.py` module
@@ -229,7 +234,7 @@ Three main tables model document tracking and operations:
 - **`plan`**:
   - Skips files with status `organized` or `ignored` by default (saves LLM costs)
   - Use `--reprocess` flag to process all files regardless of status
-  - If file content or prompt changes, status automatically resets to `unorganized` (triggers regeneration)
+  - When `--reprocess` is used and changes are detected (content, prompt, or model), status resets to `unorganized`
 - **`review`** (apply action):
   - Sets status to `organized` after successfully moving file
   - Also sets to `organized` if file is already at target location (no-op)
@@ -249,12 +254,12 @@ Three main tables model document tracking and operations:
   - Displays organization status alongside pending operations
 
 **Invalidation & Auto-Reset**:
-When `plan` detects changes to files marked as `organized`, it automatically resets status to `unorganized`:
+When `plan --reprocess` processes files marked as `organized` and detects changes, it resets status to `unorganized`:
 - Document content hash changes (file modified)
 - Prompt hash changes (instructions or model updated)
 - Model name changes (different LLM used)
 
-This ensures organized files are re-analyzed when conditions change, but saves costs when nothing has changed.
+**Note**: Without `--reprocess`, organized files are skipped entirely (filtered out of the query). The auto-reset only applies when `--reprocess` is used and changes are detected.
 
 **Example Workflows**:
 
@@ -281,8 +286,9 @@ docman plan                    # Generate suggestions for newly scanned files
 *Re-organize after folder definition changes*:
 ```bash
 # Update folder definitions or variable patterns in .docman/config.yaml
-docman plan              # Auto-resets organized files to unorganized (prompt changed)
-                        # Generates new suggestions for all files
+docman plan --reprocess   # Process all files including organized ones
+                          # Resets organized files to unorganized when prompt changes detected
+                          # Generates new suggestions for all files
 ```
 
 *Force re-processing*:
@@ -332,9 +338,14 @@ docman unmark archives/ -r -y   # Reset to unorganized to re-process
 - `docman pattern add <name> --desc "description"`: Add or update a variable pattern definition
   - Example: `docman pattern add year --desc "4-digit year in YYYY format"`
   - Patterns must be defined before use in folder paths or filename conventions
+  - `--desc` is required
+  - `--path` option to specify repository location (default: current directory)
 - `docman pattern list`: List all defined variable patterns with descriptions
+  - `--path` option to specify repository location
 - `docman pattern show <name>`: Show details of a specific variable pattern
+  - `--path` option to specify repository location
 - `docman pattern remove <name>`: Remove a variable pattern (requires confirmation or `-y` flag)
+  - `--path` option to specify repository location
 - `docman define <path> [--desc "description"] [--filename-convention "pattern"]`: Define/update folder with optional description and filename convention
   - Path uses `/` separator (e.g., `Financial/invoices/{year}`)
   - `--desc` is optional - omit for self-documenting structures where variable patterns provide sufficient context
@@ -345,6 +356,7 @@ docman unmark archives/ -r -y   # Reset to unorganized to re-process
 - `docman config set-default-filename-convention "<pattern>"`: Set repository-wide default filename convention
   - Pattern uses variable placeholders (e.g., `{year}-{month}-{description}`)
   - Applied to all folders unless overridden by folder-specific convention
+  - `--path` option to specify repository location
   - **Note**: All variables used must be defined first via `docman pattern add`
 - `docman config list-dirs`: Display folder tree with box-drawing characters and filename conventions
   - `--path` option to specify repository location
@@ -422,8 +434,8 @@ docman define Career/{FirstName}/{Year}
   - **Structure**: Simple `{name: description}` mapping
   - **Validation**: Using undefined variables in folder paths or filename conventions displays warnings and provides LLM-friendly fallback guidance ("Infer {variable} from document context")
 - **Prompt hash consistency**: All operations use same hash computation logic
-  - Includes: system prompt + organization instructions + model name + serialized folder definitions (including filename conventions)
-  - Hash computed consistently across plan command, regeneration, and reprocessing flows
+  - Includes: system prompt + organization instructions + model name
+  - Hash computed inline in CLI using `hashlib.sha256()` (not via dedicated function)
   - Changes to folder structure, filename conventions, or variable patterns automatically invalidate existing operations
 
 **Example Workflow**:
@@ -477,9 +489,12 @@ Main commands:
   - Groups duplicate files together visually
   - Shows conflict warnings when multiple files target same destination
 - `docman review [path]`: Review and process pending operations
-  - Interactive mode (default): Choose [A]pply, [R]eject, or [S]kip for each operation
+  - Interactive mode (default): Choose [A]pply, [R]eject, [S]kip, [O]pen, or [P]rocess for each operation
   - Bulk apply mode: `--apply-all` with optional `-y`, `--force`, `--dry-run`
   - Bulk reject mode: `--reject-all` with optional `-y`, `-r` (recursive), `--dry-run`
+- `docman debug-prompt <file_path>`: Debug LLM prompts for a specific file
+  - Shows the system prompt and user prompt that would be sent to the LLM
+  - Useful for troubleshooting organization suggestions
 - `docman dedupe [path]`: Find and resolve duplicate files
   - Interactive mode (default): Review each duplicate group, choose which copy to keep
   - Bulk mode (`-y`): Auto-delete duplicates, keep first copy
@@ -510,8 +525,8 @@ Main commands:
 **Key Components**:
 1. **Canonical Documents** (`documents` table): One record per unique content (SHA256 hash)
 2. **Document Copies** (`document_copies` table): Multiple copies can reference same document
-3. **Duplicate Detection**: `find_duplicate_groups()` identifies documents with multiple copies
-4. **Conflict Detection**: `detect_target_conflicts()` finds operations targeting same destination
+3. **Duplicate Detection**: `find_duplicate_groups()` in `cli.py` identifies documents with multiple copies
+4. **Conflict Detection**: `detect_target_conflicts()` in `cli.py` finds operations targeting same destination
 
 **Workflow for Managing Duplicates**:
 ```bash
@@ -550,7 +565,7 @@ docman dedupe docs/      # Only deduplicate files in docs/
 - **Interactive Mode**:
   - Shows all copies with metadata (size, modified time)
   - User chooses which copy to keep (or skip group)
-  - Options: number (keep), 'a' (keep all), 's' (skip)
+  - Options: number (keep), 'a' or 'all' (keep all), 's' or 'skip' (skip group)
 - **Bulk Mode** (`-y` flag):
   - Automatically keeps first copy, deletes rest
   - No prompts, fast execution
@@ -572,8 +587,8 @@ docman dedupe docs/      # Only deduplicate files in docs/
 
 Which copy do you want to keep?
   Enter number to keep that copy
-  Enter 'a' to keep all (skip this group)
-  Enter 's' to skip this group
+  Enter 'a' or 'all' to keep all (skip this group)
+  Enter 's' or 'skip' to skip this group
 
 Your choice [1]:
 ```
@@ -586,15 +601,30 @@ Your choice [1]:
 
 ### Testing Structure
 
-- **Unit tests** (`tests/unit/`): Test modules in isolation (config, models, file_operations, etc.)
-  - `test_repo_config.py`: Repository config operations including `FolderDefinition` serialization, folder definition CRUD, YAML error handling (40 tests)
+- **Unit tests** (`tests/unit/`): Test modules in isolation
+  - `test_config.py`: App-level config operations (22 tests)
+  - `test_repo_config.py`: Repository config operations including `FolderDefinition` serialization, folder definition CRUD, YAML error handling (53 tests)
+  - `test_file_operations.py`: File move operations and conflict resolution
+  - `test_models.py`: Database model operations
+  - `test_llm_config.py`: LLM provider configuration
+  - `test_prompt_builder.py`: Prompt generation and template rendering
+  - `test_processor.py`: Document content extraction
+  - `test_repository.py`: File discovery functions
+  - Additional unit tests for helpers, security, and duplicate queries
 - **Integration tests** (`tests/integration/`): Test full command workflows
-  - `test_review_integration.py`: Review command (interactive mode with apply/reject/skip, bulk apply mode, bulk reject mode)
+  - `test_review_integration.py`: Review command (interactive mode with apply/reject/skip/open/process, bulk apply mode, bulk reject mode)
   - `test_status_integration.py`: Status command
   - `test_plan_integration.py`: Plan command (includes mutation tests: stale content, deleted files, model changes, error handling)
     - `test_plan_skips_file_on_llm_failure`: Verifies LLM failures skip files without creating pending operations
     - `test_plan_extraction_failure_not_double_counted`: Confirms extraction failures counted only in `failed_count`
-  - `test_config_integration.py`: Config commands including `define` and `list-dirs` (17 tests)
+  - `test_config_integration.py`: Config commands including `define` and `list-dirs` (31 tests)
+  - `test_scan_integration.py`: Scan command
+  - `test_dedupe_integration.py`: Dedupe command
+  - `test_init_integration.py`: Init command
+  - `test_llm_commands_integration.py`: LLM provider management commands
+  - `test_debug_prompt_integration.py`: Debug-prompt command
+  - `test_database_integration.py`: Database operations
+  - `test_app_config_integration.py`: App-level configuration
 - Uses `CliRunner` from Click for CLI testing
 - Test fixtures in `conftest.py`
 - **Test isolation**: Global `autouse` fixture in `conftest.py` automatically isolates ALL tests from user app data
@@ -640,10 +670,12 @@ Use `file_needs_rehashing(copy, file_path)` to efficiently check if file changed
 
 ### Prompt Hash Caching
 When modifying prompts, instructions, or model:
-1. Compute new prompt hash using `compute_prompt_hash(system_prompt, instructions, model_name)`
+1. Compute new prompt hash inline using `hashlib.sha256()` with system prompt + organization instructions + model name
 2. Compare with stored `prompt_hash`, `document_content_hash`, `model_name` in `Operation`
 3. Regenerate suggestions if any differ
 4. This avoids unnecessary LLM API calls
+
+Note: While `compute_prompt_hash()` exists in `prompt_builder.py`, the CLI computes hashes inline for consistency.
 
 ### DocumentConverter Reuse
 For batch document processing, reuse the `DocumentConverter` instance:
