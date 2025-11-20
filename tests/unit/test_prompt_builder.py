@@ -88,8 +88,8 @@ class TestBuildSystemPrompt:
         clear_prompt_cache()
         result = build_system_prompt()
 
-        # Should mention document organization
-        assert "document organization" in result.lower()
+        # Should mention document management expertise
+        assert "document management specialist" in result.lower()
 
         # Should mention JSON format
         assert "JSON" in result or "json" in result
@@ -98,6 +98,12 @@ class TestBuildSystemPrompt:
         assert "suggested_directory_path" in result
         assert "suggested_filename" in result
         assert "reason" in result
+
+        # Should have critical guidelines section
+        assert "Critical Guidelines" in result
+
+        # Should explain existing values (Guideline #6 fix)
+        assert "Existing:" in result
 
     def test_caching(self) -> None:
         """Test that system prompt is cached."""
