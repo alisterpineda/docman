@@ -10,7 +10,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 **Core Technologies**:
 - **docling** for document content extraction
-- **LLM models** (Google Gemini) for intelligent organization suggestions
+- **LLM models** (Google Gemini, OpenAI-compatible APIs) for intelligent organization suggestions
 - **Pydantic** for structured output schemas and validation
 - **SQLite database** for tracking documents, copies, and pending operations
 - **OS-native credential managers** for secure API key storage
@@ -95,7 +95,7 @@ Three main tables model document tracking and operations:
    - **One PENDING per copy**: Partial unique index on `(document_copy_id) WHERE status='pending'`
    - **Historical preservation**: Operations NOT cascade-deleted; `document_copy_id` set to NULL when copy removed
    - Multiple historical operations (ACCEPTED/REJECTED) preserved for few-shot prompting
-   - Stores: `suggested_directory_path`, `suggested_filename`, `reason`, `confidence`
+   - Stores: `suggested_directory_path`, `suggested_filename`, `reason`
    - Invalidation tracking: `prompt_hash` (indexed), `document_content_hash`, `model_name`
    - **Few-shot index**: Composite index on `(status, prompt_hash)` for fast historical lookup
    - Regenerates suggestions when prompt, content, or model changes
@@ -122,13 +122,19 @@ Three main tables model document tracking and operations:
 **Provider Abstraction** (`llm_providers.py`):
 - `OrganizationSuggestion` Pydantic model: Defines response schema with field validation
 - `LLMProvider` abstract base class with `supports_structured_output` property
-- `GoogleGeminiProvider` implementation (currently supported)
+- `GoogleGeminiProvider` implementation
   - Uses native structured output via `generation_config` with `response_schema`
   - `supports_structured_output = True`: API guarantees schema compliance
   - Custom exceptions: `GeminiSafetyBlockError`, `GeminiEmptyResponseError`
   - Response normalization checks `response.text` and `response.candidates`
+- `OpenAICompatibleProvider` implementation
+  - Works with: OpenAI official API, LM Studio, text-generation-webui, vLLM
+  - `supports_structured_output = True` for official OpenAI API (uses JSON schema mode)
+  - `supports_structured_output = False` for custom endpoints (relies on prompt guidance)
+  - Custom exceptions: `OpenAIAPIError`, `OpenAIEmptyResponseError`
+  - Handles markdown code block wrapping in responses from custom endpoints
 - Factory pattern via `get_provider(config, api_key)`
-- Output schema: `suggested_directory_path`, `suggested_filename`, `reason`, `confidence` (0.0-1.0)
+- Output schema: `suggested_directory_path`, `suggested_filename`, `reason`
 
 **Configuration** (`llm_config.py`):
 - Manages multiple provider configurations
@@ -184,9 +190,8 @@ Three main tables model document tracking and operations:
 
 **Reviewing Suggestions** (`status` command):
 - Query `Operation` (status=PENDING) joined with `DocumentCopy`
-- Display current path, suggested path, confidence, and reason
+- Display current path, suggested path, and reason
 - Filter by file or directory path
-- Color-coded confidence: green (≥80%), yellow (≥60%), red (<60%)
 
 **Review Operations** (`review` command):
 - **Interactive mode** (default): Per-operation prompts with [A]pply/[R]eject/[S]kip/[Q]uit/[H]elp
@@ -468,7 +473,7 @@ Main commands:
   - Shows warnings when duplicates detected to save LLM costs
   - Shows warnings for unscanned files
   - **Note**: Requires documents to be scanned first via `docman scan` (or use `--scan` flag)
-- `docman status [path]`: Review pending operations (shows paths, confidence, reasons, organization status)
+- `docman status [path]`: Review pending operations (shows paths, reasons, organization status)
   - Groups duplicate files together visually
   - Shows conflict warnings when multiple files target same destination
 - `docman review [path]`: Review and process pending operations
@@ -479,7 +484,8 @@ Main commands:
   - Interactive mode (default): Review each duplicate group, choose which copy to keep
   - Bulk mode (`-y`): Auto-delete duplicates, keep first copy
   - `--dry-run`: Preview changes without deleting files
-- `docman define <path> --desc "description"`: Define folder hierarchies for document organization
+  - `-r`: Include files in subdirectories (only applies when path is a directory)
+- `docman define <path> [--desc "description"]`: Define folder hierarchies for document organization
   - Supports variable patterns like `{year}`, `{company}` (must be defined first using `docman pattern add`)
   - Stores definitions in `.docman/config.yaml`
 - `docman pattern`: Manage variable pattern definitions for use in folder paths and filename conventions
@@ -490,10 +496,12 @@ Main commands:
 - `docman unmark [path]`: Reset organization status to 'unorganized' for specified files
   - `--all`: Unmark all files in repository
   - `-r`: Recursively unmark files in subdirectories
+  - `-y`: Skip confirmation prompts
 - `docman ignore [path]`: Mark files as 'ignored' to exclude from future plan runs
   - `-r`: Recursively ignore files in subdirectories
+  - `-y`: Skip confirmation prompts
 - `docman llm`: Manage LLM providers (add, list, show, test, set-active, remove)
-- `docman config`: Manage repository configuration (set-instructions, show-instructions, list-dirs)
+- `docman config`: Manage repository configuration (set-default-filename-convention, list-dirs)
 
 ### Duplicate Document Handling
 
@@ -602,8 +610,8 @@ Your choice [1]:
 API keys are NEVER stored in plaintext. Use `keyring` library:
 ```python
 import keyring
-keyring.set_password("docman", provider_name, api_key)  # Store
-api_key = keyring.get_password("docman", provider_name)  # Retrieve
+keyring.set_password("docman_llm", provider_name, api_key)  # Store
+api_key = keyring.get_password("docman_llm", provider_name)  # Retrieve
 ```
 
 ### Database Sessions
