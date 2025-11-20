@@ -175,7 +175,7 @@ organization:
         assert "USER PROMPT" in result.output
         assert "test.txt" in result.output
         # Should show the system prompt content
-        assert "document organization assistant" in result.output.lower()
+        assert "document management specialist" in result.output.lower()
 
     def test_debug_prompt_with_new_document(
         self, cli_runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch

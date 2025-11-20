@@ -4,6 +4,6 @@
 </organizationInstructions>
 {% endif %}
 
-<documentContent filePath="{{ file_path }}">
+<documentContent filePath="{{ file_path }}"{% if was_truncated %} truncated="true" originalChars="{{ original_length }}"{% endif %}>
 {{ content }}
 </documentContent>

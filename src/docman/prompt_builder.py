@@ -21,38 +21,57 @@ from docman.repo_config import FolderDefinition
 
 def _truncate_content_smart(
     content: str,
-    max_chars: int = 4000,
-) -> tuple[str, bool]:
-    """Truncate content to fit within character limit.
+    max_chars: int = 8000,
+) -> tuple[str, bool, int, int]:
+    """Truncate content preserving beginning and end.
 
-    Keeps the beginning of the document up to max_chars, including the
-    truncation marker. The final result will not exceed max_chars.
+    Keeps both the beginning and end of the document with an even 50/50 split
+    of available space. Attempts to find clean paragraph boundaries for breaks.
 
     Args:
         content: The document content to truncate.
         max_chars: Maximum number of characters to keep.
 
     Returns:
-        Tuple of (truncated_content, was_truncated).
+        Tuple of (truncated_content, was_truncated, original_length, truncated_length).
         was_truncated is True if content was actually truncated.
     """
     if len(content) <= max_chars:
-        return content, False
+        return content, False, len(content), len(content)
 
-    # Calculate approximate chars removed to determine marker length
-    # Use upper bound estimate to ensure we don't exceed max_chars
-    estimated_removed = len(content) - max_chars
-    marker = f"\n\n[... {estimated_removed:,} characters truncated ...]"
+    # Calculate marker with actual omitted count
+    omitted = len(content) - max_chars
+    marker = f"\n\n[... {omitted:,} characters omitted ...]\n\n"
 
-    # Reserve space for the marker
-    available_chars = max_chars - len(marker)
-    if available_chars < 0:
+    # Split remaining space evenly
+    available = max_chars - len(marker)
+    if available < 0:
         # Edge case: marker itself exceeds max_chars
-        available_chars = 0
+        available = 0
+    head_chars = available // 2
+    tail_chars = available - head_chars
 
-    truncated = content[:available_chars].rstrip()
+    # Find paragraph boundaries for clean breaks
+    if head_chars > 0:
+        head_content = content[:head_chars]
+        if "\n\n" in head_content:
+            head = head_content.rsplit("\n\n", 1)[0]
+        else:
+            head = head_content.rstrip()
+    else:
+        head = ""
 
-    return f"{truncated}{marker}", True
+    if tail_chars > 0:
+        tail_content = content[-tail_chars:]
+        if "\n\n" in tail_content:
+            tail = tail_content.split("\n\n", 1)[-1]
+        else:
+            tail = tail_content.lstrip()
+    else:
+        tail = ""
+
+    result = f"{head}{marker}{tail}"
+    return result, True, len(content), len(result)
 
 
 def generate_instructions(repo_root: Path) -> str | None:
@@ -474,7 +493,9 @@ def build_user_prompt(
         User prompt string with document-specific information.
     """
     # Apply smart truncation to content
-    content, was_truncated = _truncate_content_smart(document_content)
+    content, was_truncated, original_length, truncated_length = _truncate_content_smart(
+        document_content
+    )
 
     # Render template
     template = _template_env.get_template("user_prompt.j2")
@@ -482,6 +503,7 @@ def build_user_prompt(
         file_path=file_path,
         content=content,
         was_truncated=was_truncated,
+        original_length=original_length,
         organization_instructions=organization_instructions,
     )
 

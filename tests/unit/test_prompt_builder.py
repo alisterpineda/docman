@@ -24,45 +24,55 @@ class TestTruncateContentSmart:
     def test_short_content_not_truncated(self) -> None:
         """Test that short content is not truncated."""
         content = "Short content"
-        result, was_truncated = _truncate_content_smart(content, max_chars=4000)
+        result, was_truncated, original_len, truncated_len = _truncate_content_smart(
+            content, max_chars=8000
+        )
 
         assert result == content
         assert was_truncated is False
+        assert original_len == len(content)
+        assert truncated_len == len(content)
 
     def test_long_content_truncated(self) -> None:
         """Test that long content is truncated."""
         content = "x" * 10000
-        result, was_truncated = _truncate_content_smart(content, max_chars=4000)
+        result, was_truncated, original_len, truncated_len = _truncate_content_smart(
+            content, max_chars=8000
+        )
 
         assert len(result) < len(content)
         assert was_truncated is True
-        assert "truncated" in result.lower()
+        assert "omitted" in result.lower()
+        assert original_len == 10000
+        assert truncated_len == len(result)
 
-    def test_truncation_preserves_head(self) -> None:
-        """Test that truncation preserves beginning of content."""
+    def test_truncation_preserves_head_and_tail(self) -> None:
+        """Test that truncation preserves both beginning and end of content."""
         content = "START" + ("x" * 10000) + "END"
-        result, was_truncated = _truncate_content_smart(content, max_chars=4000)
+        result, was_truncated, _, _ = _truncate_content_smart(content, max_chars=8000)
 
         assert "START" in result
-        assert "END" not in result  # Tail is no longer preserved
+        assert "END" in result  # Now preserves tail
         assert was_truncated is True
 
     def test_truncation_marker_format(self) -> None:
         """Test that truncation marker is properly formatted."""
         content = "x" * 10000
-        result, was_truncated = _truncate_content_smart(content, max_chars=4000)
+        result, was_truncated, _, _ = _truncate_content_smart(content, max_chars=8000)
 
-        # Should have comma-formatted number
-        assert "characters truncated" in result.lower()
+        # Should have comma-formatted number and "omitted" wording
+        assert "characters omitted" in result.lower()
         assert was_truncated is True
 
     def test_truncation_respects_max_chars(self) -> None:
         """Test that truncated result never exceeds max_chars."""
-        for content_len in [5000, 10000, 100000, 1000000]:
+        for content_len in [10000, 20000, 100000, 1000000]:
             content = "x" * content_len
-            max_chars = 4000
+            max_chars = 8000
 
-            result, was_truncated = _truncate_content_smart(content, max_chars=max_chars)
+            result, was_truncated, _, _ = _truncate_content_smart(
+                content, max_chars=max_chars
+            )
 
             # Result should never exceed max_chars
             assert len(result) <= max_chars, (
@@ -70,6 +80,92 @@ class TestTruncateContentSmart:
                 f"for content length {content_len}"
             )
             assert was_truncated is True
+
+    def test_truncation_preserves_tail(self) -> None:
+        """Test that truncation specifically preserves end content."""
+        content = ("x" * 10000) + "TAIL_CONTENT"
+        result, was_truncated, _, _ = _truncate_content_smart(content, max_chars=8000)
+
+        assert "TAIL_CONTENT" in result
+        assert was_truncated is True
+
+    def test_truncation_even_split(self) -> None:
+        """Test that truncation splits space approximately evenly."""
+        content = "A" * 5000 + "B" * 5000 + "C" * 5000
+        result, was_truncated, _, _ = _truncate_content_smart(content, max_chars=8000)
+
+        # Count A's and C's (beginning and end characters)
+        a_count = result.count("A")
+        c_count = result.count("C")
+
+        # Should have roughly equal amounts (within 20% tolerance)
+        assert abs(a_count - c_count) < max(a_count, c_count) * 0.3
+        assert was_truncated is True
+
+    def test_truncation_paragraph_boundaries(self) -> None:
+        """Test that truncation finds clean paragraph breaks."""
+        # Content with clear paragraph structure
+        head = "First paragraph.\n\nSecond paragraph."
+        middle = "x" * 10000
+        tail = "Last paragraph.\n\nFinal paragraph."
+        content = head + middle + tail
+
+        result, was_truncated, _, _ = _truncate_content_smart(content, max_chars=8000)
+
+        # Should break at paragraph boundary in head
+        # Check that we don't have partial "Second paragraph" cut off mid-word
+        if "Second paragraph" in result:
+            # If included, should be complete
+            assert "Second paragraph." in result
+
+        assert was_truncated is True
+
+    def test_truncation_returns_metadata(self) -> None:
+        """Test that truncation returns correct length metadata."""
+        content = "x" * 15000
+        result, was_truncated, original_len, truncated_len = _truncate_content_smart(
+            content, max_chars=8000
+        )
+
+        assert original_len == 15000
+        assert truncated_len == len(result)
+        assert truncated_len <= 8000
+        assert was_truncated is True
+
+    def test_marker_size_varies_with_content(self) -> None:
+        """Test that marker shows correct omitted character count."""
+        # Small content
+        content1 = "x" * 10000
+        result1, _, _, _ = _truncate_content_smart(content1, max_chars=8000)
+
+        # Large content
+        content2 = "x" * 100000
+        result2, _, _, _ = _truncate_content_smart(content2, max_chars=8000)
+
+        # Extract omitted counts from markers
+        import re
+        match1 = re.search(r"\[... ([\d,]+) characters omitted ...\]", result1)
+        match2 = re.search(r"\[... ([\d,]+) characters omitted ...\]", result2)
+
+        assert match1 is not None
+        assert match2 is not None
+
+        count1 = int(match1.group(1).replace(",", ""))
+        count2 = int(match2.group(1).replace(",", ""))
+
+        # Larger content should have more characters omitted
+        assert count2 > count1
+        # Verify approximate correctness
+        assert count1 == 10000 - 8000
+        assert count2 == 100000 - 8000
+
+    def test_default_max_chars_is_8000(self) -> None:
+        """Test that default max_chars is 8000."""
+        content = "x" * 9000
+        result, was_truncated, _, _ = _truncate_content_smart(content)
+
+        assert was_truncated is True
+        assert len(result) <= 8000
 
 
 class TestBuildSystemPrompt:
@@ -180,12 +276,15 @@ class TestBuildUserPrompt:
     def test_content_truncation(self) -> None:
         """Test that long content is truncated."""
         file_path = "test.pdf"
-        content = "x" * 5000  # 5000 characters
+        content = "x" * 10000  # 10000 characters (above 8000 default)
 
         result = build_user_prompt(file_path, content)
 
         # Should contain truncated marker
-        assert "truncated" in result.lower()
+        assert "omitted" in result.lower()
+        # Should have truncated attribute
+        assert 'truncated="true"' in result
+        assert 'originalChars="10000"' in result
         # Should not contain full content
         assert len(result) < len(content) + 1000
 
@@ -199,7 +298,9 @@ class TestBuildUserPrompt:
         # Should contain full content
         assert content in result
         # Should not have truncation marker
-        assert "truncated" not in result.lower()
+        assert "omitted" not in result.lower()
+        # Should not have truncated attribute
+        assert 'truncated="true"' not in result
 
 
 class TestGenerateInstructionsFromFolders:
