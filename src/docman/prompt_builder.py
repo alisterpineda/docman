@@ -58,7 +58,7 @@ def _truncate_content_smart(
 
     # Calculate marker with actual omitted count
     omitted = len(content) - max_chars
-    marker = f"\n\n[... {omitted:,} characters omitted ...]\n\n"
+    marker = f"\n\n<<<DOCMAN_TRUNCATION: {omitted:,} characters omitted>>>\n\n"
 
     # Split remaining space according to head_ratio
     available = max_chars - len(marker)

@@ -33,7 +33,7 @@ Respond with this exact JSON structure:
 4. **Use forward slashes** - Directory paths use forward slashes regardless of OS (e.g., "finance/invoices/2024")
 5. **Extract accurate metadata** - Base suggestions on actual document content, not assumptions
 6. **Handle ambiguity explicitly** - If a document could fit multiple folders, choose the most specific match and note alternatives in your reason
-7. **Handle truncated content** - If a document shows truncated="true" and contains "[... X characters omitted ...]", the beginning and end are preserved. Make your best judgment based on available content.
+7. **Handle truncated content** - If a document shows truncated="true" and contains "<<<DOCMAN_TRUNCATION: X characters omitted>>>", the beginning and end are preserved. Make your best judgment based on available content.
 
 ## Output Guidelines
 

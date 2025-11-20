@@ -145,8 +145,8 @@ class TestTruncateContentSmart:
 
         # Extract omitted counts from markers
         import re
-        match1 = re.search(r"\[... ([\d,]+) characters omitted ...\]", result1)
-        match2 = re.search(r"\[... ([\d,]+) characters omitted ...\]", result2)
+        match1 = re.search(r"<<<DOCMAN_TRUNCATION: ([\d,]+) characters omitted>>>", result1)
+        match2 = re.search(r"<<<DOCMAN_TRUNCATION: ([\d,]+) characters omitted>>>", result2)
 
         assert match1 is not None
         assert match2 is not None
