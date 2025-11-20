@@ -563,9 +563,13 @@ def get_examples(
 
     for operation, copy, document in query:
         # Check if the file is at the suggested location
+        # Build expected path, handling root-level suggestions (empty directory path)
+        if operation.suggested_directory_path:
+            expected_path = f"{operation.suggested_directory_path}/{operation.suggested_filename}"
+        else:
+            expected_path = operation.suggested_filename
         # Normalize paths to use forward slashes for cross-platform compatibility
         # (Windows stores paths with backslashes, but suggestions use forward slashes)
-        expected_path = f"{operation.suggested_directory_path}/{operation.suggested_filename}"
         normalized_copy_path = copy.file_path.replace("\\", "/")
         if normalized_copy_path != expected_path:
             # File was not moved to the suggested location (user modified suggestion)
