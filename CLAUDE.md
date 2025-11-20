@@ -95,7 +95,7 @@ Three main tables model document tracking and operations:
 
 3. **`operations`**: LLM suggestions for file reorganization with lifecycle tracking
    - **Status tracking**: Enum field (`pending`, `accepted`, `rejected`) - indexed
-   - **One PENDING per copy**: Partial unique index on `(document_copy_id) WHERE status='pending'`
+   - **One PENDING per copy**: Partial unique index on `(document_copy_id) WHERE status='pending' AND document_copy_id IS NOT NULL`
    - **Historical preservation**: Operations NOT cascade-deleted; `document_copy_id` set to NULL when copy removed
    - Multiple historical operations (ACCEPTED/REJECTED) preserved for few-shot prompting
    - Stores: `suggested_directory_path`, `suggested_filename`, `reason`
@@ -147,7 +147,7 @@ Three main tables model document tracking and operations:
 ### Document Processing Flow
 
 1. **Garbage Collection** (`cleanup_orphaned_copies()`):
-   - Runs at start of `plan` command
+   - Runs at start of both `scan` and `plan` commands
    - Deletes `DocumentCopy` for files that no longer exist on disk
    - Updates `last_seen_at` for existing files
 
@@ -183,11 +183,15 @@ Three main tables model document tracking and operations:
    - Store in `Operation` with all tracking fields
 
 **Error Handling**:
-- **Content extraction failures**: File counted in `failed_count`, no `Operation` created
-- **LLM API failures**: File skipped, counted in `skipped_count`, no `Operation` created
-- **No double counting**: Extraction failures don't increment `skipped_count`
-- **Stale operations cleanup**: Existing `Operation` deleted if file now fails processing
-- **Summary statistics**: Shows distinct counts for failed (extraction) vs skipped (LLM) files
+- **During `scan` command**:
+  - Content extraction failures: File counted in `failed_count`, Document created with null content
+  - Hash computation failures: File counted in `failed_count`, no database records created
+  - Already scanned files: Counted in `skipped_count` (reused copies)
+- **During `plan` command**:
+  - Files without content (from prior extraction failure): Counted in `skipped_count`, no `Operation` created
+  - LLM API failures: Counted in `skipped_count`, existing pending `Operation` deleted
+  - Note: `plan` command uses only `skipped_count` (no separate `failed_count`)
+- **Stale operations cleanup**: If LLM fails, existing pending `Operation` is deleted
 
 ### Apply/Reject Workflow
 
@@ -530,6 +534,7 @@ Main commands:
   - Discovers document files and extracts content using docling
   - Stores documents in database without generating LLM suggestions
 - `docman plan [path]`: Generate LLM organization suggestions for scanned documents
+  - `-r, --recursive`: Recursively process subdirectories
   - `--reprocess`: Reprocess all files, including those already organized or ignored
   - `--scan`: Run scan first, then generate suggestions (combines both steps)
   - Shows warnings when duplicates detected to save LLM costs
@@ -663,7 +668,13 @@ Your choice [1]:
   - `test_prompt_builder.py`: Prompt generation and template rendering
   - `test_processor.py`: Document content extraction
   - `test_repository.py`: File discovery functions
-  - Additional unit tests for helpers, security, and duplicate queries
+  - `test_database.py`: Database connection and session management
+  - `test_helpers.py`: Helper utility functions
+  - `test_cli_helpers.py`: CLI helper functions
+  - `test_duplicate_queries.py`: Duplicate document detection queries
+  - `test_variable_patterns.py`: Variable pattern operations
+  - `test_path_security.py`: Path traversal and security validation
+  - `test_llm_provider_security.py`: LLM provider security validation
 - **Integration tests** (`tests/integration/`): Test full command workflows
   - `test_review_integration.py`: Review command (interactive mode with apply/reject/skip/open/process, bulk apply mode, bulk reject mode)
   - `test_status_integration.py`: Status command
