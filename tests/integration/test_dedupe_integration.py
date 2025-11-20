@@ -7,7 +7,7 @@ from click.testing import CliRunner
 
 from docman.cli import main
 from docman.database import ensure_database, get_session
-from docman.models import Document, DocumentCopy, Operation, OperationStatus
+from docman.models import Document, DocumentCopy, Operation
 
 
 class TestDocmanDedupe:

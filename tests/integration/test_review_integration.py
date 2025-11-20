@@ -10,7 +10,14 @@ from click.testing import CliRunner
 from docman.cli import main
 from docman.database import ensure_database, get_session
 from docman.llm_config import ProviderConfig
-from docman.models import Document, DocumentCopy, Operation, OperationStatus, OrganizationStatus, get_utc_now
+from docman.models import (
+    Document,
+    DocumentCopy,
+    Operation,
+    OperationStatus,
+    OrganizationStatus,
+    get_utc_now,
+)
 
 
 class TestDocmanReview:
@@ -1990,7 +1997,7 @@ organization:
         repo_dir.mkdir()
         app_config_dir = tmp_path / "app_config"
         monkeypatch.setenv("DOCMAN_APP_CONFIG_DIR", str(app_config_dir))
-        
+
         # Setup repo WITHOUT instructions file
         docman_dir = repo_dir / ".docman"
         docman_dir.mkdir()

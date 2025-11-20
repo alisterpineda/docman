@@ -1,6 +1,5 @@
 """Unit tests for the llm_config module."""
 
-from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest

@@ -11,7 +11,6 @@ from docman.prompt_builder import (
     build_system_prompt,
     build_user_prompt,
     clear_prompt_cache,
-    generate_instructions,
     generate_instructions_from_folders,
     serialize_folder_definitions,
 )

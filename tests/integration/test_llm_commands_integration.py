@@ -7,7 +7,6 @@ import pytest
 from click.testing import CliRunner
 
 from docman.cli import main
-from docman.llm_config import ProviderConfig, add_provider
 
 
 class TestLLMAdd:

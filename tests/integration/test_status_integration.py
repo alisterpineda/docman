@@ -7,7 +7,7 @@ from click.testing import CliRunner
 
 from docman.cli import main
 from docman.database import ensure_database, get_session
-from docman.models import Document, DocumentCopy, Operation, OperationStatus
+from docman.models import Document, DocumentCopy, Operation
 
 
 class TestDocmanStatus:
@@ -421,4 +421,4 @@ class TestDocmanStatus:
         # Check for duplicate stats in summary
         assert "Duplicate groups: 1" in result.output
         assert "3 total copies" in result.output
-        assert "docman apply --all -y" in result.output
+        assert "docman review --apply-all -y" in result.output

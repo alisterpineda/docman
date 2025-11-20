@@ -5,24 +5,23 @@ Revises: f37f338691aa
 Create Date: 2025-10-31 17:58:42.450956
 
 """
-from typing import Sequence, Union
+from collections.abc import Sequence
 
-from alembic import op
 import sqlalchemy as sa
-
+from alembic import op
 
 # revision identifiers, used by Alembic.
 revision: str = 'f5e26cb194bb'
-down_revision: Union[str, Sequence[str], None] = 'f37f338691aa'
-branch_labels: Union[str, Sequence[str], None] = None
-depends_on: Union[str, Sequence[str], None] = None
+down_revision: str | Sequence[str] | None = 'f37f338691aa'
+branch_labels: str | Sequence[str] | None = None
+depends_on: str | Sequence[str] | None = None
 
 
 def upgrade() -> None:
     """Upgrade schema to add prompt_hash column."""
     # Check if the column already exists (for test environments)
-    from sqlalchemy import inspect
     from alembic import op as alembic_op
+    from sqlalchemy import inspect
 
     conn = alembic_op.get_bind()
     inspector = inspect(conn)

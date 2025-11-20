@@ -10,9 +10,7 @@ from docman.models import (
     Document,
     DocumentCopy,
     Operation,
-    OperationStatus,
     OrganizationStatus,
-    compute_content_hash,
     operation_needs_regeneration,
     query_documents_needing_suggestions,
 )

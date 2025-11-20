@@ -8,7 +8,7 @@ from click.testing import CliRunner
 from sqlalchemy import inspect
 
 from docman.cli import main
-from docman.database import get_database_path, get_engine
+from docman.database import get_engine
 
 
 @pytest.fixture

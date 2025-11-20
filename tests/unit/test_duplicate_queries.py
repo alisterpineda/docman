@@ -6,7 +6,7 @@ import pytest
 
 from docman.cli import detect_target_conflicts, find_duplicate_groups, get_duplicate_summary
 from docman.database import ensure_database, get_session
-from docman.models import Document, DocumentCopy, Operation, OperationStatus
+from docman.models import Document, DocumentCopy, Operation
 
 
 @pytest.fixture

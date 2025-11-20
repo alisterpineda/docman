@@ -6,8 +6,9 @@ when LLM providers parse responses, ensuring malicious paths are rejected.
 """
 
 import json
-import pytest
 from unittest.mock import Mock, patch
+
+import pytest
 
 from docman.llm_config import ProviderConfig
 from docman.llm_providers import GoogleGeminiProvider, OpenAICompatibleProvider

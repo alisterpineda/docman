@@ -3287,8 +3287,9 @@ def debug_prompt(file_path: str) -> None:
         - 'docman debug-prompt invoice.pdf': Show prompt for invoice.pdf
         - 'docman debug-prompt docs/report.pdf': Show prompt for report.pdf
     """
-    from docman.processor import ProcessingResult, process_document_file
     from sqlalchemy import select
+
+    from docman.processor import ProcessingResult, process_document_file
 
     # Find the repository root
     try:

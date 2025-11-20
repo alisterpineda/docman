@@ -9,14 +9,15 @@ Tests cover all security requirements:
 - Repository boundary enforcement
 """
 
-import pytest
 from pathlib import Path
+
+import pytest
 
 from docman.path_security import (
     PathSecurityError,
     validate_path_component,
-    validate_target_path,
     validate_repository_path,
+    validate_target_path,
 )
 
 

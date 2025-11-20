@@ -5,12 +5,12 @@ from contextlib import ExitStack
 from importlib import resources
 from pathlib import Path
 
+from alembic import command
 from alembic.config import Config
 from sqlalchemy import create_engine
 from sqlalchemy.engine import Engine
 from sqlalchemy.orm import Session, sessionmaker
 
-from alembic import command
 from docman.config import get_app_config_dir
 
 
