@@ -7,6 +7,7 @@ organization tasks, keeping prompt logic separate from LLM providers.
 import functools
 import json
 from pathlib import Path
+from typing import Any
 
 import click
 from jinja2 import Environment, PackageLoader
@@ -104,12 +105,15 @@ def generate_instructions_from_folders(
 
     sections = []
 
+    # Detect existing directories for variable patterns
+    existing_dirs = _detect_existing_directories(folders, repo_root)
+
     # Section 1: Folder Hierarchy
     sections.append("# Document Organization Structure\n")
     sections.append(
         "The following folder structure defines how documents should be organized:\n"
     )
-    sections.append(_render_folder_hierarchy(folders, indent=0))
+    sections.append(_render_folder_hierarchy(folders, indent=0, existing_dirs=existing_dirs))
 
     # Section 2: Filename Conventions
     filename_patterns = _extract_filename_patterns(folders, default_filename_convention)
@@ -151,13 +155,18 @@ def generate_instructions_from_folders(
 
 
 def _render_folder_hierarchy(
-    folders: dict[str, FolderDefinition], indent: int = 0
+    folders: dict[str, FolderDefinition],
+    indent: int = 0,
+    existing_dirs: dict[str, list[str]] | None = None,
+    current_path: str = "",
 ) -> str:
     """Recursively render folder hierarchy as markdown list.
 
     Args:
         folders: Dictionary of folder names to FolderDefinition objects.
         indent: Current indentation level.
+        existing_dirs: Dictionary mapping folder paths to existing directory values.
+        current_path: Current path in the folder hierarchy.
 
     Returns:
         Markdown-formatted folder tree.
@@ -166,15 +175,31 @@ def _render_folder_hierarchy(
     prefix = "  " * indent
 
     for name, definition in folders.items():
+        # Build full path for this folder
+        if current_path:
+            folder_path = f"{current_path}/{name}"
+        else:
+            folder_path = name
+
         # Add folder name and description (only if description is present)
         if definition.description:
             lines.append(f"{prefix}- **{name}/** - {definition.description}")
         else:
             lines.append(f"{prefix}- **{name}/**")
 
+        # Show existing values for variable pattern folders
+        if existing_dirs and folder_path in existing_dirs:
+            values = existing_dirs[folder_path]
+            values_str = ", ".join(values)
+            lines.append(f"{prefix}  Existing: {values_str}")
+
         # Recursively add subfolders
         if definition.folders:
-            lines.append(_render_folder_hierarchy(definition.folders, indent + 1))
+            lines.append(
+                _render_folder_hierarchy(
+                    definition.folders, indent + 1, existing_dirs, folder_path
+                )
+            )
 
     return "\n".join(lines)
 
@@ -307,6 +332,88 @@ def _get_pattern_guidance(variable_name: str, repo_root: Path) -> str:
     return f"\n  - {description}"
 
 
+def _detect_existing_directories(
+    folders: dict[str, FolderDefinition],
+    repo_root: Path,
+) -> dict[str, list[str]]:
+    """Detect existing directory values for variable pattern folders.
+
+    Traverses the folder definition structure and checks the filesystem
+    to find existing subdirectories for variable pattern folders. Handles
+    nested variable patterns by exploring all actual directories.
+
+    Args:
+        folders: Dictionary mapping folder names to FolderDefinition objects.
+        repo_root: The repository root directory.
+
+    Returns:
+        Dictionary mapping folder paths (containing variable patterns) to lists
+        of existing directory names found on disk.
+    """
+    existing: dict[str, list[str]] = {}
+
+    def collect_existing(
+        folder_dict: dict[str, FolderDefinition],
+        current_path: str = "",
+        disk_paths: list[Path] | None = None,
+    ) -> None:
+        """Recursively collect existing directories for variable patterns.
+
+        Args:
+            folder_dict: Current level of folder definitions.
+            current_path: Path with placeholders (e.g., "Clients/{client}").
+            disk_paths: List of actual disk paths to check (handles variable expansion).
+        """
+        if disk_paths is None:
+            disk_paths = [repo_root]
+
+        for name, definition in folder_dict.items():
+            # Build path to this folder (with placeholders)
+            if current_path:
+                folder_path = f"{current_path}/{name}"
+            else:
+                folder_path = name
+
+            # Check if this folder name is a variable pattern
+            if "{" in name and "}" in name:
+                # Collect values from all current disk paths
+                all_values: set[str] = set()
+                next_disk_paths: list[Path] = []
+
+                for disk_path in disk_paths:
+                    if disk_path.exists() and disk_path.is_dir():
+                        try:
+                            for item in disk_path.iterdir():
+                                # Skip hidden directories and files
+                                if item.name.startswith("."):
+                                    continue
+                                # Only include directories
+                                if item.is_dir():
+                                    all_values.add(item.name)
+                                    next_disk_paths.append(item)
+                        except PermissionError:
+                            pass  # Skip directories we can't read
+
+                # Sort alphabetically and limit to 10
+                if all_values:
+                    sorted_values = sorted(all_values)
+                    existing[folder_path] = sorted_values[:10]
+
+                # Recurse into subfolders with expanded disk paths
+                if definition.folders:
+                    collect_existing(definition.folders, folder_path, next_disk_paths)
+            else:
+                # Literal folder name - update disk paths accordingly
+                next_disk_paths = [dp / name for dp in disk_paths]
+
+                # Recurse into subfolders
+                if definition.folders:
+                    collect_existing(definition.folders, folder_path, next_disk_paths)
+
+    collect_existing(folders)
+    return existing
+
+
 def serialize_folder_definitions(
     folders: dict[str, FolderDefinition],
     default_filename_convention: str | None = None,
@@ -321,7 +428,7 @@ def serialize_folder_definitions(
         JSON string representation of folder structure and default convention.
     """
     # Convert FolderDefinitions to dict representation
-    serializable = {
+    serializable: dict[str, Any] = {
         "folders": {name: folder.to_dict() for name, folder in folders.items()},
     }
 

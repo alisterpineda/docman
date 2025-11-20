@@ -3,6 +3,7 @@
 from pathlib import Path
 
 from docman.prompt_builder import (
+    _detect_existing_directories,
     _extract_variable_patterns,
     _get_pattern_guidance,
     _render_folder_hierarchy,
@@ -320,6 +321,96 @@ class TestGenerateInstructionsFromFolders:
         # Verify fallback guidance in generated instructions
         assert "Infer year from document context" in result
 
+    def test_includes_existing_directories(self, tmp_path: Path) -> None:
+        """Test that existing directories are included in generated instructions."""
+        from docman.repo_config import set_variable_pattern
+
+        # Create directory structure
+        financial_dir = tmp_path / "Financial"
+        financial_dir.mkdir()
+        (financial_dir / "2022").mkdir()
+        (financial_dir / "2023").mkdir()
+        (financial_dir / "2024").mkdir()
+
+        set_variable_pattern(tmp_path, "year", "4-digit year in YYYY format")
+
+        folders = {
+            "Financial": FolderDefinition(
+                description="Financial documents",
+                folders={
+                    "{year}": FolderDefinition(description="By year", folders={}),
+                },
+            ),
+        }
+
+        result = generate_instructions_from_folders(folders, tmp_path)
+
+        # Should contain existing directories
+        assert "Existing: 2022, 2023, 2024" in result
+
+    def test_existing_directories_multiple_patterns(self, tmp_path: Path) -> None:
+        """Test existing directories for multiple variable patterns."""
+        from docman.repo_config import set_variable_pattern
+
+        # Create directory structure
+        financial_dir = tmp_path / "Financial"
+        financial_dir.mkdir()
+        (financial_dir / "2023").mkdir()
+        (financial_dir / "2024").mkdir()
+
+        receipts_dir = tmp_path / "Receipts"
+        receipts_dir.mkdir()
+        (receipts_dir / "office-supplies").mkdir()
+        (receipts_dir / "travel").mkdir()
+
+        set_variable_pattern(tmp_path, "year", "4-digit year in YYYY format")
+        set_variable_pattern(tmp_path, "category", "Receipt category")
+
+        folders = {
+            "Financial": FolderDefinition(
+                description="Financial documents",
+                folders={
+                    "{year}": FolderDefinition(description="By year", folders={}),
+                },
+            ),
+            "Receipts": FolderDefinition(
+                description="Receipts",
+                folders={
+                    "{category}": FolderDefinition(description="By category", folders={}),
+                },
+            ),
+        }
+
+        result = generate_instructions_from_folders(folders, tmp_path)
+
+        # Should contain existing directories for both patterns
+        assert "Existing: 2023, 2024" in result
+        assert "Existing: office-supplies, travel" in result
+
+    def test_no_existing_dirs_when_empty(self, tmp_path: Path) -> None:
+        """Test that no existing line appears when directories don't exist."""
+        from docman.repo_config import set_variable_pattern
+
+        # Create parent but no children
+        financial_dir = tmp_path / "Financial"
+        financial_dir.mkdir()
+
+        set_variable_pattern(tmp_path, "year", "4-digit year in YYYY format")
+
+        folders = {
+            "Financial": FolderDefinition(
+                description="Financial documents",
+                folders={
+                    "{year}": FolderDefinition(description="By year", folders={}),
+                },
+            ),
+        }
+
+        result = generate_instructions_from_folders(folders, tmp_path)
+
+        # Should not contain "Existing:" line
+        assert "Existing:" not in result
+
 
 
 class TestRenderFolderHierarchy:
@@ -373,6 +464,87 @@ class TestRenderFolderHierarchy:
         assert len(lines) >= 2
         # First line should have less indentation than second
         assert lines[0].startswith("-") or lines[0].startswith("**")
+
+    def test_shows_existing_directories(self) -> None:
+        """Test that existing directories are displayed inline."""
+        folders = {
+            "{year}": FolderDefinition(description="By year", folders={}),
+        }
+
+        existing_dirs = {"{year}": ["2022", "2023", "2024"]}
+
+        result = _render_folder_hierarchy(folders, indent=0, existing_dirs=existing_dirs)
+
+        assert "Existing: 2022, 2023, 2024" in result
+
+    def test_shows_existing_directories_nested(self) -> None:
+        """Test that existing directories are shown for nested variable patterns."""
+        folders = {
+            "Financial": FolderDefinition(
+                description="Financial documents",
+                folders={
+                    "{year}": FolderDefinition(description="By year", folders={}),
+                },
+            ),
+        }
+
+        existing_dirs = {"Financial/{year}": ["2023", "2024"]}
+
+        result = _render_folder_hierarchy(folders, indent=0, existing_dirs=existing_dirs)
+
+        assert "Existing: 2023, 2024" in result
+        # Verify proper indentation
+        lines = result.split("\n")
+        existing_line = [l for l in lines if "Existing:" in l][0]
+        # Should be indented more than parent folder
+        assert existing_line.startswith("    ")  # 4 spaces = 2 indents
+
+    def test_no_existing_dirs_shows_nothing(self) -> None:
+        """Test that no existing directory line is shown when dict is empty."""
+        folders = {
+            "{year}": FolderDefinition(description="By year", folders={}),
+        }
+
+        result = _render_folder_hierarchy(folders, indent=0, existing_dirs={})
+
+        assert "Existing:" not in result
+
+    def test_existing_dirs_none_parameter(self) -> None:
+        """Test that None existing_dirs parameter works correctly."""
+        folders = {
+            "{year}": FolderDefinition(description="By year", folders={}),
+        }
+
+        result = _render_folder_hierarchy(folders, indent=0, existing_dirs=None)
+
+        assert "Existing:" not in result
+
+    def test_multiple_existing_dirs(self) -> None:
+        """Test multiple variable patterns with existing directories."""
+        folders = {
+            "Financial": FolderDefinition(
+                description="Financial documents",
+                folders={
+                    "{year}": FolderDefinition(description="By year", folders={}),
+                },
+            ),
+            "Receipts": FolderDefinition(
+                description="Receipts",
+                folders={
+                    "{category}": FolderDefinition(description="By category", folders={}),
+                },
+            ),
+        }
+
+        existing_dirs = {
+            "Financial/{year}": ["2023", "2024"],
+            "Receipts/{category}": ["office-supplies", "travel"],
+        }
+
+        result = _render_folder_hierarchy(folders, indent=0, existing_dirs=existing_dirs)
+
+        assert "Existing: 2023, 2024" in result
+        assert "Existing: office-supplies, travel" in result
 
 
 class TestExtractVariablePatterns:
@@ -511,6 +683,348 @@ class TestGetPatternGuidance:
         # Should be formatted as a bullet point
         assert result.startswith("\n  -")
         assert "Extract custom value from document" in result
+
+
+class TestDetectExistingDirectories:
+    """Tests for _detect_existing_directories function."""
+
+    def test_no_variable_patterns(self, tmp_path: Path) -> None:
+        """Test that folders without variable patterns return empty dict."""
+        folders = {
+            "Documents": FolderDefinition(description="All documents", folders={}),
+        }
+
+        result = _detect_existing_directories(folders, tmp_path)
+        assert result == {}
+
+    def test_empty_parent_directory(self, tmp_path: Path) -> None:
+        """Test that empty parent directory returns no existing values."""
+        # Create a parent directory to avoid tmp_path's app_config dir
+        parent_dir = tmp_path / "Parent"
+        parent_dir.mkdir()
+
+        folders = {
+            "Parent": FolderDefinition(
+                description="Parent folder",
+                folders={
+                    "{year}": FolderDefinition(description="By year", folders={}),
+                },
+            ),
+        }
+
+        result = _detect_existing_directories(folders, tmp_path)
+        # Parent exists but has no subdirectories
+        assert result == {}
+
+    def test_detects_existing_directories(self, tmp_path: Path) -> None:
+        """Test that existing directories are detected."""
+        # Create parent and year directories to avoid tmp_path's app_config dir
+        parent_dir = tmp_path / "Financial"
+        parent_dir.mkdir()
+        (parent_dir / "2022").mkdir()
+        (parent_dir / "2023").mkdir()
+        (parent_dir / "2024").mkdir()
+
+        folders = {
+            "Financial": FolderDefinition(
+                description="Financial documents",
+                folders={
+                    "{year}": FolderDefinition(description="By year", folders={}),
+                },
+            ),
+        }
+
+        result = _detect_existing_directories(folders, tmp_path)
+        assert "Financial/{year}" in result
+        assert result["Financial/{year}"] == ["2022", "2023", "2024"]
+
+    def test_variable_under_literal_folder(self, tmp_path: Path) -> None:
+        """Test detection of variable pattern under a literal folder."""
+        # Create structure: Financial/2023/, Financial/2024/
+        financial_dir = tmp_path / "Financial"
+        financial_dir.mkdir()
+        (financial_dir / "2023").mkdir()
+        (financial_dir / "2024").mkdir()
+
+        folders = {
+            "Financial": FolderDefinition(
+                description="Financial documents",
+                folders={
+                    "{year}": FolderDefinition(description="By year", folders={}),
+                },
+            ),
+        }
+
+        result = _detect_existing_directories(folders, tmp_path)
+        assert "Financial/{year}" in result
+        assert result["Financial/{year}"] == ["2023", "2024"]
+
+    def test_multiple_variable_patterns(self, tmp_path: Path) -> None:
+        """Test detection of multiple variable patterns at different levels."""
+        # Create structure: Financial/2023/, Receipts/office-supplies/
+        financial_dir = tmp_path / "Financial"
+        financial_dir.mkdir()
+        (financial_dir / "2023").mkdir()
+
+        receipts_dir = tmp_path / "Receipts"
+        receipts_dir.mkdir()
+        (receipts_dir / "office-supplies").mkdir()
+        (receipts_dir / "travel").mkdir()
+
+        folders = {
+            "Financial": FolderDefinition(
+                description="Financial documents",
+                folders={
+                    "{year}": FolderDefinition(description="By year", folders={}),
+                },
+            ),
+            "Receipts": FolderDefinition(
+                description="Receipts",
+                folders={
+                    "{category}": FolderDefinition(description="By category", folders={}),
+                },
+            ),
+        }
+
+        result = _detect_existing_directories(folders, tmp_path)
+        assert "Financial/{year}" in result
+        assert result["Financial/{year}"] == ["2023"]
+        assert "Receipts/{category}" in result
+        assert result["Receipts/{category}"] == ["office-supplies", "travel"]
+
+    def test_skips_hidden_directories(self, tmp_path: Path) -> None:
+        """Test that hidden directories are skipped."""
+        # Use nested structure to avoid tmp_path's app_config dir
+        parent_dir = tmp_path / "Parent"
+        parent_dir.mkdir()
+        (parent_dir / "2023").mkdir()
+        (parent_dir / ".hidden").mkdir()
+
+        folders = {
+            "Parent": FolderDefinition(
+                description="Parent folder",
+                folders={
+                    "{year}": FolderDefinition(description="By year", folders={}),
+                },
+            ),
+        }
+
+        result = _detect_existing_directories(folders, tmp_path)
+        assert "Parent/{year}" in result
+        assert ".hidden" not in result["Parent/{year}"]
+        assert result["Parent/{year}"] == ["2023"]
+
+    def test_skips_files(self, tmp_path: Path) -> None:
+        """Test that files are skipped, only directories included."""
+        # Use nested structure to avoid tmp_path's app_config dir
+        parent_dir = tmp_path / "Parent"
+        parent_dir.mkdir()
+        (parent_dir / "2023").mkdir()
+        (parent_dir / "2024.txt").touch()  # This is a file, not a directory
+
+        folders = {
+            "Parent": FolderDefinition(
+                description="Parent folder",
+                folders={
+                    "{year}": FolderDefinition(description="By year", folders={}),
+                },
+            ),
+        }
+
+        result = _detect_existing_directories(folders, tmp_path)
+        assert "Parent/{year}" in result
+        assert result["Parent/{year}"] == ["2023"]
+        assert "2024.txt" not in result["Parent/{year}"]
+
+    def test_sorted_alphabetically(self, tmp_path: Path) -> None:
+        """Test that results are sorted alphabetically."""
+        # Use nested structure to avoid tmp_path's app_config dir
+        parent_dir = tmp_path / "Parent"
+        parent_dir.mkdir()
+        (parent_dir / "zebra").mkdir()
+        (parent_dir / "alpha").mkdir()
+        (parent_dir / "mango").mkdir()
+
+        folders = {
+            "Parent": FolderDefinition(
+                description="Parent folder",
+                folders={
+                    "{category}": FolderDefinition(description="By category", folders={}),
+                },
+            ),
+        }
+
+        result = _detect_existing_directories(folders, tmp_path)
+        assert "Parent/{category}" in result
+        assert result["Parent/{category}"] == ["alpha", "mango", "zebra"]
+
+    def test_limits_to_10_values(self, tmp_path: Path) -> None:
+        """Test that results are limited to 10 values."""
+        # Use nested structure to avoid tmp_path's app_config dir
+        parent_dir = tmp_path / "Parent"
+        parent_dir.mkdir()
+        # Create 15 directories
+        for i in range(15):
+            (parent_dir / f"dir_{i:02d}").mkdir()
+
+        folders = {
+            "Parent": FolderDefinition(
+                description="Parent folder",
+                folders={
+                    "{value}": FolderDefinition(description="By value", folders={}),
+                },
+            ),
+        }
+
+        result = _detect_existing_directories(folders, tmp_path)
+        assert "Parent/{value}" in result
+        assert len(result["Parent/{value}"]) == 10
+        # Should be first 10 alphabetically
+        assert result["Parent/{value}"] == [f"dir_{i:02d}" for i in range(10)]
+
+    def test_nonexistent_parent_directory(self, tmp_path: Path) -> None:
+        """Test that nonexistent parent directory returns no values."""
+        # Don't create Financial directory
+        folders = {
+            "Financial": FolderDefinition(
+                description="Financial documents",
+                folders={
+                    "{year}": FolderDefinition(description="By year", folders={}),
+                },
+            ),
+        }
+
+        result = _detect_existing_directories(folders, tmp_path)
+        # Financial directory doesn't exist, so no values for Financial/{year}
+        assert result == {}
+
+    def test_deeply_nested_patterns(self, tmp_path: Path) -> None:
+        """Test detection in deeply nested structure."""
+        # Create structure: A/B/2023/
+        a_dir = tmp_path / "A"
+        a_dir.mkdir()
+        b_dir = a_dir / "B"
+        b_dir.mkdir()
+        (b_dir / "2023").mkdir()
+        (b_dir / "2024").mkdir()
+
+        folders = {
+            "A": FolderDefinition(
+                description="Level A",
+                folders={
+                    "B": FolderDefinition(
+                        description="Level B",
+                        folders={
+                            "{year}": FolderDefinition(description="By year", folders={}),
+                        },
+                    ),
+                },
+            ),
+        }
+
+        result = _detect_existing_directories(folders, tmp_path)
+        assert "A/B/{year}" in result
+        assert result["A/B/{year}"] == ["2023", "2024"]
+
+    def test_variable_under_variable_pattern(self, tmp_path: Path) -> None:
+        """Test detection when variable patterns are nested under other variables.
+
+        This tests the case where we have Clients/{client}/{year} with actual
+        directories like Clients/Alpha/2023, Clients/Beta/2024.
+        """
+        # Create structure: Clients/Alpha/2023, Clients/Alpha/2024, Clients/Beta/2023
+        clients_dir = tmp_path / "Clients"
+        clients_dir.mkdir()
+
+        alpha_dir = clients_dir / "Alpha"
+        alpha_dir.mkdir()
+        (alpha_dir / "2023").mkdir()
+        (alpha_dir / "2024").mkdir()
+
+        beta_dir = clients_dir / "Beta"
+        beta_dir.mkdir()
+        (beta_dir / "2023").mkdir()
+
+        folders = {
+            "Clients": FolderDefinition(
+                description="Client documents",
+                folders={
+                    "{client}": FolderDefinition(
+                        description="By client",
+                        folders={
+                            "{year}": FolderDefinition(description="By year", folders={}),
+                        },
+                    ),
+                },
+            ),
+        }
+
+        result = _detect_existing_directories(folders, tmp_path)
+
+        # Should detect client names
+        assert "Clients/{client}" in result
+        assert result["Clients/{client}"] == ["Alpha", "Beta"]
+
+        # Should detect year values from ALL client directories combined
+        assert "Clients/{client}/{year}" in result
+        # Should have unique years from both Alpha and Beta, sorted
+        assert result["Clients/{client}/{year}"] == ["2023", "2024"]
+
+    def test_triple_nested_variable_patterns(self, tmp_path: Path) -> None:
+        """Test detection with three levels of variable patterns."""
+        # Create structure: Region/{region}/{client}/{year}
+        region_dir = tmp_path / "Region"
+        region_dir.mkdir()
+
+        # US/ClientA/2023, US/ClientA/2024
+        us_dir = region_dir / "US"
+        us_dir.mkdir()
+        client_a = us_dir / "ClientA"
+        client_a.mkdir()
+        (client_a / "2023").mkdir()
+        (client_a / "2024").mkdir()
+
+        # EU/ClientB/2024
+        eu_dir = region_dir / "EU"
+        eu_dir.mkdir()
+        client_b = eu_dir / "ClientB"
+        client_b.mkdir()
+        (client_b / "2024").mkdir()
+
+        folders = {
+            "Region": FolderDefinition(
+                description="Regional documents",
+                folders={
+                    "{region}": FolderDefinition(
+                        description="By region",
+                        folders={
+                            "{client}": FolderDefinition(
+                                description="By client",
+                                folders={
+                                    "{year}": FolderDefinition(
+                                        description="By year", folders={}
+                                    ),
+                                },
+                            ),
+                        },
+                    ),
+                },
+            ),
+        }
+
+        result = _detect_existing_directories(folders, tmp_path)
+
+        # Should detect regions
+        assert "Region/{region}" in result
+        assert result["Region/{region}"] == ["EU", "US"]
+
+        # Should detect clients from all regions
+        assert "Region/{region}/{client}" in result
+        assert result["Region/{region}/{client}"] == ["ClientA", "ClientB"]
+
+        # Should detect years from all clients
+        assert "Region/{region}/{client}/{year}" in result
+        assert result["Region/{region}/{client}/{year}"] == ["2023", "2024"]
 
 
 class TestSerializeFolderDefinitions:
