@@ -12,7 +12,9 @@ from docman.prompt_builder import (
     build_system_prompt,
     build_user_prompt,
     clear_prompt_cache,
+    format_examples,
     generate_instructions_from_folders,
+    get_examples,
     serialize_folder_definitions,
 )
 from docman.repo_config import FolderDefinition
@@ -1508,3 +1510,623 @@ class TestSerializeFolderDefinitions:
         parsed = json.loads(result1)
         keys = list(parsed.keys())
         assert keys == sorted(keys)
+
+
+class TestGetExamples:
+    """Tests for get_examples function."""
+
+    def test_returns_accepted_operations_at_correct_location(self, tmp_path: Path) -> None:
+        """Test that only accepted operations where file is at suggested location are returned."""
+        from docman.database import ensure_database, get_session
+        from docman.models import Document, DocumentCopy, Operation, OperationStatus
+
+        # Initialize database (uses isolated temp dir from conftest)
+        ensure_database()
+
+        session_gen = get_session()
+        session = next(session_gen)
+
+        try:
+            # Create document with content
+            doc = Document(content_hash="hash1", content="Test content for document")
+            session.add(doc)
+            session.flush()
+
+            # Create copy at the suggested location
+            copy = DocumentCopy(
+                document_id=doc.id,
+                repository_path=str(tmp_path),
+                file_path="Financial/invoices/2024/invoice.pdf",
+            )
+            session.add(copy)
+            session.flush()
+
+            # Create accepted operation matching the file location
+            op = Operation(
+                document_copy_id=copy.id,
+                status=OperationStatus.ACCEPTED,
+                suggested_directory_path="Financial/invoices/2024",
+                suggested_filename="invoice.pdf",
+                reason="Test reason",
+                prompt_hash="hash123",
+            )
+            session.add(op)
+            session.commit()
+
+            # Create the actual file on disk
+            file_path = tmp_path / "Financial" / "invoices" / "2024" / "invoice.pdf"
+            file_path.parent.mkdir(parents=True, exist_ok=True)
+            file_path.touch()
+
+            # Get examples
+            examples = get_examples(session, tmp_path, limit=3)
+
+            assert len(examples) == 1
+            assert examples[0]["file_path"] == "Financial/invoices/2024/invoice.pdf"
+            assert examples[0]["content"] == "Test content for document"
+            assert examples[0]["suggestion"]["suggested_directory_path"] == "Financial/invoices/2024"
+            assert examples[0]["suggestion"]["suggested_filename"] == "invoice.pdf"
+            assert examples[0]["suggestion"]["reason"] == "Test reason"
+        finally:
+            session.close()
+
+    def test_excludes_operations_not_at_suggested_location(self, tmp_path: Path) -> None:
+        """Test that operations where file is not at suggested location are excluded."""
+        from docman.database import ensure_database, get_session
+        from docman.models import Document, DocumentCopy, Operation, OperationStatus
+
+        # Initialize database (uses isolated temp dir from conftest)
+        ensure_database()
+
+        session_gen = get_session()
+        session = next(session_gen)
+
+        try:
+            doc = Document(content_hash="hash1", content="Test content")
+            session.add(doc)
+            session.flush()
+
+            # Copy is at different location than suggested
+            copy = DocumentCopy(
+                document_id=doc.id,
+                repository_path=str(tmp_path),
+                file_path="different/location/file.pdf",  # Different from suggestion
+            )
+            session.add(copy)
+            session.flush()
+
+            op = Operation(
+                document_copy_id=copy.id,
+                status=OperationStatus.ACCEPTED,
+                suggested_directory_path="Financial/invoices",
+                suggested_filename="invoice.pdf",
+                reason="Test reason",
+                prompt_hash="hash123",
+            )
+            session.add(op)
+            session.commit()
+
+            # Create file at actual location
+            file_path = tmp_path / "different" / "location" / "file.pdf"
+            file_path.parent.mkdir(parents=True, exist_ok=True)
+            file_path.touch()
+
+            examples = get_examples(session, tmp_path, limit=3)
+            assert len(examples) == 0
+        finally:
+            session.close()
+
+    def test_excludes_nonexistent_files(self, tmp_path: Path) -> None:
+        """Test that operations where file doesn't exist on disk are excluded."""
+        from docman.database import ensure_database, get_session
+        from docman.models import Document, DocumentCopy, Operation, OperationStatus
+
+        # Initialize database (uses isolated temp dir from conftest)
+        ensure_database()
+
+        session_gen = get_session()
+        session = next(session_gen)
+
+        try:
+            doc = Document(content_hash="hash1", content="Test content")
+            session.add(doc)
+            session.flush()
+
+            copy = DocumentCopy(
+                document_id=doc.id,
+                repository_path=str(tmp_path),
+                file_path="Financial/invoices/invoice.pdf",
+            )
+            session.add(copy)
+            session.flush()
+
+            op = Operation(
+                document_copy_id=copy.id,
+                status=OperationStatus.ACCEPTED,
+                suggested_directory_path="Financial/invoices",
+                suggested_filename="invoice.pdf",
+                reason="Test reason",
+                prompt_hash="hash123",
+            )
+            session.add(op)
+            session.commit()
+
+            # Don't create the file on disk
+            examples = get_examples(session, tmp_path, limit=3)
+            assert len(examples) == 0
+        finally:
+            session.close()
+
+    def test_limits_results(self, tmp_path: Path) -> None:
+        """Test that results are limited to the specified number."""
+        from docman.database import ensure_database, get_session
+        from docman.models import Document, DocumentCopy, Operation, OperationStatus
+
+        # Initialize database (uses isolated temp dir from conftest)
+        ensure_database()
+
+        session_gen = get_session()
+        session = next(session_gen)
+
+        try:
+            # Create 5 valid examples
+            for i in range(5):
+                doc = Document(content_hash=f"hash{i}", content=f"Content {i}")
+                session.add(doc)
+                session.flush()
+
+                copy = DocumentCopy(
+                    document_id=doc.id,
+                    repository_path=str(tmp_path),
+                    file_path=f"docs/file{i}.pdf",
+                )
+                session.add(copy)
+                session.flush()
+
+                op = Operation(
+                    document_copy_id=copy.id,
+                    status=OperationStatus.ACCEPTED,
+                    suggested_directory_path="docs",
+                    suggested_filename=f"file{i}.pdf",
+                    reason=f"Reason {i}",
+                    prompt_hash="hash123",
+                )
+                session.add(op)
+
+                # Create file
+                file_path = tmp_path / "docs" / f"file{i}.pdf"
+                file_path.parent.mkdir(parents=True, exist_ok=True)
+                file_path.touch()
+
+            session.commit()
+
+            # Request only 3
+            examples = get_examples(session, tmp_path, limit=3)
+            assert len(examples) == 3
+        finally:
+            session.close()
+
+    def test_empty_when_no_history(self, tmp_path: Path) -> None:
+        """Test that empty list is returned when no accepted operations exist."""
+        from docman.database import ensure_database, get_session
+
+        # Initialize database (uses isolated temp dir from conftest)
+        ensure_database()
+
+        session_gen = get_session()
+        session = next(session_gen)
+
+        try:
+            examples = get_examples(session, tmp_path, limit=3)
+            assert examples == []
+        finally:
+            session.close()
+
+    def test_orders_by_most_recent(self, tmp_path: Path) -> None:
+        """Test that examples are ordered by most recent first."""
+        from datetime import timedelta
+
+        from docman.database import ensure_database, get_session
+        from docman.models import Document, DocumentCopy, Operation, OperationStatus, get_utc_now
+
+        # Initialize database (uses isolated temp dir from conftest)
+        ensure_database()
+
+        session_gen = get_session()
+        session = next(session_gen)
+
+        try:
+            # Create 3 examples with different timestamps
+            now = get_utc_now()
+            for i, days_ago in enumerate([2, 0, 1]):  # Create out of order
+                doc = Document(content_hash=f"hash{i}", content=f"Content {i}")
+                session.add(doc)
+                session.flush()
+
+                copy = DocumentCopy(
+                    document_id=doc.id,
+                    repository_path=str(tmp_path),
+                    file_path=f"docs/file{i}.pdf",
+                )
+                session.add(copy)
+                session.flush()
+
+                op = Operation(
+                    document_copy_id=copy.id,
+                    status=OperationStatus.ACCEPTED,
+                    suggested_directory_path="docs",
+                    suggested_filename=f"file{i}.pdf",
+                    reason=f"Reason {i}",
+                    prompt_hash="hash123",
+                )
+                # Manually set created_at to simulate different times
+                op.created_at = now - timedelta(days=days_ago)
+                session.add(op)
+
+                file_path = tmp_path / "docs" / f"file{i}.pdf"
+                file_path.parent.mkdir(parents=True, exist_ok=True)
+                file_path.touch()
+
+            session.commit()
+
+            examples = get_examples(session, tmp_path, limit=3)
+
+            # Should be ordered: most recent (0 days ago) first
+            # i=1 was 0 days ago, i=2 was 1 day ago, i=0 was 2 days ago
+            assert len(examples) == 3
+            assert examples[0]["file_path"] == "docs/file1.pdf"
+            assert examples[1]["file_path"] == "docs/file2.pdf"
+            assert examples[2]["file_path"] == "docs/file0.pdf"
+        finally:
+            session.close()
+
+    def test_excludes_pending_operations(self, tmp_path: Path) -> None:
+        """Test that pending operations are excluded."""
+        from docman.database import ensure_database, get_session
+        from docman.models import Document, DocumentCopy, Operation, OperationStatus
+
+        # Initialize database (uses isolated temp dir from conftest)
+        ensure_database()
+
+        session_gen = get_session()
+        session = next(session_gen)
+
+        try:
+            doc = Document(content_hash="hash1", content="Test content")
+            session.add(doc)
+            session.flush()
+
+            copy = DocumentCopy(
+                document_id=doc.id,
+                repository_path=str(tmp_path),
+                file_path="docs/file.pdf",
+            )
+            session.add(copy)
+            session.flush()
+
+            # Create PENDING operation
+            op = Operation(
+                document_copy_id=copy.id,
+                status=OperationStatus.PENDING,  # Not accepted
+                suggested_directory_path="docs",
+                suggested_filename="file.pdf",
+                reason="Test reason",
+                prompt_hash="hash123",
+            )
+            session.add(op)
+            session.commit()
+
+            file_path = tmp_path / "docs" / "file.pdf"
+            file_path.parent.mkdir(parents=True, exist_ok=True)
+            file_path.touch()
+
+            examples = get_examples(session, tmp_path, limit=3)
+            assert len(examples) == 0
+        finally:
+            session.close()
+
+    def test_excludes_documents_without_content(self, tmp_path: Path) -> None:
+        """Test that operations for documents without content are excluded."""
+        from docman.database import ensure_database, get_session
+        from docman.models import Document, DocumentCopy, Operation, OperationStatus
+
+        # Initialize database (uses isolated temp dir from conftest)
+        ensure_database()
+
+        session_gen = get_session()
+        session = next(session_gen)
+
+        try:
+            # Document without content
+            doc = Document(content_hash="hash1", content=None)
+            session.add(doc)
+            session.flush()
+
+            copy = DocumentCopy(
+                document_id=doc.id,
+                repository_path=str(tmp_path),
+                file_path="docs/file.pdf",
+            )
+            session.add(copy)
+            session.flush()
+
+            op = Operation(
+                document_copy_id=copy.id,
+                status=OperationStatus.ACCEPTED,
+                suggested_directory_path="docs",
+                suggested_filename="file.pdf",
+                reason="Test reason",
+                prompt_hash="hash123",
+            )
+            session.add(op)
+            session.commit()
+
+            file_path = tmp_path / "docs" / "file.pdf"
+            file_path.parent.mkdir(parents=True, exist_ok=True)
+            file_path.touch()
+
+            examples = get_examples(session, tmp_path, limit=3)
+            assert len(examples) == 0
+        finally:
+            session.close()
+
+
+class TestFormatExamples:
+    """Tests for format_examples function."""
+
+    def test_uses_xml_tags(self) -> None:
+        """Test that examples are formatted with XML tags."""
+        examples = [
+            {
+                "file_path": "docs/invoice.pdf",
+                "content": "Invoice content here",
+                "suggestion": {
+                    "suggested_directory_path": "Financial/invoices",
+                    "suggested_filename": "2024-invoice.pdf",
+                    "reason": "Invoice from 2024",
+                },
+            }
+        ]
+
+        result = format_examples(examples)
+
+        assert "<example>" in result
+        assert "</example>" in result
+        assert "<exampleContent" in result
+        assert "</exampleContent>" in result
+        assert "<expectedOutput>" in result
+        assert "</expectedOutput>" in result
+
+    def test_uses_json_output(self) -> None:
+        """Test that expected output is formatted as JSON."""
+        examples = [
+            {
+                "file_path": "docs/invoice.pdf",
+                "content": "Content",
+                "suggestion": {
+                    "suggested_directory_path": "Financial/invoices",
+                    "suggested_filename": "invoice.pdf",
+                    "reason": "Test reason",
+                },
+            }
+        ]
+
+        result = format_examples(examples)
+
+        # Should contain JSON-formatted suggestion
+        assert '"suggested_directory_path": "Financial/invoices"' in result
+        assert '"suggested_filename": "invoice.pdf"' in result
+        assert '"reason": "Test reason"' in result
+
+    def test_truncates_long_content(self) -> None:
+        """Test that long content is truncated."""
+        examples = [
+            {
+                "file_path": "docs/invoice.pdf",
+                "content": "x" * 1000,  # Longer than default 500
+                "suggestion": {
+                    "suggested_directory_path": "docs",
+                    "suggested_filename": "file.pdf",
+                    "reason": "Test",
+                },
+            }
+        ]
+
+        result = format_examples(examples, max_content_chars=500)
+
+        # Should contain truncation marker
+        assert "DOCMAN_TRUNCATION" in result
+        assert "characters omitted" in result
+
+    def test_includes_truncation_attributes(self) -> None:
+        """Test that truncated content includes truncation attributes."""
+        examples = [
+            {
+                "file_path": "docs/file.pdf",
+                "content": "x" * 1000,
+                "suggestion": {
+                    "suggested_directory_path": "docs",
+                    "suggested_filename": "file.pdf",
+                    "reason": "Test",
+                },
+            }
+        ]
+
+        result = format_examples(examples, max_content_chars=500)
+
+        assert 'truncated="true"' in result
+        assert 'originalChars="1000"' in result
+
+    def test_no_truncation_for_short_content(self) -> None:
+        """Test that short content is not truncated."""
+        examples = [
+            {
+                "file_path": "docs/file.pdf",
+                "content": "Short content",
+                "suggestion": {
+                    "suggested_directory_path": "docs",
+                    "suggested_filename": "file.pdf",
+                    "reason": "Test",
+                },
+            }
+        ]
+
+        result = format_examples(examples, max_content_chars=500)
+
+        # Should not have truncation attributes
+        assert 'truncated="true"' not in result
+        assert "DOCMAN_TRUNCATION" not in result
+        # Should have full content
+        assert "Short content" in result
+
+    def test_escapes_file_path(self) -> None:
+        """Test that file paths with special characters are escaped."""
+        examples = [
+            {
+                "file_path": 'docs/AT&T "report".pdf',
+                "content": "Content",
+                "suggestion": {
+                    "suggested_directory_path": "docs",
+                    "suggested_filename": "file.pdf",
+                    "reason": "Test",
+                },
+            }
+        ]
+
+        result = format_examples(examples)
+
+        # Ampersand should be escaped
+        assert "&amp;" in result
+        # Quotes should be escaped
+        assert "&quot;" in result or "&#34;" in result
+
+    def test_empty_examples_returns_empty_string(self) -> None:
+        """Test that empty list returns empty string."""
+        result = format_examples([])
+        assert result == ""
+
+    def test_multiple_examples(self) -> None:
+        """Test formatting multiple examples."""
+        examples = [
+            {
+                "file_path": "docs/file1.pdf",
+                "content": "Content 1",
+                "suggestion": {
+                    "suggested_directory_path": "docs",
+                    "suggested_filename": "file1.pdf",
+                    "reason": "Reason 1",
+                },
+            },
+            {
+                "file_path": "docs/file2.pdf",
+                "content": "Content 2",
+                "suggestion": {
+                    "suggested_directory_path": "docs",
+                    "suggested_filename": "file2.pdf",
+                    "reason": "Reason 2",
+                },
+            },
+        ]
+
+        result = format_examples(examples)
+
+        # Should have both examples
+        assert result.count("<example>") == 2
+        assert result.count("</example>") == 2
+        assert "Content 1" in result
+        assert "Content 2" in result
+        assert "Reason 1" in result
+        assert "Reason 2" in result
+
+    def test_uses_default_head_ratio(self) -> None:
+        """Test that default head ratio (0.6) is used for truncation."""
+        # Content with clear head and tail
+        head = "HEAD" * 200
+        tail = "TAIL" * 200
+        content = head + "x" * 1000 + tail
+
+        examples = [
+            {
+                "file_path": "docs/file.pdf",
+                "content": content,
+                "suggestion": {
+                    "suggested_directory_path": "docs",
+                    "suggested_filename": "file.pdf",
+                    "reason": "Test",
+                },
+            }
+        ]
+
+        result = format_examples(examples, max_content_chars=500)
+
+        # Both head and tail should be present
+        assert "HEAD" in result
+        assert "TAIL" in result
+
+
+class TestBuildUserPromptWithExamples:
+    """Tests for build_user_prompt with examples parameter."""
+
+    def test_includes_examples(self) -> None:
+        """Test that examples are included in the prompt."""
+        examples = "<example>Test example</example>"
+
+        result = build_user_prompt(
+            "test.pdf",
+            "Document content",
+            organization_instructions="Test instructions",
+            examples=examples,
+        )
+
+        assert "<examples>" in result
+        assert examples in result
+        assert "</examples>" in result
+
+    def test_without_examples(self) -> None:
+        """Test that prompt works without examples."""
+        result = build_user_prompt(
+            "test.pdf",
+            "Document content",
+            organization_instructions="Test instructions",
+        )
+
+        # Should not have examples section
+        assert "<examples>" not in result
+        assert "</examples>" not in result
+        # But should have other sections
+        assert "Document content" in result
+        assert "Test instructions" in result
+
+    def test_examples_none_same_as_no_examples(self) -> None:
+        """Test that examples=None produces same result as not passing examples."""
+        result1 = build_user_prompt(
+            "test.pdf",
+            "Content",
+            organization_instructions="Instructions",
+        )
+        result2 = build_user_prompt(
+            "test.pdf",
+            "Content",
+            organization_instructions="Instructions",
+            examples=None,
+        )
+
+        assert result1 == result2
+        assert "<examples>" not in result1
+
+    def test_examples_appear_before_instructions(self) -> None:
+        """Test that examples section appears before organization instructions."""
+        examples = "<example>Example</example>"
+
+        result = build_user_prompt(
+            "test.pdf",
+            "Content",
+            organization_instructions="Instructions",
+            examples=examples,
+        )
+
+        # Examples should appear before instructions
+        examples_pos = result.find("<examples>")
+        instructions_pos = result.find("<organizationInstructions>")
+
+        assert examples_pos < instructions_pos

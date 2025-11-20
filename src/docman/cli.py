@@ -50,7 +50,9 @@ from docman.path_security import PathSecurityError, validate_target_path
 from docman.prompt_builder import (
     build_system_prompt,
     build_user_prompt,
+    format_examples,
     generate_instructions,
+    get_examples,
     serialize_folder_definitions,
 )
 from docman.repo_config import (
@@ -893,6 +895,19 @@ def plan(
 
         click.echo(f"Found {len(documents_to_process)} scanned document(s) to process\n")
 
+        # Get examples from successfully organized documents
+        examples_data = get_examples(
+            session=session,
+            repo_root=repo_root,
+            limit=3,
+        )
+
+        examples_str = None
+        if examples_data:
+            examples_str = format_examples(examples_data)
+            num_ex = len(examples_data)
+            click.echo(f"Using {num_ex} example(s) from previously organized documents\n")
+
         # Count unscanned files for warning
         if path_filter:
             # Count files in the filtered path
@@ -972,6 +987,7 @@ def plan(
                         file_path_str,
                         document.content,
                         organization_instructions,
+                        examples=examples_str,
                     )
                     suggestions = llm_provider_instance.generate_suggestions(
                         system_prompt,
