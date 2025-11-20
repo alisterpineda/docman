@@ -302,6 +302,40 @@ class TestBuildUserPrompt:
         # Should not have truncated attribute
         assert 'truncated="true"' not in result
 
+    def test_file_path_with_quotes_escaped(self) -> None:
+        """Test that file paths with quotes are properly escaped."""
+        file_path = 'docs/my "report".pdf'
+        result = build_user_prompt(file_path, "content")
+
+        # Quotes should be escaped
+        assert "&#34;" in result or "&quot;" in result
+        # Should not have unescaped quotes breaking attribute
+        assert 'filePath="docs/my "report"' not in result
+
+    def test_file_path_with_ampersand_escaped(self) -> None:
+        """Test that file paths with ampersands are properly escaped."""
+        file_path = "docs/AT&T invoice.pdf"
+        result = build_user_prompt(file_path, "content")
+
+        # Ampersand should be escaped
+        assert "AT&amp;T" in result
+
+    def test_file_path_with_angle_brackets_escaped(self) -> None:
+        """Test that file paths with angle brackets are properly escaped."""
+        file_path = "docs/<draft> report.pdf"
+        result = build_user_prompt(file_path, "content")
+
+        # Angle brackets should be escaped
+        assert "&lt;draft&gt;" in result
+
+    def test_normal_file_path_unchanged(self) -> None:
+        """Test that normal file paths without special chars work correctly."""
+        file_path = "documents/report-2024.pdf"
+        result = build_user_prompt(file_path, "content")
+
+        # Should contain exact path (no escaping needed)
+        assert f'filePath="{file_path}"' in result
+
 
 class TestGenerateInstructionsFromFolders:
     """Tests for generate_instructions_from_folders function."""
