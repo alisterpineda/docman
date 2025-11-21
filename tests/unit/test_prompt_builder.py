@@ -2114,8 +2114,8 @@ class TestBuildUserPromptWithExamples:
         assert result1 == result2
         assert "<examples>" not in result1
 
-    def test_examples_appear_before_instructions(self) -> None:
-        """Test that examples section appears before organization instructions."""
+    def test_examples_appear_after_instructions(self) -> None:
+        """Test that examples section appears after organization instructions."""
         examples = "<example>Example</example>"
 
         result = build_user_prompt(
@@ -2125,8 +2125,8 @@ class TestBuildUserPromptWithExamples:
             examples=examples,
         )
 
-        # Examples should appear before instructions
+        # Examples should appear after instructions
         examples_pos = result.find("<examples>")
         instructions_pos = result.find("<organizationInstructions>")
 
-        assert examples_pos < instructions_pos
+        assert instructions_pos < examples_pos

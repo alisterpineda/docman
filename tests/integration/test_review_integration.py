@@ -1272,6 +1272,164 @@ organization:
             except StopIteration:
                 pass
 
+    # === PATH ALIGNMENT WARNING TESTS ===
+
+    def test_bulk_apply_shows_alignment_warning_for_undefined_path(
+        self, cli_runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Test that bulk apply shows warning when path doesn't match folder structure."""
+        repo_dir = self.setup_isolated_env(tmp_path, monkeypatch)
+        monkeypatch.chdir(repo_dir)
+
+        # Create source file
+        source_file = repo_dir / "inbox" / "test.pdf"
+        source_file.parent.mkdir(parents=True)
+        source_file.write_text("test content")
+
+        # Create pending operation with path that doesn't match folder structure
+        # The setup_repository creates: Documents/Archive
+        # So "UnknownFolder/test.pdf" won't match
+        self.create_pending_operation(
+            repo_path=str(repo_dir),
+            file_path="inbox/test.pdf",
+            suggested_dir="UnknownFolder",
+            suggested_filename="test.pdf",
+        )
+
+        result = cli_runner.invoke(main, ["review", "--apply-all", "-y"], catch_exceptions=False)
+
+        assert result.exit_code == 0
+        # Should show alignment warning
+        assert "don't align with folder structure" in result.output
+
+    def test_bulk_apply_no_warning_for_aligned_path(
+        self, cli_runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Test that bulk apply doesn't show warning when path matches folder structure."""
+        repo_dir = self.setup_isolated_env(tmp_path, monkeypatch)
+        monkeypatch.chdir(repo_dir)
+
+        # Create source file
+        source_file = repo_dir / "inbox" / "test.pdf"
+        source_file.parent.mkdir(parents=True)
+        source_file.write_text("test content")
+
+        # Create pending operation with path that matches folder structure
+        # The setup_repository creates: Documents/Archive
+        self.create_pending_operation(
+            repo_path=str(repo_dir),
+            file_path="inbox/test.pdf",
+            suggested_dir="Documents/Archive",
+            suggested_filename="test.pdf",
+        )
+
+        result = cli_runner.invoke(main, ["review", "--apply-all", "-y"], catch_exceptions=False)
+
+        assert result.exit_code == 0
+        # Should not show alignment warning
+        assert "don't align with folder structure" not in result.output
+
+    def test_interactive_review_shows_alignment_warning(
+        self, cli_runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Test that interactive review shows warning when path doesn't align."""
+        repo_dir = self.setup_isolated_env(tmp_path, monkeypatch)
+        monkeypatch.chdir(repo_dir)
+
+        # Create source file
+        source_file = repo_dir / "inbox" / "test.pdf"
+        source_file.parent.mkdir(parents=True)
+        source_file.write_text("test content")
+
+        # Create pending operation with unaligned path
+        self.create_pending_operation(
+            repo_path=str(repo_dir),
+            file_path="inbox/test.pdf",
+            suggested_dir="UnknownFolder",
+            suggested_filename="test.pdf",
+        )
+
+        # Skip the operation
+        result = cli_runner.invoke(
+            main,
+            ["review"],
+            input="S\n",
+            catch_exceptions=False,
+        )
+
+        assert result.exit_code == 0
+        # Should show alignment warning
+        assert '"UnknownFolder" is not a defined folder' in result.output
+
+    def test_interactive_review_no_warning_for_aligned_path(
+        self, cli_runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Test that interactive review doesn't show warning when path aligns."""
+        repo_dir = self.setup_isolated_env(tmp_path, monkeypatch)
+        monkeypatch.chdir(repo_dir)
+
+        # Create source file
+        source_file = repo_dir / "inbox" / "test.pdf"
+        source_file.parent.mkdir(parents=True)
+        source_file.write_text("test content")
+
+        # Create pending operation with aligned path
+        self.create_pending_operation(
+            repo_path=str(repo_dir),
+            file_path="inbox/test.pdf",
+            suggested_dir="Documents/Archive",
+            suggested_filename="test.pdf",
+        )
+
+        # Skip the operation
+        result = cli_runner.invoke(
+            main,
+            ["review"],
+            input="S\n",
+            catch_exceptions=False,
+        )
+
+        assert result.exit_code == 0
+        # Should not show alignment warning
+        assert "is not a defined folder" not in result.output
+
+    def test_review_no_warning_when_no_folder_definitions(
+        self, cli_runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Test that review doesn't show warning when no folder definitions exist."""
+        # Set up environment without folder definitions
+        app_config_dir = tmp_path / "app_config"
+        repo_dir = tmp_path / "repo"
+        repo_dir.mkdir()
+        monkeypatch.setenv("DOCMAN_APP_CONFIG_DIR", str(app_config_dir))
+
+        # Create minimal config without folder definitions
+        docman_dir = repo_dir / ".docman"
+        docman_dir.mkdir()
+        config_file = docman_dir / "config.yaml"
+        config_file.write_text("organization: {}")
+
+        monkeypatch.chdir(repo_dir)
+
+        # Create source file
+        source_file = repo_dir / "inbox" / "test.pdf"
+        source_file.parent.mkdir(parents=True)
+        source_file.write_text("test content")
+
+        # Create pending operation
+        self.create_pending_operation(
+            repo_path=str(repo_dir),
+            file_path="inbox/test.pdf",
+            suggested_dir="AnyPath/Whatever",
+            suggested_filename="test.pdf",
+        )
+
+        result = cli_runner.invoke(main, ["review", "--apply-all", "-y"], catch_exceptions=False)
+
+        assert result.exit_code == 0
+        # Should not show alignment warning (no folder definitions to check against)
+        assert "don't align with folder structure" not in result.output
+
 
 class TestReviewSecurityCleanup:
     """Test cleanup of invalid operations with security issues."""

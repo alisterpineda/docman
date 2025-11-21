@@ -46,6 +46,7 @@ from docman.models import (
     file_needs_rehashing,
     get_utc_now,
 )
+from docman.path_alignment import check_path_alignment
 from docman.path_security import PathSecurityError, validate_target_path
 from docman.prompt_builder import (
     build_system_prompt,
@@ -58,6 +59,7 @@ from docman.prompt_builder import (
 from docman.repo_config import (
     add_folder_definition,
     get_folder_definitions,
+    get_variable_patterns,
 )
 from docman.repository import (
     SUPPORTED_EXTENSIONS,
@@ -1790,6 +1792,15 @@ def _handle_interactive_review(
         repo_root: Repository root path
         path: Optional path filter
     """
+    # Load folder definitions for path alignment checking
+    try:
+        folder_defs = get_folder_definitions(repo_root)
+        var_patterns = get_variable_patterns(repo_root)
+    except ValueError:
+        # YAML syntax error - skip alignment checking
+        folder_defs = {}
+        var_patterns = {}
+
     # Query pending operations (always recursive in interactive mode)
     pending_ops = _query_pending_operations(session, repo_root, path, recursive=True)
 
@@ -1916,6 +1927,14 @@ def _handle_interactive_review(
         _format_path_comparison("Current:", current_path, common_prefix, current_remainder)
         _format_path_comparison("Suggested:", suggested_path, common_prefix, suggested_remainder, is_suggested=True)
         click.echo(f"  Reason: {display_reason}")
+
+        # Check path alignment with folder structure
+        is_aligned, alignment_warning = check_path_alignment(
+            suggested_dir, folder_defs, var_patterns
+        )
+        if not is_aligned and alignment_warning:
+            click.secho(f"  ⚠️  {alignment_warning}", fg="yellow")
+
         click.echo()
 
         # Prompt user for action
@@ -2246,6 +2265,15 @@ def _handle_bulk_apply(
         force: Overwrite existing files
         dry_run: Preview without making changes
     """
+    # Load folder definitions for path alignment checking
+    try:
+        folder_defs = get_folder_definitions(repo_root)
+        var_patterns = get_variable_patterns(repo_root)
+    except ValueError:
+        # YAML syntax error - skip alignment checking
+        folder_defs = {}
+        var_patterns = {}
+
     # Query pending operations
     pending_ops = _query_pending_operations(session, repo_root, path, recursive=True)
 
@@ -2276,6 +2304,21 @@ def _handle_bulk_apply(
     click.echo(f"Repository: {str(repo_root)}")
     if path:
         click.echo(f"Filter: {path}")
+
+    # Check for unaligned paths and show summary warning
+    if folder_defs:
+        unaligned_count = sum(
+            1 for op, _ in pending_ops
+            if not check_path_alignment(
+                op.suggested_directory_path, folder_defs, var_patterns
+            )[0]
+        )
+        if unaligned_count > 0:
+            click.secho(
+                f"⚠️  {unaligned_count} path(s) don't align with folder structure",
+                fg="yellow"
+            )
+
     click.echo()
 
     # Confirm if not using -y flag and not in dry-run
