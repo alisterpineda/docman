@@ -19,7 +19,7 @@ class TestLLMAdd:
         app_config_dir = tmp_path / "app_config"
         monkeypatch.setenv("DOCMAN_APP_CONFIG_DIR", str(app_config_dir))
 
-    @patch("docman.cli.get_llm_provider")
+    @patch("docman.cli.llm.get_llm_provider")
     @patch("docman.llm_config.keyring")
     def test_add_success_with_all_options(
         self,
@@ -73,7 +73,7 @@ class TestLLMAdd:
         # Verify provider test was called
         mock_provider_instance.test_connection.assert_called_once()
 
-    @patch("docman.cli.run_llm_wizard")
+    @patch("docman.cli.llm.run_llm_wizard")
     def test_add_falls_back_to_wizard_when_options_missing(
         self,
         mock_wizard: Mock,
@@ -94,7 +94,7 @@ class TestLLMAdd:
         mock_wizard.assert_called_once()
         assert result.exit_code == 0
 
-    @patch("docman.cli.run_llm_wizard")
+    @patch("docman.cli.llm.run_llm_wizard")
     def test_add_wizard_cancelled(
         self,
         mock_wizard: Mock,
@@ -116,7 +116,7 @@ class TestLLMAdd:
         assert result.exit_code == 1
         assert "Setup failed or cancelled." in result.output
 
-    @patch("docman.cli.get_llm_provider")
+    @patch("docman.cli.llm.get_llm_provider")
     @patch("docman.llm_config.keyring")
     def test_add_duplicate_name_error(
         self,
@@ -179,7 +179,7 @@ class TestLLMAdd:
         assert "Error:" in result2.output
         assert "already exists" in result2.output
 
-    @patch("docman.cli.get_llm_provider")
+    @patch("docman.cli.llm.get_llm_provider")
     @patch("docman.llm_config.keyring")
     def test_add_connection_test_failure(
         self,
@@ -223,7 +223,7 @@ class TestLLMAdd:
         assert "Connection test failed:" in result.output
         assert "Invalid API key" in result.output
 
-    @patch("docman.cli.get_llm_provider")
+    @patch("docman.cli.llm.get_llm_provider")
     @patch("docman.llm_config.keyring")
     def test_add_first_provider_becomes_active(
         self,
@@ -292,7 +292,7 @@ class TestLLMList:
         assert "No LLM providers configured." in result.output
         assert "Run 'docman llm add' to add a provider." in result.output
 
-    @patch("docman.cli.get_llm_provider")
+    @patch("docman.cli.llm.get_llm_provider")
     @patch("docman.llm_config.keyring")
     def test_list_single_provider(
         self,
@@ -339,7 +339,7 @@ class TestLLMList:
         assert "Model: gemini-1.5-flash" in result.output
         assert "●" in result.output  # Active marker
 
-    @patch("docman.cli.get_llm_provider")
+    @patch("docman.cli.llm.get_llm_provider")
     @patch("docman.llm_config.keyring")
     def test_list_multiple_providers_with_active_indicator(
         self,
@@ -418,7 +418,7 @@ class TestLLMRemove:
         app_config_dir = tmp_path / "app_config"
         monkeypatch.setenv("DOCMAN_APP_CONFIG_DIR", str(app_config_dir))
 
-    @patch("docman.cli.get_llm_provider")
+    @patch("docman.cli.llm.get_llm_provider")
     @patch("docman.llm_config.keyring")
     def test_remove_success_with_confirmation(
         self,
@@ -468,7 +468,7 @@ class TestLLMRemove:
         assert "Provider 'test-provider' removed successfully." in result.output
         mock_keyring.delete_password.assert_called_with("docman_llm", "test-provider")
 
-    @patch("docman.cli.get_llm_provider")
+    @patch("docman.cli.llm.get_llm_provider")
     @patch("docman.llm_config.keyring")
     def test_remove_success_with_yes_flag(
         self,
@@ -515,7 +515,7 @@ class TestLLMRemove:
         assert "Are you sure" not in result.output  # No confirmation prompt
         assert "Provider 'test-provider' removed successfully." in result.output
 
-    @patch("docman.cli.get_llm_provider")
+    @patch("docman.cli.llm.get_llm_provider")
     @patch("docman.llm_config.keyring")
     def test_remove_confirmation_declined(
         self,
@@ -580,7 +580,7 @@ class TestLLMRemove:
         assert result.exit_code == 1
         assert "Error: Provider 'nonexistent' not found." in result.output
 
-    @patch("docman.cli.get_llm_provider")
+    @patch("docman.cli.llm.get_llm_provider")
     @patch("docman.llm_config.keyring")
     def test_remove_active_provider_selects_new_active(
         self,
@@ -658,7 +658,7 @@ class TestLLMSetActive:
         app_config_dir = tmp_path / "app_config"
         monkeypatch.setenv("DOCMAN_APP_CONFIG_DIR", str(app_config_dir))
 
-    @patch("docman.cli.get_llm_provider")
+    @patch("docman.cli.llm.get_llm_provider")
     @patch("docman.llm_config.keyring")
     def test_set_active_success(
         self,
@@ -756,7 +756,7 @@ class TestLLMShow:
         app_config_dir = tmp_path / "app_config"
         monkeypatch.setenv("DOCMAN_APP_CONFIG_DIR", str(app_config_dir))
 
-    @patch("docman.cli.get_llm_provider")
+    @patch("docman.cli.llm.get_llm_provider")
     @patch("docman.llm_config.keyring")
     def test_show_active_provider_no_args(
         self,
@@ -806,7 +806,7 @@ class TestLLMShow:
         # Should NOT show actual API key
         assert "test-key" not in result.output
 
-    @patch("docman.cli.get_llm_provider")
+    @patch("docman.cli.llm.get_llm_provider")
     @patch("docman.llm_config.keyring")
     def test_show_specific_provider_by_name(
         self,
@@ -901,7 +901,7 @@ class TestLLMShow:
         assert "No active provider configured." in result.output
         assert "Run 'docman llm add' to add a provider." in result.output
 
-    @patch("docman.cli.get_llm_provider")
+    @patch("docman.cli.llm.get_llm_provider")
     @patch("docman.llm_config.keyring")
     def test_show_api_key_not_found(
         self,
@@ -957,7 +957,7 @@ class TestLLMTest:
         app_config_dir = tmp_path / "app_config"
         monkeypatch.setenv("DOCMAN_APP_CONFIG_DIR", str(app_config_dir))
 
-    @patch("docman.cli.get_llm_provider")
+    @patch("docman.cli.llm.get_llm_provider")
     @patch("docman.llm_config.keyring")
     def test_test_active_provider_success(
         self,
@@ -1002,7 +1002,7 @@ class TestLLMTest:
         assert "Testing connection to 'my-provider'..." in result.output
         assert "Connection successful!" in result.output
 
-    @patch("docman.cli.get_llm_provider")
+    @patch("docman.cli.llm.get_llm_provider")
     @patch("docman.llm_config.keyring")
     def test_test_specific_provider_by_name(
         self,
@@ -1065,7 +1065,7 @@ class TestLLMTest:
         assert "Testing connection to 'provider-2'..." in result.output
         assert "Connection successful!" in result.output
 
-    @patch("docman.cli.get_llm_provider")
+    @patch("docman.cli.llm.get_llm_provider")
     @patch("docman.llm_config.keyring")
     def test_test_connection_failure(
         self,
@@ -1114,7 +1114,7 @@ class TestLLMTest:
         assert "Connection failed:" in result.output
         assert "Connection timeout" in result.output
 
-    @patch("docman.cli.get_llm_provider")
+    @patch("docman.cli.llm.get_llm_provider")
     @patch("docman.llm_config.keyring")
     def test_test_missing_api_key(
         self,

@@ -37,9 +37,9 @@ class TestDocmanPlan:
         }
 
         # Patch the LLM-related functions
-        monkeypatch.setattr("docman.cli.get_active_provider", Mock(return_value=mock_provider_config))
-        monkeypatch.setattr("docman.cli.get_api_key", Mock(return_value="test-api-key"))
-        monkeypatch.setattr("docman.cli.get_llm_provider", Mock(return_value=mock_provider_instance))
+        monkeypatch.setattr("docman.cli.plan.get_active_provider", Mock(return_value=mock_provider_config))
+        monkeypatch.setattr("docman.cli.plan.get_api_key", Mock(return_value="test-api-key"))
+        monkeypatch.setattr("docman.cli.plan.get_llm_provider", Mock(return_value=mock_provider_instance))
 
     def setup_repository(self, path: Path) -> None:
         """Set up a docman repository for testing."""
@@ -1185,8 +1185,8 @@ organization:
             "reason": "Flash model reason",
         }
 
-        monkeypatch.setattr("docman.cli.get_active_provider", Mock(return_value=mock_provider_config_flash))
-        monkeypatch.setattr("docman.cli.get_llm_provider", Mock(return_value=mock_provider_instance_flash))
+        monkeypatch.setattr("docman.cli.plan.get_active_provider", Mock(return_value=mock_provider_config_flash))
+        monkeypatch.setattr("docman.cli.plan.get_llm_provider", Mock(return_value=mock_provider_instance_flash))
         monkeypatch.chdir(repo_dir)
 
         result1 = cli_runner.invoke(main, ["plan"], catch_exceptions=False)
@@ -1223,8 +1223,8 @@ organization:
             "reason": "Pro model reason",
         }
 
-        monkeypatch.setattr("docman.cli.get_active_provider", Mock(return_value=mock_provider_config_pro))
-        monkeypatch.setattr("docman.cli.get_llm_provider", Mock(return_value=mock_provider_instance_pro))
+        monkeypatch.setattr("docman.cli.plan.get_active_provider", Mock(return_value=mock_provider_config_pro))
+        monkeypatch.setattr("docman.cli.plan.get_llm_provider", Mock(return_value=mock_provider_instance_pro))
 
         # Second run with pro model
         result2 = cli_runner.invoke(main, ["plan"], catch_exceptions=False)
@@ -1277,7 +1277,7 @@ organization:
             }
 
         mock_provider_instance.generate_suggestions.side_effect = generate_side_effect
-        monkeypatch.setattr("docman.cli.get_llm_provider", Mock(return_value=mock_provider_instance))
+        monkeypatch.setattr("docman.cli.plan.get_llm_provider", Mock(return_value=mock_provider_instance))
 
         # Change to repository directory
         monkeypatch.chdir(repo_dir)
@@ -1525,9 +1525,9 @@ organization:
         mock_provider_instance.generate_suggestions.side_effect = generate_with_validation
 
         # Patch the LLM-related functions
-        monkeypatch.setattr("docman.cli.get_active_provider", Mock(return_value=mock_provider_config))
-        monkeypatch.setattr("docman.cli.get_api_key", Mock(return_value="test-api-key"))
-        monkeypatch.setattr("docman.cli.get_llm_provider", Mock(return_value=mock_provider_instance))
+        monkeypatch.setattr("docman.cli.plan.get_active_provider", Mock(return_value=mock_provider_config))
+        monkeypatch.setattr("docman.cli.plan.get_api_key", Mock(return_value="test-api-key"))
+        monkeypatch.setattr("docman.cli.plan.get_llm_provider", Mock(return_value=mock_provider_instance))
 
         # Change to the repository directory
         monkeypatch.chdir(repo_dir)
@@ -1579,9 +1579,9 @@ organization:
         mock_provider_instance.generate_suggestions.side_effect = generate_with_absolute_path
 
         # Patch the LLM-related functions
-        monkeypatch.setattr("docman.cli.get_active_provider", Mock(return_value=mock_provider_config))
-        monkeypatch.setattr("docman.cli.get_api_key", Mock(return_value="test-api-key"))
-        monkeypatch.setattr("docman.cli.get_llm_provider", Mock(return_value=mock_provider_instance))
+        monkeypatch.setattr("docman.cli.plan.get_active_provider", Mock(return_value=mock_provider_config))
+        monkeypatch.setattr("docman.cli.plan.get_api_key", Mock(return_value="test-api-key"))
+        monkeypatch.setattr("docman.cli.plan.get_llm_provider", Mock(return_value=mock_provider_instance))
 
         # Change to the repository directory
         monkeypatch.chdir(repo_dir)
@@ -1624,9 +1624,9 @@ organization:
         }
 
         # Patch the LLM-related functions
-        monkeypatch.setattr("docman.cli.get_active_provider", Mock(return_value=mock_provider_config))
-        monkeypatch.setattr("docman.cli.get_api_key", Mock(return_value="test-api-key"))
-        monkeypatch.setattr("docman.cli.get_llm_provider", Mock(return_value=mock_provider_instance))
+        monkeypatch.setattr("docman.cli.plan.get_active_provider", Mock(return_value=mock_provider_config))
+        monkeypatch.setattr("docman.cli.plan.get_api_key", Mock(return_value="test-api-key"))
+        monkeypatch.setattr("docman.cli.plan.get_llm_provider", Mock(return_value=mock_provider_instance))
 
         # Change to the repository directory
         monkeypatch.chdir(repo_dir)
@@ -1680,9 +1680,9 @@ class TestDocmanPlanExamples:
         }
 
         # Patch the LLM-related functions
-        monkeypatch.setattr("docman.cli.get_active_provider", Mock(return_value=mock_provider_config))
-        monkeypatch.setattr("docman.cli.get_api_key", Mock(return_value="test-api-key"))
-        monkeypatch.setattr("docman.cli.get_llm_provider", Mock(return_value=mock_provider_instance))
+        monkeypatch.setattr("docman.cli.plan.get_active_provider", Mock(return_value=mock_provider_config))
+        monkeypatch.setattr("docman.cli.plan.get_api_key", Mock(return_value="test-api-key"))
+        monkeypatch.setattr("docman.cli.plan.get_llm_provider", Mock(return_value=mock_provider_instance))
 
     def setup_repository(self, path: Path) -> None:
         """Set up a docman repository for testing."""
