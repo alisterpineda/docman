@@ -1,13 +1,13 @@
-{% if examples %}
-<examples>
-{{ examples }}
-</examples>
-
-{% endif %}
 {% if organization_instructions %}
 <organizationInstructions>
 {{ organization_instructions }}
 </organizationInstructions>
+
+{% endif %}
+{% if examples %}
+<examples>
+{{ examples }}
+</examples>
 {% endif %}
 
 <documentContent filePath="{{ file_path|e }}"{% if was_truncated %} truncated="true" originalChars="{{ original_length }}"{% endif %}>
