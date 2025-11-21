@@ -815,9 +815,9 @@ organization:
             "reason": "New reason with additional context",
         }
 
-        monkeypatch.setattr("docman.cli.get_active_provider", Mock(return_value=mock_provider_config))
-        monkeypatch.setattr("docman.cli.get_api_key", Mock(return_value="test-api-key"))
-        monkeypatch.setattr("docman.cli.get_llm_provider", Mock(return_value=mock_provider_instance))
+        monkeypatch.setattr("docman.cli.review.get_active_provider", Mock(return_value=mock_provider_config))
+        monkeypatch.setattr("docman.cli.review.get_api_key", Mock(return_value="test-api-key"))
+        monkeypatch.setattr("docman.cli.review.get_llm_provider", Mock(return_value=mock_provider_instance))
 
         # Simulate user input: Process -> additional instructions -> Apply
         result = cli_runner.invoke(
@@ -898,9 +898,9 @@ organization:
             },
         ]
 
-        monkeypatch.setattr("docman.cli.get_active_provider", Mock(return_value=mock_provider_config))
-        monkeypatch.setattr("docman.cli.get_api_key", Mock(return_value="test-api-key"))
-        monkeypatch.setattr("docman.cli.get_llm_provider", Mock(return_value=mock_provider_instance))
+        monkeypatch.setattr("docman.cli.review.get_active_provider", Mock(return_value=mock_provider_config))
+        monkeypatch.setattr("docman.cli.review.get_api_key", Mock(return_value="test-api-key"))
+        monkeypatch.setattr("docman.cli.review.get_llm_provider", Mock(return_value=mock_provider_instance))
 
         # Simulate user input: Process -> instructions -> Process again -> different instructions -> Apply
         result = cli_runner.invoke(
@@ -955,9 +955,9 @@ organization:
             "reason": "Not a good suggestion",
         }
 
-        monkeypatch.setattr("docman.cli.get_active_provider", Mock(return_value=mock_provider_config))
-        monkeypatch.setattr("docman.cli.get_api_key", Mock(return_value="test-api-key"))
-        monkeypatch.setattr("docman.cli.get_llm_provider", Mock(return_value=mock_provider_instance))
+        monkeypatch.setattr("docman.cli.review.get_active_provider", Mock(return_value=mock_provider_config))
+        monkeypatch.setattr("docman.cli.review.get_api_key", Mock(return_value="test-api-key"))
+        monkeypatch.setattr("docman.cli.review.get_llm_provider", Mock(return_value=mock_provider_instance))
 
         # Simulate user input: Process -> instructions -> Reject
         result = cli_runner.invoke(
@@ -1017,9 +1017,9 @@ organization:
         mock_provider_instance = Mock()
         mock_provider_instance.supports_structured_output = True
 
-        monkeypatch.setattr("docman.cli.get_active_provider", Mock(return_value=mock_provider_config))
-        monkeypatch.setattr("docman.cli.get_api_key", Mock(return_value="test-api-key"))
-        monkeypatch.setattr("docman.cli.get_llm_provider", Mock(return_value=mock_provider_instance))
+        monkeypatch.setattr("docman.cli.review.get_active_provider", Mock(return_value=mock_provider_config))
+        monkeypatch.setattr("docman.cli.review.get_api_key", Mock(return_value="test-api-key"))
+        monkeypatch.setattr("docman.cli.review.get_llm_provider", Mock(return_value=mock_provider_instance))
 
         # Simulate user input: Process -> empty instructions (cancel) -> Skip
         result = cli_runner.invoke(
@@ -1084,9 +1084,9 @@ organization:
             "reason": "Malicious suggestion",
         }
 
-        monkeypatch.setattr("docman.cli.get_active_provider", Mock(return_value=mock_provider_config))
-        monkeypatch.setattr("docman.cli.get_api_key", Mock(return_value="test-api-key"))
-        monkeypatch.setattr("docman.cli.get_llm_provider", Mock(return_value=mock_provider_instance))
+        monkeypatch.setattr("docman.cli.review.get_active_provider", Mock(return_value=mock_provider_config))
+        monkeypatch.setattr("docman.cli.review.get_api_key", Mock(return_value="test-api-key"))
+        monkeypatch.setattr("docman.cli.review.get_llm_provider", Mock(return_value=mock_provider_instance))
 
         # Simulate user input: Process -> instructions -> (LLM returns invalid path) -> Skip
         result = cli_runner.invoke(
@@ -1152,7 +1152,7 @@ organization:
                 mock_startfile.assert_called_once_with(str(source_file))
         else:
             # On macOS/Linux, subprocess.run is used
-            with patch("docman.cli.subprocess.run") as mock_run:
+            with patch("docman.cli.review.subprocess.run") as mock_run:
                 mock_run.return_value = Mock()  # Simulate successful execution
 
                 # Simulate user choosing to open file, then skip
@@ -1249,7 +1249,7 @@ organization:
                 assert "Skipped: 1" in result.output
         else:
             # On macOS/Linux, subprocess.run is used
-            with patch("docman.cli.subprocess.run") as mock_run:
+            with patch("docman.cli.review.subprocess.run") as mock_run:
                 from subprocess import CalledProcessError
                 mock_run.side_effect = CalledProcessError(1, "open")
 
@@ -1769,9 +1769,9 @@ organization:
             "reason": "Added vendor directory",
         }
 
-        monkeypatch.setattr("docman.cli.get_active_provider", Mock(return_value=mock_provider_config))
-        monkeypatch.setattr("docman.cli.get_api_key", Mock(return_value="test-api-key"))
-        monkeypatch.setattr("docman.cli.get_llm_provider", Mock(return_value=mock_provider_instance))
+        monkeypatch.setattr("docman.cli.review.get_active_provider", Mock(return_value=mock_provider_config))
+        monkeypatch.setattr("docman.cli.review.get_api_key", Mock(return_value="test-api-key"))
+        monkeypatch.setattr("docman.cli.review.get_llm_provider", Mock(return_value=mock_provider_instance))
 
         # Simulate: Process -> user feedback -> Skip
         result = cli_runner.invoke(
@@ -1855,9 +1855,9 @@ organization:
             },
         ]
 
-        monkeypatch.setattr("docman.cli.get_active_provider", Mock(return_value=mock_provider_config))
-        monkeypatch.setattr("docman.cli.get_api_key", Mock(return_value="test-api-key"))
-        monkeypatch.setattr("docman.cli.get_llm_provider", Mock(return_value=mock_provider_instance))
+        monkeypatch.setattr("docman.cli.review.get_active_provider", Mock(return_value=mock_provider_config))
+        monkeypatch.setattr("docman.cli.review.get_api_key", Mock(return_value="test-api-key"))
+        monkeypatch.setattr("docman.cli.review.get_llm_provider", Mock(return_value=mock_provider_instance))
 
         # Simulate: Process -> feedback 1 -> Process -> feedback 2 -> Skip
         result = cli_runner.invoke(
@@ -1996,9 +1996,9 @@ organization:
             {"suggested_directory_path": "new2", "suggested_filename": "new2.pdf", "reason": "Updated 2"},
         ]
 
-        monkeypatch.setattr("docman.cli.get_active_provider", Mock(return_value=mock_provider_config))
-        monkeypatch.setattr("docman.cli.get_api_key", Mock(return_value="test-api-key"))
-        monkeypatch.setattr("docman.cli.get_llm_provider", Mock(return_value=mock_provider_instance))
+        monkeypatch.setattr("docman.cli.review.get_active_provider", Mock(return_value=mock_provider_config))
+        monkeypatch.setattr("docman.cli.review.get_api_key", Mock(return_value="test-api-key"))
+        monkeypatch.setattr("docman.cli.review.get_llm_provider", Mock(return_value=mock_provider_instance))
 
         # Simulate: Process doc1 -> feedback -> Skip -> Process doc2 -> feedback -> Skip
         result = cli_runner.invoke(
@@ -2061,9 +2061,9 @@ organization:
             "reason": "Updated",
         }
 
-        monkeypatch.setattr("docman.cli.get_active_provider", Mock(return_value=mock_provider_config))
-        monkeypatch.setattr("docman.cli.get_api_key", Mock(return_value="test-api-key"))
-        monkeypatch.setattr("docman.cli.get_llm_provider", Mock(return_value=mock_provider_instance))
+        monkeypatch.setattr("docman.cli.review.get_active_provider", Mock(return_value=mock_provider_config))
+        monkeypatch.setattr("docman.cli.review.get_api_key", Mock(return_value="test-api-key"))
+        monkeypatch.setattr("docman.cli.review.get_llm_provider", Mock(return_value=mock_provider_instance))
 
         # Feedback with special XML/JSON characters
         special_feedback = 'Use <tag> & "quotes" and \\slashes\\ in path'
@@ -2123,9 +2123,9 @@ organization:
             "reason": "Updated",
         }
 
-        monkeypatch.setattr("docman.cli.get_active_provider", Mock(return_value=mock_provider_config))
-        monkeypatch.setattr("docman.cli.get_api_key", Mock(return_value="test-api-key"))
-        monkeypatch.setattr("docman.cli.get_llm_provider", Mock(return_value=mock_provider_instance))
+        monkeypatch.setattr("docman.cli.review.get_active_provider", Mock(return_value=mock_provider_config))
+        monkeypatch.setattr("docman.cli.review.get_api_key", Mock(return_value="test-api-key"))
+        monkeypatch.setattr("docman.cli.review.get_llm_provider", Mock(return_value=mock_provider_instance))
 
         # Very long feedback (2000+ characters)
         long_feedback = ("Please organize this document carefully. " * 50).strip()
@@ -2189,9 +2189,9 @@ organization:
         mock_provider_instance = Mock()
         mock_provider_instance.supports_structured_output = True
 
-        monkeypatch.setattr("docman.cli.get_active_provider", Mock(return_value=mock_provider_config))
-        monkeypatch.setattr("docman.cli.get_api_key", Mock(return_value="test-api-key"))
-        monkeypatch.setattr("docman.cli.get_llm_provider", Mock(return_value=mock_provider_instance))
+        monkeypatch.setattr("docman.cli.review.get_active_provider", Mock(return_value=mock_provider_config))
+        monkeypatch.setattr("docman.cli.review.get_api_key", Mock(return_value="test-api-key"))
+        monkeypatch.setattr("docman.cli.review.get_llm_provider", Mock(return_value=mock_provider_instance))
 
         # Simulate: Process -> feedback
         result = cli_runner.invoke(
@@ -2242,9 +2242,9 @@ organization:
             "reason": "New reason from re-processing",
         }
 
-        monkeypatch.setattr("docman.cli.get_active_provider", Mock(return_value=mock_provider_config))
-        monkeypatch.setattr("docman.cli.get_api_key", Mock(return_value="test-api-key"))
-        monkeypatch.setattr("docman.cli.get_llm_provider", Mock(return_value=mock_provider_instance))
+        monkeypatch.setattr("docman.cli.review.get_active_provider", Mock(return_value=mock_provider_config))
+        monkeypatch.setattr("docman.cli.review.get_api_key", Mock(return_value="test-api-key"))
+        monkeypatch.setattr("docman.cli.review.get_llm_provider", Mock(return_value=mock_provider_instance))
 
         # Simulate: Process -> feedback -> Skip
         result = cli_runner.invoke(
@@ -2308,9 +2308,9 @@ organization:
             "reason": "New reason from re-processing",
         }
 
-        monkeypatch.setattr("docman.cli.get_active_provider", Mock(return_value=mock_provider_config))
-        monkeypatch.setattr("docman.cli.get_api_key", Mock(return_value="test-api-key"))
-        monkeypatch.setattr("docman.cli.get_llm_provider", Mock(return_value=mock_provider_instance))
+        monkeypatch.setattr("docman.cli.review.get_active_provider", Mock(return_value=mock_provider_config))
+        monkeypatch.setattr("docman.cli.review.get_api_key", Mock(return_value="test-api-key"))
+        monkeypatch.setattr("docman.cli.review.get_llm_provider", Mock(return_value=mock_provider_instance))
 
         # Simulate: Process -> feedback -> Reject
         result = cli_runner.invoke(
@@ -2374,9 +2374,9 @@ organization:
             "reason": "New reason from re-processing",
         }
 
-        monkeypatch.setattr("docman.cli.get_active_provider", Mock(return_value=mock_provider_config))
-        monkeypatch.setattr("docman.cli.get_api_key", Mock(return_value="test-api-key"))
-        monkeypatch.setattr("docman.cli.get_llm_provider", Mock(return_value=mock_provider_instance))
+        monkeypatch.setattr("docman.cli.review.get_active_provider", Mock(return_value=mock_provider_config))
+        monkeypatch.setattr("docman.cli.review.get_api_key", Mock(return_value="test-api-key"))
+        monkeypatch.setattr("docman.cli.review.get_llm_provider", Mock(return_value=mock_provider_instance))
 
         # Simulate: Process -> feedback -> Apply
         result = cli_runner.invoke(
@@ -2450,9 +2450,9 @@ organization:
             "reason": "New reason from re-processing",
         }
 
-        monkeypatch.setattr("docman.cli.get_active_provider", Mock(return_value=mock_provider_config))
-        monkeypatch.setattr("docman.cli.get_api_key", Mock(return_value="test-api-key"))
-        monkeypatch.setattr("docman.cli.get_llm_provider", Mock(return_value=mock_provider_instance))
+        monkeypatch.setattr("docman.cli.review.get_active_provider", Mock(return_value=mock_provider_config))
+        monkeypatch.setattr("docman.cli.review.get_api_key", Mock(return_value="test-api-key"))
+        monkeypatch.setattr("docman.cli.review.get_llm_provider", Mock(return_value=mock_provider_instance))
 
         # Simulate: Process -> feedback -> Apply -> Conflict -> Skip
         result = cli_runner.invoke(

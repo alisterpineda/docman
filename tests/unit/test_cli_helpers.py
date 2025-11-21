@@ -2,7 +2,7 @@
 
 import json
 
-from docman.cli import _format_suggestion_as_json
+from docman.cli.review import _format_suggestion_as_json
 
 
 class TestFormatSuggestionAsJson:
